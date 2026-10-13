@@ -267,15 +267,27 @@ Three classes are needed, because each pins something the others are blind to:
 | rotation | attitude conventions (the 180 deg FRD/FLU roll, quaternion direction, Euler signs), the mount's angle and sign, the yaw offset, and the lever arm (a rotation-dependent position offset is invisible at a fixed attitude) |
 | decoupled motion | the velocity channel's frame -- translate sideways with the heading fixed, otherwise "body-FRD velocity" and "world-NED velocity" look identical |
 
-| # | test | class | uniquely pins | cost |
-|---|---|---|---|---|
-| T1 | +East, +North, +Up moves, 0.5 m each, heading fixed | translation | the 6 position signs; axis swaps | one short scripted motion (or one flight) |
-| T2 | parked at 3 spawn headings: 0, +90, -90 deg | rotation | FRD<->FLU 180 deg roll, quaternion direction, yaw sign, and that the LIO's yaw *tracks* rather than sitting at a constant | free: restart the sim ~1 min each, no arming, no flight |
-| T3 | parked, tilted (pitch/roll 10 deg) | rotation | the mount's sign and angle; gravity direction in the sensor frame (round 7 already measured 45.001 deg parked) | free-ish: spawn on a tilted pad or command attitude while parked |
-| T3b | parked, level: read the FCU's reported pitch | rotation | **that we feed the FCU the BODY attitude, not the SENSOR's.**  A 45 deg reading here means the housing attitude reached the external-nav message.  Expected: 0 deg within a degree | free: parked, no arming |
-| T4 | crab move: heading 0 deg, translate +North | decoupled | velocity frame (ODOMETRY's body-FRD velocity vs a NED velocity) | one short flight |
-| T5 | same translation at two headings (0 and +90 deg) | rotation + translation | the lever arm t = (0.05, 0, 0.10) | one parked rotation + one move |
-| T6 | in flight: reconstructed pillar bearings from the LIO's map vs world.yaml | shape | the mount angle *as the LIO sees it* (a wrong mount tilts the map) | one flight |
+| # | test | class | uniquely pins | cost | status 2026-10-13 |
+|---|---|---|---|---|---|
+| T1 | +East, +North, +Up moves, 0.5 m each, heading fixed | translation | the 6 position signs; axis swaps | one short scripted motion (or one flight) | **deferred to S7** (needs arming and the bridge) |
+| T2 | parked at 3 spawn headings: 0, +90, -90 deg | rotation | FRD<->FLU 180 deg roll, quaternion direction, yaw sign, and that the LIO's yaw *tracks* rather than sitting at a constant | free: restart the sim ~1 min each, no arming, no flight | **DONE**: `tools/run-convention-tests.sh`, heading error **0.000 deg** at 0/90/270, body level in W (roll/pitch 0.000 deg), and the live mutation (`flip-enu`) fails with 90.000 deg / roll +180.000 deg |
+| T3 | parked, tilted (pitch/roll 10 deg) | rotation | the mount's sign and angle; gravity direction in the sensor frame | free-ish: spawn on a tilted pad or command attitude while parked | **half DONE**: the parked half (specific force in S = **45.000 deg** from the housing's +z) is in the same test; the *tilted* half needs a commanded attitude and belongs to S7 |
+| T3b | parked, level: read the FCU's reported pitch | rotation | **that we feed the FCU the BODY attitude, not the SENSOR's.**  A 45 deg reading here means the housing attitude reached the external-nav message.  Expected: 0 deg within a degree | free: parked, no arming | **half DONE**: the body pitch from the tap is 0.000 deg while the sensor reads 45.000 deg, so the two are distinguishable; the FCU half needs the LIO in the loop (S6/S7) |
+| T4 | crab move: heading 0 deg, translate +North | decoupled | velocity frame (ODOMETRY's body-FRD velocity vs a NED velocity) | one short flight | **deferred to S7** |
+| T5 | same translation at two headings (0 and +90 deg) | rotation + translation | the lever arm t = (0.05, 0, 0.10) | one parked rotation + one move | **deferred to S7** (the mount angle itself is already gated by the S4 surface split) |
+| T6 | in flight: reconstructed pillar bearings from the LIO's map vs world.yaml | shape | the mount angle *as the LIO sees it* (a wrong mount tilts the map) | one flight | **deferred to S6** (needs the LIO), and the S4 pillar fit is its ground-truth half |
+
+**What S5 established, besides the tests passing:** the FCU's own attitude telemetry is *level* but its
+YAW is meaningless while nothing aids it -- measured yaw 350.19 / 59.20 / 281.19 deg for commanded
+headings 0 / 90 / 270 (roll and pitch were correct to 0.01 deg, because gravity levels them).  That is
+not a frame bug: with no GPS, no compass and no vision the EKF cannot observe yaw at all, which is
+exactly why mission A feeds it the LIO.  It also means **T2's FCU half must be re-run in S7**, when
+there is an external-nav source, and it is one of the acceptance items there.
+
+Also measured in S5: SITL's `SR*_*` stream-rate parameters are ~0 out of the box, so a client sees only
+HEARTBEAT and SYS_STATUS until it asks.  The ask is `MAV_CMD_SET_MESSAGE_INTERVAL` (511) -- the same
+command the bridge needs for the messages that are in no stream group (msg 31 ATTITUDE_QUATERNION).
+
 
 Note that T2/T3/T5 need no flight at all -- the sim can be restarted with a different spawn heading and
 the whole comparison done parked.  Only T1, T4 and T6 need the vehicle to move.
