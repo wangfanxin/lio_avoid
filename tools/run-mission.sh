@@ -110,7 +110,7 @@ if [ "$NAV_SOURCE" = "lio" ]; then
     CALIB_ARG="--calib-file $CALIB"
 fi
 python3 "$REPO/fsm/mission_fsm.py" --nav-source "$NAV_SOURCE" $CALIB_ARG \
-    --tap-port 0 --alt 2.0 --hold 3.0 \
+    --tap-port 0 --alt 2.0 --hold 3.0 ${FSM_ARGS:-} \
     --phase-log "$OUT/phase.csv" > "$OUT/fsm.log" 2>&1
 FSM_RC=$?
 cat "$OUT/fsm.log"

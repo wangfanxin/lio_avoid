@@ -642,9 +642,27 @@ def main() -> int:
                          "of 50) or 'velocity' (tried, made both worse: B1 0 of 3 / B2 3 of 15)")
     ap.add_argument("--alt", type=float, default=2.0, help="mission altitude above the pad, m")
     ap.add_argument("--hold", type=float, default=3.0)
+    # The corner gates, as arguments rather than only constants, because they are the lever B2 answers
+    # to and an A/B must be able to move them without editing the flown defaults.  MEASURED 2026-10-13:
+    # the leg starts with the residual of the corner turn -- up to 60 mm of position error (arrive_m) and
+    # up to 74 mm/s of speed (the settle gate exiting at its first check) -- and B2's worst perpendicular
+    # error peaks at 16-27% of the leg, which is that residual decaying, not a path error.
+    ap.add_argument("--arrive-m", type=float, default=GATES["arrive_m"],
+                    help="corner arrival tolerance, horizontal, for BOTH the FCU's estimate and the truth")
+    ap.add_argument("--settle-speed", type=float, default=GATES["settle_speed_mps"],
+                    help="hold the corner until the FCU's horizontal speed is below this (m/s)")
+    ap.add_argument("--settle-s", type=float, default=GATES["settle_s"],
+                    help="and give up waiting after this long")
     ap.add_argument("--yaw", type=float, default=0.0, help="commanded yaw, rad (0 = North)")
     ap.add_argument("--phase-log", default=os.path.join(here, "..", "logs", "phase.csv"))
     args = ap.parse_args()
+    # the effective gates go into the run's own log, so a flight's record says what it actually flew
+    GATES["arrive_m"] = args.arrive_m
+    GATES["settle_speed_mps"] = args.settle_speed
+    GATES["settle_s"] = args.settle_s
+    print("gates in force: arrive %.3f m, settle speed %.3f m/s within %.1f s, speed %.2f m/s"
+          % (GATES["arrive_m"], GATES["settle_speed_mps"], GATES["settle_s"], GATES["speed_mps"]),
+          flush=True)
     os.makedirs(os.path.dirname(os.path.abspath(args.phase_log)), exist_ok=True)
     m = Mission(args)
     return m.run()

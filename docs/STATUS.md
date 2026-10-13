@@ -48,6 +48,9 @@ is next.
 | 38 | **A3 was measuring my interpolator, not the LIO** | the old A3 resampled both streams onto a 200 Hz grid with `np.interp`.  With a 33.3 Hz delivered stream that is interpolation, and `tools/a3-offline-ab.py` measures what it does: the delivered path's 2nd difference is multiplied by **2.06x** while the 1200 Hz truth is low-passed by **4.3x**, so the "fair ratio" was mostly a property of the interpolator; and the truth tap is **noiseless**, so the ratio to "the truth's own jitter" compared estimator noise with the vehicle's real dynamics (0.23-0.29 m/s^2) and had no pass level at all -- it reported 44x-204x and 0 of 10 flights passed.  The absolute bound was equally unmeetable: measured **4.4 / 5.0 / 9.0 mm** per sample at the delivered 33.3 Hz, **1.0 / 1.1 / 1.9 mm** once the IMU rate was fixed, against a stated 0.50 / 0.50 / 0.15 mm "per sample at 200 Hz".  A3 now measures the samples **as delivered** (the FCU never interpolates), with bounds anchored to the table: delivery (rate >= 80% of 200 Hz, no gap > 3x the median period), wander (rms 2nd difference <= 2.0 mm = 10% of A1), outliers (p99 single step <= 10.0 mm); the worst step is **reported with its time** rather than gated because the biggest ones are the take-off transient (58.2 mm at t=0.06 s of the recording) and one transient is not a habit.  The sawtooth is real and not white: the 2nd difference varies 0.36-2.35 mm with the phase inside the 100 ms scan.  This supersedes row 33(ii) |
 | 39 | **A4 is new: the FCU's own estimate against the truth, and the ~0.09 m vertical datum it exposes** | read from the FCU's own log (`XKF1`), with its boot clock aligned to the sim clock by the one sharp feature both contain -- the take-off ramp -- and the alignment **reported**: lag **-0.03 s**, vertical alignment residual 96.3 mm.  Measured (`logs/missionA-imu200a`): horizontal rms **21.37 mm** (<= 50), vertical rms 22.17 mm, over 440 of 483 logged samples after take-off.  The removed datum is a datum and not a tracking error: **D -0.0915 m in flight vs -0.1127 m parked**, i.e. the same number before and after take-off.  Consequence, visible in B3's vertical column: the truth flies **~0.09 m below the commanded 2.0 m**, because the F-frame the FCU is commanded in sits ~0.09 m above the SITL home in z.  Open, with its number; every gated criterion in the table is horizontal or has its mean removed |
 | 40 | **B1's North bound had 0.06 where East had 0.10** | the commanded rectangle is 2.000 x 1.200 m and B1 was written "<= 2.10 / 1.26", i.e. +0.10 on E and +0.06 on N -- the same geometric question with two tolerances, and no basis for the smaller one.  Both axes now carry +0.10, the same tolerance B3 already uses for corner arrival, and the legacy `N <= 1.26` bound is still counted and printed beside it (`against the legacy bound 1.26 on N:`), so the stricter number stays visible instead of disappearing |
+| 41 | **MISSION A (step b) IS FLOWN: 10 of 10, with the counted table** | `logs/missionA-stepB10-20261013_232331` (10 flights, `ALT_MODE=lio`, i.e. `EK3_SRC1_POSZ = VELZ = POSXY = YAW = 6`, `VISO_TYPE 1`, `GPS1_TYPE 0` -- read back from the FCU's own log by `tools/bin-params.py`, not from what we passed).  **A1 10 of 10 (4.650-4.900 mm, limit 20); A2 10 of 10 (4.560-4.890, limit 50); A3 continuity 10 of 10; A4 the FCU's own estimate vs truth 10 of 10 (18.640-21.090, limit 50); B1 10 of 10 (E 2.024-2.060, N 1.247-1.291, limit 2.10/1.30; against the legacy N <= 1.26 it is 4 of 10); B2 39 of 50 legs; B3 40 of 40 corners; B4 10 of 10; completed 10 of 10.**  Evidence: `docs/metrics/stepB-rectangle-20261013.txt` |
+| 42 | **B2's remaining gap is NOT the corner approach -- tested and rejected** | the lever was corner carry-over (the leg starts with up to 60 mm of position error and up to 74 mm/s of residual speed), so the gates were tightened to 40 mm / 30 mm/s and flown 3 times (`logs/missionA-tight-*`, gates echoed in each `fsm.log`): the corners became tighter (truth arrival **0.033-0.039 m** vs 0.050-0.059, settled speed **0.012-0.028 m/s** vs 0.065-0.074) and **B2 got worse: 10 of 15 legs against 39 of 50 (78 %)**.  The shape says why: the worst perpendicular error of a leg sits at 16-27 % of its length, the speed is constant 0.20-0.28 m/s along the whole leg, and the cross-track error swings through zero 2-3 times in 2 m -- a lightly damped lateral response of the position loop at this speed, not an initial condition.  A and B are now arguments (`--arrive-m`, `--settle-speed`, `--settle-s`) and the flown defaults stay at the better measured values |
+| 43 | **the LIO's attitude, measured for the first time: yaw is excellent, roll/pitch is the loose channel** | `tools/lio-attitude.py` solves the best-fit constant rotation L->W from the attitudes alone (Wahba by SVD) and reports the residual.  Three flights: fitted yaw **+90.045 / +90.047 / +90.057 deg** -- which reproduces the calibration's +90.050 deg from attitude data with no position input, an independent check of the frame construction -- and residual **yaw 0.104-0.115 deg rms** (p-p 0.8-1.1) but **roll 1.36-1.46 and pitch 1.34-1.58 deg rms** with a 10-14 deg peak-to-peak swing that moves sample to sample, i.e. the 10 Hz scan correction, not a slow wobble.  A tilt error of 1.4 deg tilts the thrust by `g*sin(1.4 deg) = 0.24 m/s^2`, so the obvious suspect for B2 was tested directly: over the worst leg the cross-track error and the attitude error correlate **+0.088 (roll) / +0.030 (pitch)** -- not the mechanism.  Two of my own measurement bugs were caught by sanity checks on the way (the tap's `qw` is field **8**, not 9, which produced a 105 deg "yaw error" that was pure indexing; and an euler comparison across NED/ENU conventions, which `FRAMES.md` warns about and which this tool now avoids by fitting a rotation instead) |
 
 **Facts S3 established that the rest of Phase A depends on**
 
@@ -68,12 +71,21 @@ is next.
 
 ## Next, in order
 
-1. **S5**: `common/frames.py` is written and self-tested (18 checks); what remains is `Calib` against
-   the live construction and the convention tests of `FRAMES.md` §5 -- T2/T3/T3b/T5 need only a parked
-   simulator with a different spawn heading, T1 needs one short guided move.
-2. **S6** one LIO end to end (with the 2.5 deg tilt re-measured on the clean upstream).
-3. **S7** `bridge/` (both implementations) + `fsm/` -> mission A with the acceptance metrics.
-4. **S8 (deferred)** `planner/` (ego-planner) -> mission B.
+1. **Phase A is closed on (b)**: the rectangle flies on the LIO's own odometry including its vertical, and
+   the counted table is in row 41 / `docs/metrics/stepB-rectangle-20261013.txt`.  The step-(a) barometer
+   table (10 flights, `docs/metrics/phaseA-batch-*.txt`) stays as evidence for its own configuration, but
+   it was measured with the 33 Hz IMU defect (row 37) and is superseded for the mission configuration.
+   Two items remain open inside Phase A, each with its number: **B2's 11 failing legs** (row 42: a
+   lightly damped lateral response at 0.25 m/s, with the corner gates and the LIO's attitude both
+   eliminated as causes -- the next lever is the position/velocity loop gains at mission speed, which
+   changes how the aircraft flies rather than what it knows and so gets its own counted A/B) and the
+   **~0.09 m vertical datum** between the FCU's EKF origin and the SITL home (row 39), which every gated
+   criterion is insensitive to by construction.
+2. **`bridge/mavros_impl.py`**, the other half of the `BRIDGE=` switch (`BRIDGE=mavlink` is the flown
+   path).  It is not a gate for anything above: it exists so the "own MAVLink state machine vs MAVROS"
+   question has a measured answer rather than an opinion.
+3. **S8 (deferred)** `planner/` (ego-planner) -> mission B through the identical interface of `PLAN.md`
+   §4.1.  Nothing in the FSM changes: a ~30-line adapter turns the B-spline into the same `/planner/traj`.
 
 ## Open questions that block something
 
@@ -87,6 +99,11 @@ answer decides whether the LIO's world is also `odom` or `map`.
   **built**, with the truth tap applied as a patch (md5 `ef489d4aeef62ec7daae01d8f12cdc81`).
 * Evidence from S3: `logs/s3-parked-20261013_204606/` (report + tap CSV + BIN + bin-vs-tap),
   `logs/s3-ros-20261013_205009/` (report + receiver log).
+* Mission A evidence: `logs/missionA-stepB10-20261013_232331` (the 10-flight table), the pilot arms
+  `logs/missionA-imu200-*` (200 Hz) and `logs/missionA-poszLio-*` (33 Hz), the corner-gate arm
+  `logs/missionA-tight-*`; each run directory holds `metrics.txt`, `phase.csv`, `tap.csv`, `lio.csv`,
+  `fsm.log` and the FCU's `flight.BIN`.  `tools/refresh-batch-copies.py` re-syncs the batch's per-flight
+  copies after any change to the metric definitions.
 * ROS 2 Humble at `/opt/ros/humble` (source it; `set -u` must be off while sourcing).
 * No simulation is running; nothing is left running from the previous rounds.
 * `darklio_*`, `dr_lio_ws`, `drlio_*` and every other project in `/home/fanxin` were left untouched.

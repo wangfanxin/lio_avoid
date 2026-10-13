@@ -1,0 +1,35 @@
+The LIO's attitude vs the truth, measured 2026-10-13 (tools/lio-attitude.py)
+Best-fit constant rotation L->W from the attitudes alone, and the residual.
+The calibration's position fit gives yaw +90.050 deg; these come from attitude data only.
+
+=== logs/missionA-stepB10-01-20261013_232331
+   attitude over 45700 samples (38.1 s), LIO vs truth
+      fitted constant rotation L->W: roll  -0.092 pitch  +0.107 yaw +90.045 deg (angle 90.045)
+      residual total angle: rms  2.152 deg   p95  4.227   max  7.139
+      body x  rms  1.462 deg   p-p 10.920
+      body y  rms  1.575 deg   p-p 14.039
+      body z  rms  0.115 deg   p-p  1.114
+=== logs/missionA-stepB10-09-20261013_232331
+   attitude over 45835 samples (38.2 s), LIO vs truth
+      fitted constant rotation L->W: roll  -0.015 pitch  +0.044 yaw +90.047 deg (angle 90.047)
+      residual total angle: rms  1.918 deg   p95  4.026   max  6.721
+      body x  rms  1.371 deg   p-p 10.449
+      body y  rms  1.337 deg   p-p 10.671
+      body z  rms  0.109 deg   p-p  0.900
+=== logs/missionA-tight-01-20261013_233722
+   attitude over 49015 samples (40.8 s), LIO vs truth
+      fitted constant rotation L->W: roll  -0.159 pitch  +0.016 yaw +90.057 deg (angle 90.058)
+      residual total angle: rms  1.939 deg   p95  4.108   max  6.966
+      body x  rms  1.358 deg   p-p 11.002
+      body y  rms  1.380 deg   p-p 11.997
+      body z  rms  0.104 deg   p-p  0.837
+
+and the test of the obvious suspect for B2 (cross-track wobble vs attitude error), leg 5 of the
+tight arm -- correlation +0.088 roll / +0.030 pitch, i.e. not the mechanism:
+   leg 5 over 7.9 s: cross-track p-p 91.2 mm, roll err p-p 6.813 deg, pitch err p-p 6.830 deg
+      t[s]       0.0    0.3    0.7    1.0    1.3    1.6    2.0    2.3    2.6    3.0    3.3    3.6    4.0    4.3    4.6    4.9    5.3    5.6    5.9    6.3    6.6    6.9    7.3    7.6
+      cross[mm]   0.0   17.5   42.4   63.7   77.9   74.8   59.7   40.3   21.1    4.4   -9.4  -11.3   -5.5    2.2   13.5   25.0   40.1   48.3   46.1   41.2   32.5   22.6    8.6   -0.3
+      roll[d]  -0.02   0.29  -0.56   1.51   0.52  -0.82   0.33  -1.47   0.08  -3.38   0.42   1.31  -0.97   0.66   0.59  -0.59   0.09  -0.29   0.07  -0.56   0.20   0.18  -0.93  -0.02
+      pitch[d] -2.09  -0.39   0.53  -0.19   0.46   0.16   0.60  -2.08  -0.28   2.60  -0.28  -0.45   0.78   0.16   0.75  -0.75   0.52  -0.62  -0.65   1.23   0.01   0.12  -0.28   0.38
+      correlation cross-track vs roll  error: +0.088
+      correlation cross-track vs pitch error: +0.030

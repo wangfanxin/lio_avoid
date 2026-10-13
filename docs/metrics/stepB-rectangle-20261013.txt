@@ -1,0 +1,42 @@
+Mission A, step (b) -- the rectangle flown with the LIO as the EKF's only source
+batch: missionA-stepB10-20261013_232331, 10 flights, ALT_MODE=lio (EK3_SRC1_POSZ/VELZ/POSXY = 6)
+config: ArduPilot Copter-4.7.1 + truth tap; clean upstream Super-LIO f89f48d; simulated MID-360
+        (20000 points, 10 Hz) + IMU at 200 Hz; /lio/robo/odom 200 Hz; FCU fed at 48.2 Hz (VISP)
+date:   2026-10-13
+
+The parameters the FCU actually ran with, read from its own log (tools/bin-params.py):
+   parameters in logs/missionA-stepB10-01-20261013_232331/logs/00000001.BIN (the firmware's own record, 1328 names)
+      EK3_SRC1_POSXY     6.0000
+      EK3_SRC1_POSZ      6.0000
+      EK3_SRC1_VELXY     6.0000
+      EK3_SRC1_VELZ      6.0000
+      EK3_SRC1_YAW       6.0000
+      VISO_TYPE          1.0000
+      GPS1_TYPE          0.0000
+      SIM_RATE_HZ        1200.0000
+
+acceptance table, aggregated from 10 flights
+(the per-flight files are the evidence; this file only counts them)
+
+flights completed (FSM reached 'done')   10 of 10
+A1 route horizontal rms  <= 20 mm        10 of 10   min 4.650 / median 4.750 / max 4.900 mm
+A2 route vertical rms    <= 50 mm        10 of 10   min 4.560 / median 4.705 / max 4.890 mm
+A3 continuity (delivery + wander + outliers) 10 of 10   worst wander E 1.011 N 1.071 U 1.887 mm
+A4 FCU estimate vs truth  <= 50 mm       10 of 10   min 18.640 / median 20.170 / max 21.090 mm
+B1 route box E <= 2.10, N <= 1.30 m      10 of 10   min 2.024 / median 2.042 / max 2.060 m / min 1.247 / median 1.263 / max 1.291 m
+   (against the legacy N <= 1.26 bound   4 of 10)
+B2 straightness <= 50 mm per leg         39 of 50 legs   (5/4/4/5/4/4/5/2/1/5 of 5/5/5/5/5/5/5/5/5/5 across flights)
+B3 corner arrival <= 100 mm              40 of 40 corners (4/4/4/4/4/4/4/4/4/4 of 4/4/4/4/4/4/4/4/4/4 across flights)
+B4 LAND + disarm                         10 of 10
+
+raw per flight:
+   missionA-stepB10-20261013_232331-flight01.metrics.txt A1 4.9     A2 4.75    A4 18.64   B1 2.038/1.255      B2 5/5 B3 4/4
+   missionA-stepB10-20261013_232331-flight02.metrics.txt A1 4.82    A2 4.6     A4 21.09   B1 2.059/1.258      B2 4/5 B3 4/4
+   missionA-stepB10-20261013_232331-flight03.metrics.txt A1 4.73    A2 4.56    A4 20.12   B1 2.024/1.264      B2 4/5 B3 4/4
+   missionA-stepB10-20261013_232331-flight04.metrics.txt A1 4.65    A2 4.83    A4 19.96   B1 2.032/1.265      B2 5/5 B3 4/4
+   missionA-stepB10-20261013_232331-flight05.metrics.txt A1 4.7     A2 4.66    A4 20.22   B1 2.040/1.265      B2 4/5 B3 4/4
+   missionA-stepB10-20261013_232331-flight06.metrics.txt A1 4.83    A2 4.83    A4 20.5    B1 2.058/1.253      B2 4/5 B3 4/4
+   missionA-stepB10-20261013_232331-flight07.metrics.txt A1 4.83    A2 4.57    A4 20.62   B1 2.060/1.262      B2 5/5 B3 4/4
+   missionA-stepB10-20261013_232331-flight08.metrics.txt A1 4.67    A2 4.65    A4 19.3    B1 2.028/1.291      B2 2/5 B3 4/4
+   missionA-stepB10-20261013_232331-flight09.metrics.txt A1 4.67    A2 4.86    A4 19.1    B1 2.045/1.265      B2 1/5 B3 4/4
+   missionA-stepB10-20261013_232331-flight10.metrics.txt A1 4.77    A2 4.89    A4 20.71   B1 2.056/1.247      B2 5/5 B3 4/4

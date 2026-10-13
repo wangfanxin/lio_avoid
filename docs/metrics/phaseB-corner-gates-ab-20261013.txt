@@ -1,0 +1,73 @@
+The corner gates as B2's suspected cause: an A/B, 3 flights per arm, 2026-10-13
+arm A (the flown defaults): arrive 0.060 m, settle speed 0.080 m/s
+arm B (tightened):          arrive 0.040 m, settle speed 0.030 m/s
+Both arms: ALT_MODE=lio, same world, same trajectory source, same FCU parameters.
+
+arm A -- the formal 10-flight batch, split by flight (docs/metrics/stepB-rectangle-20261013.txt):
+   B2 39 of 50 legs passing (5/4/4/5/4/4/5/2/1/5 of 5)
+
+arm B -- logs/missionA-tight-20261013_233722:
+   acceptance table, aggregated from 3 flights
+   (the per-flight files are the evidence; this file only counts them)
+   
+   flights completed (FSM reached 'done')   3 of 3
+   A1 route horizontal rms  <= 20 mm        3 of 3   min 4.690 / median 4.740 / max 4.810 mm
+   A2 route vertical rms    <= 50 mm        3 of 3   min 4.480 / median 4.560 / max 4.610 mm
+   A3 continuity (delivery + wander + outliers) 3 of 3   worst wander E 0.956 N 1.044 U 1.817 mm
+   A4 FCU estimate vs truth  <= 50 mm       3 of 3   min 18.210 / median 18.430 / max 18.550 mm
+   B1 route box E <= 2.10, N <= 1.30 m      3 of 3   min 2.039 / median 2.042 / max 2.060 m / min 1.248 / median 1.255 / max 1.274 m
+      (against the legacy N <= 1.26 bound   2 of 3)
+   B2 straightness <= 50 mm per leg         10 of 15 legs   (3/3/4 of 5/5/5 across flights)
+   B3 corner arrival <= 100 mm              12 of 12 corners (4/4/4 of 4/4/4 across flights)
+   B4 LAND + disarm                         3 of 3
+   
+   raw per flight:
+      missionA-tight-20261013_233722-flight01.metrics.txt A1 4.74    A2 4.61    A4 18.55   B1 2.060/1.255      B2 3/5 B3 4/4
+      missionA-tight-20261013_233722-flight02.metrics.txt A1 4.69    A2 4.48    A4 18.43   B1 2.042/1.274      B2 3/5 B3 4/4
+      missionA-tight-20261013_233722-flight03.metrics.txt A1 4.81    A2 4.56    A4 18.21   B1 2.039/1.248      B2 4/5 B3 4/4
+
+the corners DID get tighter in arm B (from each run's own fsm.log):
+   missionA-tight-01-20261013_233722:
+      [  18.12] corner 1 reached: horizontal FCU 0.023 m / truth 0.035 m, vertical -0.088 m (band 0.35), 2.8 s
+      [  18.53]    corner 1 settled: FCU speed 0.020 m/s after 0.4 s
+      [  26.95] corner 2 reached: horizontal FCU 0.024 m / truth 0.033 m, vertical -0.074 m (band 0.35), 8.4 s
+      [  27.45]    corner 2 settled: FCU speed 0.016 m/s after 0.5 s
+      [  33.00] corner 3 reached: horizontal FCU 0.019 m / truth 0.038 m, vertical -0.067 m (band 0.35), 5.5 s
+      [  33.15]    corner 3 settled: FCU speed 0.028 m/s after 0.2 s
+      [  41.52] corner 4 reached: horizontal FCU 0.020 m / truth 0.034 m, vertical -0.072 m (band 0.35), 8.4 s
+      [  42.02]    corner 4 settled: FCU speed 0.012 m/s after 0.5 s
+      [  49.08] corner 5 reached: horizontal FCU 0.023 m / truth 0.039 m, vertical -0.072 m (band 0.35), 7.1 s
+      [  49.94]    corner 5 settled: FCU speed 0.026 m/s after 0.9 s
+   missionA-tight-02-20261013_233722:
+      [  19.37] corner 1 reached: horizontal FCU 0.017 m / truth 0.038 m, vertical -0.113 m (band 0.35), 2.9 s
+      [  19.68]    corner 1 settled: FCU speed 0.022 m/s after 0.3 s
+      [  28.24] corner 2 reached: horizontal FCU 0.026 m / truth 0.039 m, vertical -0.089 m (band 0.35), 8.6 s
+      [  28.64]    corner 2 settled: FCU speed 0.029 m/s after 0.4 s
+      [  33.97] corner 3 reached: horizontal FCU 0.013 m / truth 0.039 m, vertical -0.087 m (band 0.35), 5.3 s
+      [  34.37]    corner 3 settled: FCU speed 0.023 m/s after 0.4 s
+      [  42.85] corner 4 reached: horizontal FCU 0.021 m / truth 0.036 m, vertical -0.091 m (band 0.35), 8.5 s
+      [  43.30]    corner 4 settled: FCU speed 0.029 m/s after 0.5 s
+      [  48.68] corner 5 reached: horizontal FCU 0.027 m / truth 0.039 m, vertical -0.092 m (band 0.35), 5.4 s
+      [  49.08]    corner 5 settled: FCU speed 0.017 m/s after 0.4 s
+   missionA-tight-03-20261013_233722:
+      [  19.74] corner 1 reached: horizontal FCU 0.022 m / truth 0.037 m, vertical -0.111 m (band 0.35), 2.9 s
+      [  20.05]    corner 1 settled: FCU speed 0.018 m/s after 0.3 s
+      [  28.46] corner 2 reached: horizontal FCU 0.020 m / truth 0.031 m, vertical -0.089 m (band 0.35), 8.4 s
+      [  28.97]    corner 2 settled: FCU speed 0.025 m/s after 0.5 s
+      [  34.46] corner 3 reached: horizontal FCU 0.011 m / truth 0.040 m, vertical -0.090 m (band 0.35), 5.5 s
+      [  34.76]    corner 3 settled: FCU speed 0.018 m/s after 0.3 s
+      [  43.34] corner 4 reached: horizontal FCU 0.023 m / truth 0.037 m, vertical -0.092 m (band 0.35), 8.6 s
+      [  43.74]    corner 4 settled: FCU speed 0.024 m/s after 0.4 s
+      [  49.02] corner 5 reached: horizontal FCU 0.027 m / truth 0.031 m, vertical -0.092 m (band 0.35), 5.3 s
+      [  49.47]    corner 5 settled: FCU speed 0.027 m/s after 0.5 s
+   missionA-stepB10-01-20261013_232331:
+      [  20.52] corner 1 reached: horizontal FCU 0.031 m / truth 0.054 m, vertical -0.092 m (band 0.35), 2.8 s
+      [  20.82]    corner 1 settled: FCU speed 0.069 m/s after 0.3 s
+      [  29.14] corner 2 reached: horizontal FCU 0.039 m / truth 0.053 m, vertical -0.072 m (band 0.35), 8.3 s
+      [  29.49]    corner 2 settled: FCU speed 0.079 m/s after 0.4 s
+      [  34.82] corner 3 reached: horizontal FCU 0.024 m / truth 0.053 m, vertical -0.069 m (band 0.35), 5.3 s
+      [  35.12]    corner 3 settled: FCU speed 0.073 m/s after 0.3 s
+      [  43.55] corner 4 reached: horizontal FCU 0.032 m / truth 0.054 m, vertical -0.073 m (band 0.35), 8.4 s
+      [  43.90]    corner 4 settled: FCU speed 0.073 m/s after 0.4 s
+      [  49.18] corner 5 reached: horizontal FCU 0.049 m / truth 0.055 m, vertical -0.074 m (band 0.35), 5.3 s
+      [  49.63]    corner 5 settled: FCU speed 0.065 m/s after 0.5 s
