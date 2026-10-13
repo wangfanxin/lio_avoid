@@ -1,0 +1,40 @@
+# Mission A: settle-at-corner before turning in (POSZ/VELZ = 6, nav = LIO)
+# 2026-10-13T23:09:37+08:00
+# the change: after a corner is inside tolerance the FSM holds it until the FCU's horizontal
+# speed is below 0.08 m/s (bounded at 3 s), because MEASURED 2026-10-13 the mission advanced
+# while the vehicle was still moving and carried the overshoot past the corner.
+
+acceptance table, aggregated from 3 flights
+(the per-flight files are the evidence; this file only counts them)
+
+flights completed (FSM reached 'done')   3 of 3
+A1 route horizontal rms  <= 20 mm        3 of 3   min 6.470 / median 6.610 / max 6.670 mm
+A2 route vertical rms    <= 50 mm        3 of 3   min 8.020 / median 8.130 / max 8.590 mm
+A3 jitter (abs + fair ratio)             0 of 3   abs worst E 0.207 N 0.233 U 0.487 mm
+B1 route box E <= 2.10, N <= 1.26 m      3 of 3   min 2.035 / median 2.061 / max 2.073 m / min 1.236 / median 1.237 / max 1.246 m
+B2 straightness <= 50 mm per leg         11 of 15 legs   (5/3/3 of 5/5/5 across flights)
+B3 corner arrival <= 100 mm              12 of 12 corners (4/4/4 of 4/4/4 across flights)
+B4 LAND + disarm                         3 of 3
+
+raw per flight:
+   missionA-settle-20261013_230521-flight01.metrics.txt A1 6.67    A2 8.13    B1 2.061/1.236      B2 5/5 B3 4/4
+   missionA-settle-20261013_230521-flight02.metrics.txt A1 6.61    A2 8.02    B1 2.073/1.237      B2 3/5 B3 4/4
+   missionA-settle-20261013_230521-flight03.metrics.txt A1 6.47    A2 8.59    B1 2.035/1.246      B2 3/5 B3 4/4
+
+# for comparison, the same configuration WITHOUT the settle (the 3 poszLio flights):
+acceptance table, aggregated from 3 flights
+(the per-flight files are the evidence; this file only counts them)
+
+flights completed (FSM reached 'done')   3 of 3
+A1 route horizontal rms  <= 20 mm        3 of 3   min 6.400 / median 6.530 / max 6.610 mm
+A2 route vertical rms    <= 50 mm        3 of 3   min 7.800 / median 8.010 / max 8.160 mm
+A3 jitter (abs + fair ratio)             0 of 3   abs worst E 0.217 N 0.248 U 0.485 mm
+B1 route box E <= 2.10, N <= 1.26 m      1 of 3   min 2.065 / median 2.072 / max 2.073 m / min 1.257 / median 1.262 / max 1.262 m
+B2 straightness <= 50 mm per leg         5 of 15 legs   (1/1/3 of 5/5/5 across flights)
+B3 corner arrival <= 100 mm              12 of 12 corners (4/4/4 of 4/4/4 across flights)
+B4 LAND + disarm                         3 of 3
+
+raw per flight:
+   missionA-poszLio-20261013_223255-flight01.metrics.txt A1 6.61    A2 8.16    B1 2.072/1.262      B2 1/5 B3 4/4
+   missionA-poszLio-20261013_223255-flight02.metrics.txt A1 6.53    A2 7.8     B1 2.065/1.257      B2 1/5 B3 4/4
+   missionA-poszLio-20261013_223255-flight03.metrics.txt A1 6.4     A2 8.01    B1 2.073/1.262      B2 3/5 B3 4/4

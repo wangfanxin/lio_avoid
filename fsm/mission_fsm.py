@@ -44,6 +44,8 @@ GATES = {
     "arrive_z_m": 0.35,
     "slow_radius_m": 0.30,
     "speed_mps": 0.25,
+    "settle_s": 3.0,
+    "settle_speed_mps": 0.08,
     "leg_timeout_s": 25.0,
     "rate_hz": 50.0,
 }
@@ -487,6 +489,21 @@ class Mission:
                              "(band %.2f), %.1f s" % (i, h_cmd, h_truth, dz_truth,
                                                       GATES["arrive_z_m"],
                                                       time.monotonic() - t_leg))
+                    # SETTLE BEFORE TURNING IN.  MEASURED 2026-10-13: the FSM advanced to the next leg
+                    # the instant the corner was inside tolerance, while the vehicle was still moving,
+                    # so it carried the overshoot PAST the corner -- which is what B2 sees on the turning
+                    # legs (53-72 mm against a 50 mm target) and what puts B1's box 1-2 mm over its limit
+                    # in some flights.  The corner is therefore held until the FCU's own horizontal speed
+                    # is small, with a bounded wait so a noisy estimate cannot stall the mission.
+                    t_settle = time.monotonic()
+                    while time.monotonic() - t_settle < GATES["settle_s"]:
+                        self.pump(0.05, setpoint=corner)
+                        v = np.array(self.bridge.state().vel)[:2]
+                        if float(np.linalg.norm(v)) < GATES["settle_speed_mps"]:
+                            break
+                    vs = float(np.linalg.norm(np.array(self.bridge.state().vel)[:2]))
+                    self.log("   corner %d settled: FCU speed %.3f m/s after %.1f s"
+                             % (i, vs, time.monotonic() - t_settle))
                     break
                 if time.monotonic() - t_leg > GATES["leg_timeout_s"]:
                     off = np.array(st.pos) - self.tap.p
