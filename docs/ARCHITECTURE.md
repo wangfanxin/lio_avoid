@@ -201,6 +201,33 @@ With `BRIDGE=mavros` the MAVLink rows become mavros topics (`/mavros/local_posit
   and reasoning from it gave wrong conclusions about which topics were live.  Here every file under
   `sim/`, `lio/`, `planner/` must be referenced by a launch path, checked by grep in review.
 
+### 4b. FCU link rates: what the firmware allows, and how to ask for it
+
+Read out of Copter-4.7.1 on 2026-10-13, because "can it be 50 Hz" has a hard answer per message.
+
+| direction | message | how its rate is set | maximum |
+|---|---|---|---|
+| FCU -> us | **32** `LOCAL_POSITION_NED` (and `GLOBAL_POSITION_INT`) | parameter **`SR1_POSITION`** (`GCS_MAVLink_Parameters.cpp`, `@Range: 0 50`) -- **default is 3 Hz**, useless for arrival checks | **50 Hz** |
+| FCU -> us | **30** `ATTITUDE` (euler), also `SIMSTATE`, `AHRS2`, ... | parameter **`SR1_EXTRA1`** (`@Range: 0 50`), default 10 Hz | **50 Hz** |
+| FCU -> us | **31** `ATTITUDE_QUATERNION` | the message is known to the GCS layer (`ap_message.h:20`, `MSG_ATTITUDE_QUATERNION`) but is **not in any `SR*` group**, so it is not streamed by default: request it with **`MAV_CMD_SET_MESSAGE_INTERVAL` (511)**.  Using msg 30 instead and converting euler -> quaternion in the bridge avoids the extra request entirely | request is capped at `loop_period / 0.8`; SITL's 400 Hz loop gives ~3.1 ms, i.e. **up to ~320 Hz**; a faster request is **DENIED** with a statustext |
+| us -> FCU | **84** `SET_POSITION_TARGET_LOCAL_NED` | not rate-limited by the FCU; consumed at the control loop rate (SITL 400 Hz).  **Position setpoints do NOT time out** -- `mode_guided.cpp:1194` is explicit that `GUID_TIMEOUT` is "only used for velocity, acceleration, angle control, and angular rates" | 50 Hz is comfortably fine |
+| us -> FCU | **82** `SET_ATTITUDE_TARGET` | same, **but this one IS angle/rate control**, so `GUID_TIMEOUT` (default 3 s) applies: if we stop sending, the FCU zeroes the lean angles and climb rate | 50 Hz fine; raise to 100+ Hz if attitude tracking looks coarse |
+| us -> FCU | **102** `VISION_POSITION_ESTIMATE` / **331** `ODOMETRY` | **no rate limit in AP_VisualOdom** (the only state it keeps is a health timestamp, `_last_update_ms`); each accepted update is handed to the EKF | 50 Hz fine; set `VISO_DELAY_MS` (0-250, default 10) to our *measured* pipeline latency rather than guessing |
+
+Consequences for the design:
+
+* The FSM streams setpoints at **50 Hz**; the telemetry we depend on is raised to **`SR1_POSITION = 50`** and
+  **`SR1_EXTRA1 = 50`** at start-up, and the bridge **verifies the achieved rates** (its own counter)
+  rather than trusting the request.
+* 50 Hz is the declared maximum of the stream-rate parameters, so 50 Hz is not a compromise -- it is the
+  firmware's own ceiling for telemetry.  Above that only the per-message interval command can go, and it
+  is bounded by the loop rate.
+* Bandwidth: on the local UDP/TCP link this is nothing; on a real radio 50 Hz x several messages is a lot,
+  which is one more reason the sim link and the radio link are configured separately.
+* Because **position** setpoints have no timeout, the "keep streaming while holding" rule is about
+  smoothness and about not being in a velocity/attitude phase when the link hiccups -- not about keeping
+  GUIDED alive.
+
 ## 5. TF tree
 
 ```
@@ -216,6 +243,25 @@ mid360_link (S)
 `map` is deliberately not used: the LIO has no loop closure or jumps, so one continuous frame suffices.
 RViz shows pillars (in `world_w`) and the cloud (in `odom`) together because of that static edge.  The FSM
 and the planner never touch W except when the mission is set up.
+
+### Displaying it in RViz (asked: does anything need to be unified, will the cloud look tilted?)
+
+Nothing needs to be *unified* -- that is what TF is for -- but one frame must be chosen and the tree must
+reach it, and two specific things will look wrong if it does not:
+
+1. **RViz Fixed Frame**: set it to **`world_w`**, so the world file's geometry, the pillars, the mission
+   square and the cloud all appear in the frame the world is written in.  (Debugging the raw sensor view is
+   the other useful choice: set it to `mid360_link`.)
+2. **The raw scan is in S and S is pitched 45 deg.**  `/livox/lidar` is the housing frame, so displaying it
+   without the `base_link -> mid360_link` static transform draws a cloud rotated 45 deg about the body's
+   y axis -- the classic "the point cloud is tilted".  With the transform, it lands correctly.
+3. **Pillars are in W and `/cloud_registered` is in L, and L is W rotated by a constant** (-90 deg with the
+   North-facing spawn of `FRAMES.md` 0.3) **plus the ~0.3 m origin offset.**  Without the static
+   `world_w -> odom` edge the two appear rotated by 90 deg relative to each other and offset -- again
+   exactly the artifact that looks like a broken cloud.  With it, both are correct in either Fixed Frame.
+4. **One time base.**  TF lookups happen at the message's stamp, so if RViz and the publishers disagree
+   about the clock (missing `use_sim_time`, missing `/clock`) the cloud flickers or disappears even though
+   the frames are right.  `/clock` from box 2 is the single authority.
 
 ## 6. The transport interface (bidirectional, normalised)
 
@@ -281,7 +327,10 @@ bridges report `+2.5`.
    persists, LAND.
 2. **Geofence**: |x|, |y| inside the arena minus the vehicle radius; z between 0.3 m and ceiling - 0.3 m.
    On violation: abort the mission, hold, LAND.
-3. **Setpoint continuity**: stream at >= 20 Hz even while holding (`GUID_TIMEOUT` is 3 s).
+3. **Setpoint continuity**: stream at 50 Hz.  Note the correction from the firmware source: **position**
+   setpoints have no timeout at all, so this is about smoothness.  The 3 s `GUID_TIMEOUT` applies to
+   velocity, acceleration, angle and rate control -- which is what the planner path uses, so there the rule
+   is a hard requirement, not a preference.
 4. **Planner failure**: if `/planner/status` reports failure for > 1 s while moving, hold; if it
    persists, fly straight to the goal slowly.
 5. **No GPS, no compass**: arming depends on a healthy EKF (origin set, vision healthy).  A transiently
