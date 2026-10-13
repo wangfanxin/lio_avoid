@@ -70,6 +70,9 @@ def main() -> int:
                     help="tolerance on the MEDIAN clock offset (bias)")
     ap.add_argument("--drift-tol-ppm", type=float, default=100.0,
                     help="tolerance on the clock slope, parts per million")
+    ap.add_argument("--series", type=float, default=0.0,
+                    help="also print the matched pairs every N seconds of sim time, to see HOW the two "
+                         "streams differ (a lag, a freeze and an offset look identical in the summary)")
     args = ap.parse_args()
 
     t_tap, p_tap = read_tap(args.csv)
@@ -114,6 +117,23 @@ def main() -> int:
     print("   rms  N %8.4f  E %8.4f  D %8.4f" % tuple(rms))
     print("   max  N %8.4f  E %8.4f  D %8.4f" % tuple(mx))
     print("   mean N %8.4f  E %8.4f  D %8.4f" % tuple(np.mean(d, axis=0)))
+
+    if args.series > 0:
+        print()
+        print("matched pairs every %.1f s (all NED, metres):" % args.series)
+        print("   %10s %-22s %-22s %s" % ("t (s)", "tap", "SIM2", "difference"))
+        last = None
+        for k in range(len(t_tap)):
+            sec = (t_tap[k] - t_tap[0]) * 1e-6
+            if last is not None and sec - last < args.series:
+                continue
+            last = sec
+            j = idx[k]
+            print("   %10.2f %-22s %-22s %s" % (
+                sec,
+                "%+7.3f %+7.3f %+7.3f" % tuple(p_tap[k]),
+                "%+7.3f %+7.3f %+7.3f" % tuple(p_sim[j]),
+                "%+7.3f %+7.3f %+7.3f" % tuple(d[k] / 1000.0)))
 
     ok_pos = float(np.max(mx)) <= args.tol_mm
     ok_bias = abs(bias_ms) <= args.bias_tol_ms

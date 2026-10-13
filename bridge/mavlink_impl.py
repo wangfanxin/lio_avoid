@@ -345,22 +345,31 @@ class MavlinkBridge(Bridge):
             0.0, 0.0, 0.0, x_ned, y_ned, z_ned, 0.0, 0.0, 0.0, yaw_rad, 0.0)
 
     def send_external_nav(self, t_us: int, p_f, q_f, v_f=None):
-        """The LIO's pose in F, sent as ODOMETRY in the ONLY frame pair the firmware accepts.
+        """The LIO's pose in F (ENU labels, z up), sent as ODOMETRY in the frame pair the firmware reads.
 
-        Position: F (E, N, U) -> NED = (N, E, -U).
-        Velocity: F is a world frame; ODOMETRY's velocity field is BODY FRD, so rotate by the attitude
-        rather than sending a world-frame vector.  (Passing the world velocity would be right only as
-        long as the vehicle never yaws -- and the mission yaws.)
+        EVERY field is converted here, and the quaternion is the one that cost a flight:
+
+          position: F (E, N, U) -> NED = (N, E, -U)
+          attitude: F is body-FLU -> ENU; ODOMETRY wants body-FRD -> NED.  MEASURED 2026-10-13: sending
+            q_f unconverted made the FCU believe a North-facing vehicle faced EAST.  The position loop
+            then corrected sideways, the aircraft ran away ~10 m, the EKF failsafe fired ("EKF Failsafe:
+            changed to Land Mode") and it hit the ground at 0.56 m/s.  Nothing in the telemetry said
+            "your quaternion is in the wrong frame": XKF1 simply showed yaw +90 while roll and pitch
+            were fine, which looks like a yaw-estimation problem rather than a conversion one.
+          velocity: F is a world frame; the message's velocity field is BODY FRD, so it is rotated by
+            the (now correct) attitude, not sent as a world vector.
         """
         import numpy as np
         from common import frames
-        p_ned = np.array([p_f[1], p_f[0], -p_f[2]])
-        R = frames.R_from_q(q_f)
+        # ONE call crosses the frame boundary, and it converts position, velocity and attitude together
+        p_ned, v_ned, q_ned = frames.world_to_wire(p_f, v_f if v_f is not None else (0.0, 0.0, 0.0),
+                                                  q_f)
         if v_f is None:
             v_body_frd = np.zeros(3)
         else:
-            v_body_flu = R.T @ np.asarray(v_f, dtype=float)
-            v_body_frd = frames.flu_to_frd(v_body_flu)
+            # the message carries a BODY-FRD velocity, so rotate the world velocity by the attitude
+            # the message itself carries
+            v_body_frd = frames.R_from_q(q_ned).T @ np.asarray(v_ned, dtype=float)
         # ODOMETRY's field layout (pymavlink odometry_send): time, frames, x,y,z, q as a LIST in the
         # spec's order w,x,y,z, vx,vy,vz, rates, then the two 21-element covariance lists, then
         # reset_counter, estimator_type, quality.  Passing the quaternion as four scalars raises
@@ -368,7 +377,7 @@ class MavlinkBridge(Bridge):
         self.mav.mav.odometry_send(
             int(t_us), mavutil.mavlink.MAV_FRAME_LOCAL_FRD, mavutil.mavlink.MAV_FRAME_BODY_FRD,
             float(p_ned[0]), float(p_ned[1]), float(p_ned[2]),
-            [float(q_f[0]), float(q_f[1]), float(q_f[2]), float(q_f[3])],
+            [float(q_ned[0]), float(q_ned[1]), float(q_ned[2]), float(q_ned[3])],
             float(v_body_frd[0]), float(v_body_frd[1]), float(v_body_frd[2]),
             0.0, 0.0, 0.0,
             [0.0] * 21, [0.0] * 21,

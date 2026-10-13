@@ -154,7 +154,7 @@ class Sensor:
 
     def __init__(self, world, rays, times, mount_pitch=45.0, lever_arm=None,
                  intensity=100.0, rmin=0.10, rmax=60.0,
-                 range_noise=0.010, gyro_noise_density=0.005, accel_noise_density=0.1,
+                 range_noise=0.010, gyro_noise_density=0.005, accel_noise_density=0.002,
                  gyro_bias=0.001, accel_bias=0.01, seed=20261013):
         self.world = world
         self.rays = rays
@@ -356,7 +356,16 @@ def main() -> int:
                          "know the noise model is what makes the accuracy numbers mean something")
     ap.add_argument("--range-noise", type=float, default=0.010, help="lidar range sigma, m")
     ap.add_argument("--gyro-noise", type=float, default=0.005, help="gyro density, rad/s/sqrt(Hz)")
-    ap.add_argument("--accel-noise", type=float, default=0.1, help="accel density, m/s^2/sqrt(Hz)")
+    ap.add_argument("--accel-noise", type=float, default=0.002,
+                    help="accel density, m/s^2/sqrt(Hz).  MEASURED 2026-10-13, and this one mattered: "
+                         "the first value used here was 0.1 (the LIO config's ASSUMED imu_na, a "
+                         "FAST-LIO-style default, not a sensor measurement).  At 200 Hz that is 1.41 "
+                         "m/s^2 of noise PER SAMPLE, about 50x a real MEMS accelerometer (100-300 "
+                         "ug/sqrt(Hz) = 1-3e-3), and with velocity estimated from it the FCU's position "
+                         "loop went unstable the moment it was asked for a 1 m step: the aircraft "
+                         "accelerated away past 9 m/s and the EKF failsafe landed it.  The simulated "
+                         "SENSOR now carries the sensor's noise; the estimator keeps its own assumed "
+                         "noise in its config, which is the correct place for a tuning choice")
     ap.add_argument("--gyro-bias", type=float, default=0.001, help="constant gyro bias, rad/s")
     ap.add_argument("--accel-bias", type=float, default=0.01, help="constant accel bias, m/s^2")
     args = ap.parse_args()
@@ -420,11 +429,33 @@ def main() -> int:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 << 20)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 << 20)
     except OSError:
         pass
     sock.bind(("127.0.0.1", args.port))
     sock.settimeout(0.5)
+
+    # READER THREAD.  MEASURED 2026-10-13: casting 20 000 points takes ~15 ms, and while the main loop
+    # was inside numpy the kernel buffer filled and the node silently lost 73 % of the tap -- which
+    # starved the LIO, which made the FCU report "VisOdom: not healthy", which aborted every flight.
+    # A thread that only reads the socket and appends parsed samples cannot be starved by the caster,
+    # and the parsing is light enough to interleave with numpy's GIL-free stretches.
+    import threading
+    incoming = []
+    stop_reader = threading.Event()
+
+    def reader():
+        while not stop_reader.is_set():
+            try:
+                data, _ = sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            incoming.append(data)
+
+    reader_thread = threading.Thread(target=reader, daemon=True)
+    reader_thread.start()
 
     buf = TruthBuffer()
     scan_period_us = int(1e6 / args.scan_hz)
@@ -445,14 +476,14 @@ def main() -> int:
 
     try:
         while True:
-            try:
-                data, _ = sock.recvfrom(2048)
-            except socket.timeout:
+            if not incoming:
                 if time.monotonic() - t_start_wall > 20.0 and scans == 0:
                     print("FAIL: no tap samples in 20 s -- is truth_rx running with --fanout %d?"
                           % args.port, flush=True)
                     return 1
+                time.sleep(0.001)
                 continue
+            data = incoming.pop(0)
             parts = data.decode("ascii", "replace").split()
             if len(parts) != 19 or parts[0] != "TAP":
                 continue
@@ -509,6 +540,7 @@ def main() -> int:
     except KeyboardInterrupt:
         print("\ninterrupted", flush=True)
     finally:
+        stop_reader.set()
         sock.close()
 
     wall = time.monotonic() - t_start_wall

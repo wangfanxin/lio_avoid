@@ -1,5 +1,5 @@
 diff --git a/libraries/SITL/SIM_Aircraft.cpp b/libraries/SITL/SIM_Aircraft.cpp
-index 00cf876..41847ea 100644
+index 00cf876..0053777 100644
 --- a/libraries/SITL/SIM_Aircraft.cpp
 +++ b/libraries/SITL/SIM_Aircraft.cpp
 @@ -22,6 +22,18 @@
@@ -80,12 +80,20 @@ index 00cf876..41847ea 100644
  void Aircraft::update_model(const struct sitl_input &input)
  {
      local_ground_level = 0.0f;
-@@ -878,6 +942,9 @@ void Aircraft::update_dynamics(const Vector3f &rot_accel)
+@@ -878,6 +942,17 @@ void Aircraft::update_dynamics(const Vector3f &rot_accel)
      sitl->models.tether_sim.update(location);
  #endif
  
 +    // ---- truth tap: state is final here (after the ground constraint) -----
-+    truth_tap_update(instance, time_now_us, position, velocity_ef, dcm, gyro, accel_body);
++    // get_position_relhome(), NOT `position`: MEASURED 2026-10-13, SITL MOVES ITS ORIGIN
++    // (SIM_Aircraft.cpp:205, `if (!disable_origin_movement)`), so the origin-relative `position`
++    // shrinks while the vehicle flies away -- in a 4.5 m flight the tap reported a parked vehicle
++    // throughout, while the flight log's own SIM2 (which uses get_position_relhome) showed the truth.
++    // The two agree to 0.0004 mm parked and diverged by metres in flight, and the effect is invisible
++    // in any parked test.  relhome is also the frame that matters here: it is relative to HOME, which
++    // the FCU sets at arming and which is our EKF origin.
++    truth_tap_update(instance, time_now_us, get_position_relhome(), velocity_ef, dcm, gyro,
++                     accel_body);
 +
      // allow for changes in physics step
      adjust_frame_time(constrain_float(sitl->loop_rate_hz, rate_hz-1, rate_hz+1));

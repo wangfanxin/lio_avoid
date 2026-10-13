@@ -489,6 +489,13 @@ def main() -> int:
                          "(sim/lidar_imu.py) can consume the same stream; 0 = off.  Only one process "
                          "can bind the tap's port, so the fan-out is what lets the sensor node exist "
                          "as a separate process without doubling the SITL-side traffic")
+    ap.add_argument("--fanout-decimate", type=int, default=1,
+                    help="send every Nth line on the fan-out.  MEASURED 2026-10-13: at the full "
+                         "1200 Hz a consumer that ray-casts 20 000 points per scan loses most of the "
+                         "stream to socket overflows (27 %% arrived, and the whole pipeline collapsed "
+                         "to a third of real time).  The sensor only needs the truth at its own IMU "
+                         "rate; 6 gives 200 Hz, and the per-point poses interpolate over 5 ms gaps, "
+                         "which at the mission's 0.25 m/s is 1.2 mm of motion -- stated, not hidden")
     args = ap.parse_args()
 
     if args.selftest:
@@ -527,7 +534,10 @@ def main() -> int:
         fan.setblocking(False)
         fan_addr = ("127.0.0.1", args.fanout)
         fanned = 0
-        print("fanning every tap line out to udp/127.0.0.1:%d" % args.fanout, flush=True)
+        fan_seen = 0
+        print("fanning every %d%s tap line out to udp/127.0.0.1:%d (~%.0f Hz)"
+              % (args.fanout_decimate, "" if args.fanout_decimate == 1 else "th", args.fanout,
+                 1200.0 / max(1, args.fanout_decimate)), flush=True)
 
     print("listening on udp/127.0.0.1:%d  (SITL needs LIO_TRUTH_TAP=%d)" % (args.port, args.port),
           flush=True)
@@ -557,11 +567,13 @@ def main() -> int:
                 continue
             stats.add(s)
             if fan is not None:
-                try:
-                    fan.sendto(data, fan_addr)
-                    fanned += 1
-                except OSError:
-                    pass
+                fan_seen += 1
+                if fan_seen % max(1, args.fanout_decimate) == 0:
+                    try:
+                        fan.sendto(data, fan_addr)
+                        fanned += 1
+                    except OSError:
+                        pass
             if csv is not None:
                 csv.write("%d,%d,%s,%s,%s\n" % (
                     s.t_us, s.instance,
@@ -611,7 +623,8 @@ def main() -> int:
     if drops >= 0:
         extra.append("kernel UDP drops %d" % drops)
     if fan is not None:
-        extra.append("fanned out       %d lines to port %d" % (fanned, args.fanout))
+        extra.append("fanned out       %d lines to port %d (of %d seen)"
+                     % (fanned, args.fanout, fan_seen))
 
     ros_ok = True
     if sink is not None:

@@ -1,0 +1,21 @@
+# Mission A: the precision parameters.
+#
+# WHY THIS FILE EXISTS: MEASURED 2026-10-13 on the first complete square -- B1's box came out 2.65 x
+# 1.63 m where the acceptance allows 2.10 x 1.26 m for a 2.0 x 1.2 m commanded square, and B3's corners
+# were 0.12-0.34 m out.  The cause was speed: the inherited `WP_SPD 10.0` / `LOIT_SPEED_MS 12.5` are the
+# real aircraft's transit speeds, and a position setpoint approached at that speed overshoots a corner by
+# far more than the 100 mm the acceptance allows.  Mission A is a slow precision task in a pillar forest,
+# so it is flown slowly -- this is a mission choice, not a filter fudge, and it changes nothing about the
+# estimator or the frame chain.
+#
+# The rate limits are left as the airframe's; only the horizontal transit speed and the waypoint radius
+# are mission parameters.
+WP_SPD 0.5
+LOIT_SPEED_MS 0.5
+WP_RADIUS_M 0.05
+WP_ACC 0.8
+WP_JERK 2.0
+LOIT_ACC_MAX_M 0.8
+LOIT_BRK_ACC_M 0.5
+LOIT_BRK_JRK_M 1.0
+PSC_ACCZ_P 0.5

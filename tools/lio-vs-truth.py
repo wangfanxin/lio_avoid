@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import os
 import sys
 
 import numpy as np
@@ -128,6 +129,11 @@ def main() -> int:
     ap.add_argument("--max-v-rms-mm", type=float, default=50.0)
     ap.add_argument("--max-drift-mm", type=float, default=50.0,
                     help="parked case: allowed LIO excursion from its own mean, mm")
+    ap.add_argument("--write-calib", default=None,
+                    help="write the fitted L->F transform (R_WL, t_WL) as json for the FSM.  Only "
+                         "meaningful when the trajectory identifies a rotation: it refuses otherwise, "
+                         "because a parked or straight-line window would silently hand the FSM a yaw "
+                         "that is 90 or 180 degrees wrong")
     args = ap.parse_args()
 
     t_tap, p_tap, q_tap = read_tap(args.tap)
@@ -246,6 +252,24 @@ def main() -> int:
         print("   A tilt measurement needs a path with real 2-D extent -- the mission square has it.")
 
     ok = (h_rms4 * 1e3 <= args.max_h_rms_mm) and (v_rms4 * 1e3 <= args.max_v_rms_mm)
+    if args.write_calib:
+        if not identifiable_yaw:
+            print()
+            print("REFUSING to write a calibration: this trajectory cannot identify a rotation "
+                  "(shape2 %.3f <= 0.10).  A parked or straight-line window would give the FSM a yaw "
+                  "that is 90 or 180 degrees wrong, and the aircraft would fly the mission rotated -- "
+                  "which is exactly what a 90 deg error did on 2026-10-13." % shape2)
+            return 1
+        import json
+        with open(args.write_calib, "w") as fh:
+            json.dump({"R_WL": R4.tolist(), "t_WL": t4.tolist(),
+                       "yaw_deg": math.degrees(math.atan2(R4[1, 0], R4[0, 0])),
+                       "n_samples": int(len(ia)), "rms_m": float(np.sqrt(np.mean(np.sum(r4 ** 2,
+                                                                                        axis=1)))),
+                       "source": os.path.basename(args.tap), "shape2": shape2}, fh, indent=1)
+        print()
+        print("wrote %s: L->F yaw %+.3f deg, t = [%+.4f %+.4f %+.4f] m"
+              % (args.write_calib, math.degrees(math.atan2(R4[1, 0], R4[0, 0])), t4[0], t4[1], t4[2]))
     print()
     print("[%s] horizontal rms %.2f mm (<= %.1f)" % ("PASS" if h_rms4 * 1e3 <= args.max_h_rms_mm
                                                       else "FAIL", h_rms4 * 1e3, args.max_h_rms_mm))
