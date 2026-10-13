@@ -1,112 +1,162 @@
-# ARCHITECTURE — components, dataflow, topics, frames, interfaces, safety
+# ARCHITECTURE — boxes, links, topics, frames, interfaces, safety
 
-One of the project's four living documents (see `PLAN.md` for the documentation budget: **at most 5**).
-Everything here is a contract: rates, frames and interfaces are quoted from measurements or from the
-firmware source, and each conversion has a test named in `FRAMES.md` §5.
+One of the project's four living documents (budget in `PLAN.md` §6).  Everything here is a contract:
+rates, frames and interfaces come from measurements or from the firmware source, and each conversion has
+a test named in `FRAMES.md` §5.
 
-## 1. Components — one folder each
+**No Gazebo anywhere.**  The lidar is computed by our own analytic ray caster, the IMU is generated from
+the simulator's true state, and RViz is used for display and for editing the world.  Where the old
+Gazebo-based pipeline had `/mid360/*` (Gazebo Transport), `gz_livox_bridge`, `/sensors/*`,
+`/uav/*` and orphan parameter files, this pipeline has exactly one interface per function and no
+orphans -- a parameter file that nothing loads is a bug (verifiable by grep).
 
-| folder | responsibility | state |
-|---|---|---|
-| `sim/` | the world file, the ray-cast lidar, the IMU generator, the truth receiver, RViz world editing, the clock | raycast + world + real MID-360 pattern done |
-| `lio/` | the LIO process (Super-LIO or FAST-LIO) + config + odometry/cloud adaptation | to build |
-| `planner/` | ego-planner: map from the cloud, goal in, trajectory out | to build |
-| `fsm/` | mission scheduling, arrival checks, setpoint streaming, safety | to build |
-| `bridge/` | the transport switch (`BRIDGE=mavlink\|mavros`), bidirectional, normalised frame | to build |
-| `common/` | `frames.py` (the only conversions) + `Calib` (per-flight calibration and self-check) + interface types | to build |
-| `tools/` | recorder (all streams, both stamps), metrics, calibration scripts, replay, the docs-budget check | partial |
+---
 
-`bridge/` is deliberately NOT inside `fsm/`: the FSM must never mention MAVLink or MAVROS, and both
-implementations must return identical numbers in one frame (§5).
-
-### Supplements the first draft of this design missed
-
-1. **The truth path is a producer**, not a test fixture: the lidar cannot be generated without the true
-   pose, so `sim/truth_rx` sits in the loop (fed by the simulator-only tap in SITL).
-2. **The clock**: with no Gazebo nobody publishes `/clock`; `sim/` republishes the SITL model's clock so
-   every node runs `use_sim_time=true` and the whole pipeline shares one time base.
-3. **The odometry sanity gate** (§7.1): the FCU trusts ExternalNav completely -- in the old project a
-   LIO glitch *drove* the aircraft into a wall 7 m away.
-4. **The trajectory resampler**: ego-planner emits a B-spline horizon; ArduPilot takes position/velocity
-   setpoints and gives up after `GUID_TIMEOUT = 3 s`, so the FSM samples and streams continuously.
-5. **A fake-truth mode** (`worlds/pillars.yaml` -> `fake_truth`) so lidar -> LIO -> planner can be
-   exercised before the SITL build exists.
-6. **FCU stream rates**: `LOCAL_POSITION_NED` (31/32) arrives at whatever `SR*_POSITION`/`SR*_EXTRA1`
-   say; the defaults give ~1 Hz, which is useless for arrival checks.
-7. **Geofence and loss handling**: owned by `fsm/`, not by the planner.
-
-## 2. The chain, end to end
+## 1. The boxes
 
 ```
-        worlds/pillars.yaml (geometry, mission, mount)                 file
-                    |
-   SITL (Copter-4.7.1, built-in quad model, simulator-only truth tap)  sim/
-        |  UDP truth 400 Hz (NED/FRD, declared in the header)
-        v
-   sim/truth_rx --> sim/lidar_imu --> /livox/lidar 10 Hz (S)
-        |                             /livox/imu   200 Hz (S)
-        |                                   |
-        |                                   v
-        |                                 lio/  (Super-LIO or FAST-LIO)
-        |                                   |  /lio/odom 10 Hz (L)
-        |                                   |  /odom 200 Hz fitted (L)
-        |                                   |  /cloud_registered 10 Hz (L)
-        |                                   |
-        |                                   +--> fsm/bridge --> FCU: VISION_POSITION_ESTIMATE / ODOMETRY
-        |                                   v
-        |                              planner/ (ego-planner)
-        |                                   |  /planner/traj 10-50 Hz (L)
-        |                                   v
-        |                                 fsm/  sample + convert + stream
-        |                                   |  SET_POSITION_TARGET_LOCAL_NED 20-50 Hz
-        |                                   v
-        +-------------------------> FCU (GUIDED) --LOCAL_POSITION_NED/ATTITUDE back--> fsm/
-                                            |
-                                   tools/recorder (everything, both stamps)
-                                            |
-                                   tools/metrics  (acceptance + counts of diverged)
+┌══════════════════════════════════════════════════════════════════════════════════════════┐
+║ BOX 1   SITL                                                                             ║
+║         ArduPilot Copter-4.7.1, built-in quad dynamics, EKF3, GUIDED controller          ║
+║         owns: the true state, the FCU's local NED frame, the flight modes                ║
+║   ┌──────────────┐    ┌───────────────┐    ┌──────────────────────────────────────────┐ ║
+║   │ quad model   │───►│ built-in IMU  │───►│ EKF3   (EK3_SRC1_* = 6, LIO only)        │ ║
+║   │ (its physics)│    │ GPS/baro/comp │    │ GUIDED (position/velocity setpoints)     │ ║
+║   └──────┬───────┘    └───────────────┘    └────────────────┬─────────────────────────┘ ║
+║          │ true state                                       │                             ║
+║          └──────────────► TRUTH TAP (sim-only, env-gated) ──┼──► UDP 400 Hz              ║
+╚═════════════════════════════════════════════════════════════╪═════════════════════════════╝
+        ▲ MAVLink 5760/udp:  setpoints 84 @20-50 Hz, commands 76        │ truth: p/v NED,
+        │                    telemetry 31/32 @20-50 Hz, 0/253 @1-2 Hz   │ q FRD, gyro, accel
+        │                                                               ▼
+┌═══════╪═════════════════════════════════════════════════════════════════════════════════════┐
+║ BOX 2 │  sim/           the world, the sensor, the clock, the world editor                 ║
+║   ┌───┴──────────┐   ┌──────────────────┐   ┌─────────────────┐   ┌────────────────────┐  ║
+║   │ truth_rx     │──►│ lidar_imu        │   │ clock           │   │ world editor       │  ║
+║   │ (UDP -> ROS) │   │ raycast + noise  │   │ /clock 100 Hz   │   │ RViz clicks ->     │  ║
+║   │ 400 Hz       │   │ IMU model        │   │ /sim/rtf 1 Hz   │   │ worlds/*.yaml      │  ║
+║   └──────────────┘   └────────┬─────────┘   └─────────────────┘   └─────────▲──────────┘  ║
+║   worlds/pillars.yaml ────────┘  (geometry, mount 45 deg, mission, fake_truth)│           ║
+╚════════════════════════════════╪══════════════════════════════════════════════╪═══════════╝
+     /livox/lidar 10 Hz (S)      │      /livox/imu 200 Hz (S)                   │ /clicked_point (W)
+     /sim/truth/odom 100 Hz (W)  │                                              │
+                ┌────────────────┴────────────────┐                             │
+                ▼                                 ▼                             │
+┌═══════════════════════════════════════════════════════════════════════════════╪═══════════┐
+║ BOX 3   lio/          one LIO process (Super-LIO or FAST-LIO) + adaptation    │           ║
+║   in : /livox/lidar 10 Hz (S), /livox/imu 200 Hz (S)                          │           ║
+║   out: /lio/odom 10 Hz (L, raw state)                                         │           ║
+║        /odom 200 Hz (L, fitted, child = base_link)                            │           ║
+║        /cloud_registered 10 Hz (L, scan in the map frame)                     │           ║
+║        /lio/map 0.2-1 Hz (L, optional), /lio/status 1 Hz (rate, degeneracy)   │           ║
+║        /tf  (odom -> base_link)                                               │           ║
+╚═══════════════╪═══════════════════════════════════════════════════════════════╪═══════════╝
+                │ /odom 200 Hz (L)          /cloud_registered 10 Hz (L)         │
+                ├──────────────────────────────┬───────────────────────────────┘
+                │                              ▼
+                │            ┌═════════════════════════════════════════════════════════════┐
+                │            ║ BOX 4   planner/   ego-planner                              ║
+                │            ║   in : /odom 200 Hz (L)   <- state, same source as the map  ║
+                │            ║        /cloud_registered 10 Hz (L)  <- local map input      ║
+                │            ║        /planner/goal (L, on demand, W->L by the FSM)        ║
+                │            ║   out: /planner/traj 10-50 Hz (L)  B-spline horizon        ║
+                │            ║        /planner/status 1-10 Hz, /planner/vis/* 10 Hz        ║
+                │            ╚═══════════════════════════════════╪═════════════════════════╝
+                │                                             │ /planner/traj (L)
+                ▼                                             ▼
+┌══════════════════════════════════════════════════════════════════════════════════════════┐
+║ BOX 5   fsm/  +  bridge/        scheduling, frames, arrival, FCU communication            ║
+║   in : local_pose (msg 31/32 -> F, ENU labels, z up) @20-50 Hz      [bridge]              ║
+║        state (HEARTBEAT/STATUSTEXT or /mavros/state) @1-2 Hz        [bridge]              ║
+║        /odom 200 Hz (L)            <- for logging and the sanity gate                     ║
+║        /planner/traj 10-50 Hz (L)  <- sampled into setpoints                              ║
+║        /lio/status 1 Hz            <- gate: rate, jump, degeneracy                        ║
+║        worlds/*.yaml mission (W)   <- the mission it schedules                            ║
+║   out: setpoints (setpoint 84) @20-50 Hz   [bridge: normalised F -> NED on the wire]      ║
+║        external nav (msg 102/331) @20-100 Hz  [bridge: LIO -> FCU]                        ║
+║        /planner/goal (L) on demand, /fsm/phase (String) on change + 1 Hz                  ║
+║        tf: world_w -> odom  (static, from Calib, measured once per flight)                ║
+╚═══════════════════════════════════════════════════════════════════════════════════════════╝
+
+┌───────────────────────────────┐        ┌──────────────────────────────────────────────────┐
+│ BOX 6   RViz                  │        │ BOX 7   tools/                                   │
+│  shows: /sim/world/markers(W) │        │  recorder: every stream, both stamps -> logs/     │
+│         /cloud_registered (L) │        │  metrics: A1-A4 / B1-B4, counts of diverged       │
+│         /lio/map, /tf, /odom  │        │  replay: the same pipeline from a recording       │
+│         /planner/vis/*, /fsm/phase      │  docs-budget: the <=5 rule, executable           │
+│  edits: /clicked_point (W)    │        └──────────────────────────────────────────────────┘
+│  goal : /goal_pose (W)        │
+└───────────────────────────────┘
 ```
+
+Frame shorthand: **W** world ENU (the file, origin = pad) · **L** LIO world (z up, yaw arbitrary, origin
+= LIO init) · **F** FCU local (NED on the wire) · **B** body FLU · **S** MID-360 housing.
+L and F are the same frame up to axis labels; W differs from L by a known constant rotation + offset.
+
+## 2. Per-box cards (what each box subscribes, publishes, owns)
+
+| box | subscribes (rate, frame) | publishes (rate, frame) | owns |
+|---|---|---|---|
+| 1 SITL | MAVLink: setpoints 84, commands 76, external nav 102/331 | MAVLink: 31, 32, 0, 253; truth tap UDP 400 Hz | the true state, the EKF, the modes, the FCU local frame |
+| 2 `sim/` | truth UDP 400 Hz; `/clicked_point` (W); `worlds/*.yaml` | `/livox/lidar` 10 Hz (S), `/livox/imu` 200 Hz (S), `/clock` 100 Hz, `/sim/rtf` 1 Hz, `/sim/truth/odom` 100 Hz (W), `/sim/world/markers` 1 Hz (W) | the world, the sensor models, the clock authority |
+| 3 `lio/` | `/livox/lidar`, `/livox/imu` | `/lio/odom` 10 Hz, `/odom` 200 Hz, `/cloud_registered` 10 Hz (all L), `/lio/map`, `/lio/status`, `/tf` | the LIO world frame L and its odometry |
+| 4 `planner/` | `/odom`, `/cloud_registered`, `/planner/goal` | `/planner/traj`, `/planner/status`, `/planner/vis/*` | the trajectory and its own ESDF/grid |
+| 5 `fsm/`+`bridge/` | FCU pose/state, `/odom`, `/planner/traj`, `/lio/status`, the mission file | setpoints, external nav, `/planner/goal`, `/fsm/phase` | scheduling, arrival, the gates, every conversion |
+| 6 RViz | everything visual | tool topics | nothing (display and world editing only) |
+| 7 `tools/` | everything | logs, tables, figures | the evidence |
 
 ## 3. Topics — rate, content, frame
 
-Frames: **W** world ENU (the file, origin = pad) · **L** LIO world (z up, yaw arbitrary, origin = LIO
-init) · **F** FCU local (NED on the wire) · **B** body FLU · **S** MID-360 housing.  L and F are the
-same frame up to axis labels; W differs from L by a known constant rotation + offset.
-
 | topic | type | rate | content | frame | producer -> consumer |
 |---|---|---|---|---|---|
-| truth tap (UDP, not ROS) | ASCII line | **400 Hz** | t, p_ned, v_ned, q(w,x,y,z body->NED), gyro FRD, accel FRD | SITL native, declared | SITL -> `sim/truth_rx` |
-| `/clock` | `rosgraph_msgs/Clock` | 100 Hz | sim time | -- | `sim/` -> all |
-| `/livox/lidar` | `sensor_msgs/PointCloud2` | **10 Hz** | 20 000 points; x,y,z,intensity,time; `time` = per-point offset 0..0.1 s | **S** | `sim/` -> `lio/` |
-| `/livox/imu` | `sensor_msgs/Imu` | **200 Hz** | gyro rad/s, accel m/s^2, no orientation | **S** | `sim/` -> `lio/` |
-| `/sim/truth/odom` | `nav_msgs/Odometry` | 100 Hz | true body pose/velocity (never used for control) | **W** | `sim/` -> tools |
-| `/sim/world/markers` | `visualization_msgs/MarkerArray` | 1 Hz / on change | pillars, arena, clear box | **W** | `sim/` -> RViz |
-| `/clicked_point` | `geometry_msgs/PointStamped` | on click | operator adds a pillar | **W** | RViz -> `sim/` |
-| `/lio/odom` | `nav_msgs/Odometry` | **10 Hz** | ESKF state at scan rate, child `mid360_link` | **L** | `lio/` -> tools |
-| `/odom` | `nav_msgs/Odometry` | **200 Hz** | fitted body pose + velocity, child `base_link` | **L** | `lio/` -> planner, bridge, RViz |
-| `/cloud_registered` | `sensor_msgs/PointCloud2` | **10 Hz** | current scan registered into the map | **L** | `lio/` -> planner, RViz |
-| `/lio/map` | `sensor_msgs/PointCloud2` | 0.2-1 Hz | accumulated map (optional, debug) | **L** | `lio/` -> RViz |
-| `/lio/status` | `diagnostic_msgs/DiagnosticArray` | 1 Hz | scan rate, effective points, degeneracy lambda2/lambda1, map size | -- | `lio/` -> fsm gate |
-| `/planner/goal` | `geometry_msgs/PoseStamped` | on demand | next goal, W -> L by the FSM | **L** | fsm -> planner |
-| `/planner/traj` | `traj_utils/Bspline` (ego-planner native) | **10-50 Hz** | horizon: control points, start/end time, yaw | **L** | planner -> fsm |
-| `/planner/vis/*` | `visualization_msgs/MarkerArray` | 10 Hz | goal, path, ESDF slice | **L** | planner -> RViz |
-| `/planner/status` | `std_msgs/String` | 1-10 Hz | replan ok/fail + reason | -- | planner -> fsm |
-| `SET_POSITION_TARGET_LOCAL_NED` (84) | MAVLink | **20-50 Hz** | sampled position (+optional velocity/accel/yaw/yaw_rate), `LOCAL_NED` | F (NED on wire) | bridge -> FCU |
-| `COMMAND_LONG` (76) | MAVLink | on demand | arm / takeoff / land / mode | -- | bridge -> FCU |
-| `VISION_POSITION_ESTIMATE` (102) / `ODOMETRY` (331) | MAVLink | **20-100 Hz** | LIO pose + velocity (+attitude), converted per FRAMES §7 | F (NED on wire) | bridge -> FCU |
-| `LOCAL_POSITION_NED` (32) | MAVLink | **20-50 Hz** | FCU local position/velocity (**z DOWN**) | F | FCU -> bridge |
-| `ATTITUDE_QUATERNION` (31) | MAVLink | **20-50 Hz** | FCU attitude (FRD body -> NED) | F/B | FCU -> bridge |
-| `HEARTBEAT` (0) / `STATUSTEXT` (253) | MAVLink | 1-2 Hz / on event | armed, mode, health / text | -- | FCU -> bridge |
+| truth tap (UDP, not ROS) | ASCII line | **400 Hz** | t, p_ned, v_ned, q(w,x,y,z body->NED), gyro FRD, accel FRD | SITL native, declared | box 1 -> box 2 |
+| `/clock` | `rosgraph_msgs/Clock` | 100 Hz | sim time (the single time authority) | -- | box 2 -> all |
+| `/sim/rtf` | `std_msgs/Float64` | 1 Hz | sim seconds per wall second, plus the achieved lidar/IMU rates | -- | box 2 -> box 7 |
+| `/livox/lidar` | `sensor_msgs/PointCloud2` | **10 Hz** | 20 000 points; x,y,z,intensity,time; `time` = per-point offset 0..0.1 s | **S** | box 2 -> box 3 |
+| `/livox/imu` | `sensor_msgs/Imu` | **200 Hz** | gyro rad/s, accel m/s^2, no orientation | **S** | box 2 -> box 3 |
+| `/sim/truth/odom` | `nav_msgs/Odometry` | 100 Hz | true body pose/velocity (never used for control) | **W** | box 2 -> box 7 |
+| `/sim/world/markers` | `visualization_msgs/MarkerArray` | 1 Hz / on change | pillars, arena, the clear rectangle | **W** | box 2 -> RViz |
+| `/clicked_point` | `geometry_msgs/PointStamped` | on click | operator adds or moves a pillar | **W** | RViz -> box 2 |
+| `/goal_pose` | `geometry_msgs/PoseStamped` | on click | operator sets the mission-B goal | **W** | RViz -> box 5 |
+| `/lio/odom` | `nav_msgs/Odometry` | **10 Hz** | ESKF state at scan rate, child `mid360_link` | **L** | box 3 -> box 7 |
+| `/odom` | `nav_msgs/Odometry` | **200 Hz** | fitted body pose + velocity, child `base_link` | **L** | box 3 -> box 4, box 5, RViz |
+| `/cloud_registered` | `sensor_msgs/PointCloud2` | **10 Hz** | the scan registered into the map | **L** | box 3 -> box 4, RViz |
+| `/lio/map` | `sensor_msgs/PointCloud2` | 0.2-1 Hz | accumulated map (optional) | **L** | box 3 -> RViz |
+| `/lio/status` | `diagnostic_msgs/DiagnosticArray` | 1 Hz | measured scan rate, effective points, degeneracy lambda2/lambda1, map size | -- | box 3 -> box 5 gate, box 7 |
+| `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | 200 Hz / static | `world_w -> odom -> base_link -> mid360_link` | -- | box 5 (static pair), box 3 (odom edge) |
+| `/planner/goal` | `geometry_msgs/PoseStamped` | on demand | next goal, converted W -> L by box 5 | **L** | box 5 -> box 4 |
+| `/planner/traj` | `traj_utils/Bspline` | **10-50 Hz** | horizon: control points, start/end time, yaw | **L** | box 4 -> box 5 |
+| `/planner/vis/*` | `visualization_msgs/MarkerArray` | 10 Hz | goal, path, ESDF slice | **L** | box 4 -> RViz |
+| `/planner/status` | `std_msgs/String` | 1-10 Hz | replan ok/fail + reason | -- | box 4 -> box 5 |
+| `/fsm/phase` | `std_msgs/String` | on change + 1 Hz | preflight / takeoff / hold / leg1..4 / land / abort | -- | box 5 -> box 7 (window segmentation) |
+| setpoint 84 | MAVLink | **20-50 Hz** | sampled position (+ optional velocity/accel/yaw/yaw_rate), `LOCAL_NED` | F, NED on the wire | box 5 -> box 1 |
+| command 76 | MAVLink | on demand | arm / takeoff / land / mode | -- | box 5 -> box 1 |
+| vision 102 / odometry 331 | MAVLink | **20-100 Hz** | LIO pose + velocity (+attitude) | F, NED on the wire | box 5 -> box 1 |
+| telemetry 32 | MAVLink | **20-50 Hz** | FCU local position/velocity (**z DOWN**) | F | box 1 -> box 5 |
+| telemetry 31 | MAVLink | **20-50 Hz** | FCU attitude (FRD body -> NED) | F/B | box 1 -> box 5 |
+| 0 / 253 | MAVLink | 1-2 Hz / on event | armed, mode, health / text | -- | box 1 -> box 5 |
+| optional occupancy grid | `nav_msgs/OccupancyGrid` | 1-5 Hz | 0.1 m cells from `/cloud_registered` | **L** | box 4 (or box 3) -> RViz, fallback planner |
 
-With `BRIDGE=mavros` the last six rows become mavros topics (`/mavros/local_position/pose` 30-50 Hz ENU,
-`/mavros/state` 1 Hz, `/mavros/statustext/recv`, setpoints on `/mavros/setpoint_position/local`, vision on
-`/mavros/vision_pose/pose_cov`) and **mavros performs the conversions**.
+With `BRIDGE=mavros` the MAVLink rows become mavros topics (`/mavros/local_position/pose` 30-50 Hz ENU,
+`/mavros/state` 1 Hz, `/mavros/statustext/recv`, `/mavros/estimator_status`, `/mavros/home_position/home`,
+`/mavros/time_reference`, setpoints on `/mavros/setpoint_position/local`, vision on
+`/mavros/vision_pose/pose_cov`) and **mavros performs the frame conversions**.
+
+### Two disciplines the old pipeline taught, kept here
+
+* **Rates are judged by the publisher's own counters, not by `ros2 topic hz`.**  Measured in the old
+  project: two consecutive `topic hz` readings of the same topic differed by more than 3x under load.
+  Every rate-sensitive node therefore reports its achieved rate in its own status topic (`/sim/rtf`,
+  `/lio/status`), and the metrics read those.
+* **No orphan parameter files.**  In the old tree a parameter file existed that no launch path loaded,
+  and reasoning from it gave wrong conclusions about which topics were live.  Here every file under
+  `sim/`, `lio/`, `planner/` must be referenced by a launch path, checked by grep in review.
 
 ## 4. TF tree
 
 ```
 world_w  (W: world.yaml geometry, pillar markers)
-   |  static, from Calib (yaw + translation, measured per flight, checked against construction)
+   |  static, from Calib (yaw + translation, measured once per flight, checked against construction)
 odom     (L: the LIO world, also the planner's world)
    |  from /odom at 200 Hz
 base_link (B)
@@ -115,8 +165,8 @@ mid360_link (S)
 ```
 
 `map` is deliberately not used: the LIO has no loop closure or jumps, so one continuous frame suffices.
-RViz shows pillars (in `world_w`) and the cloud (in `odom`) together because of that static edge.  The
-FSM and the planner never touch W except when the mission is set up.
+RViz shows pillars (in `world_w`) and the cloud (in `odom`) together because of that static edge.  The FSM
+and the planner never touch W except when the mission is set up.
 
 ## 5. The transport interface (bidirectional, normalised)
 
@@ -164,7 +214,18 @@ bridges report `+2.5`.
 | FCU | 400 Hz loop | SITL built-in model | no Gazebo anywhere |
 | end-to-end | -- | target < 100 ms | scan 100 ms + LIO + planner horizon |
 
-## 7. Safety gates (owned by `fsm/`)
+## 7. Deliberate differences from the old Gazebo pipeline
+
+| old | here | why |
+|---|---|---|
+| Gazebo `gpu_lidar` at 500x40 rays, 2 cm range quantisation, physics-step IMU defect | our analytic ray caster, exact, real MID-360 pattern, our own noise model | the old sensor was the source of a phantom IMU step and of a starved matcher |
+| `gz_livox_bridge` converting to `livox_ros_driver2/CustomMsg` | one `PointCloud2` in the velodyne layout, `lidar_type: 3` | the CustomMsg path in this fork **drops the per-point time**, i.e. no motion compensation |
+| airframe bounding box removes self-hits, `/sensors/lidar/body_removed_ratio` | no airframe geometry at all -> no self-hits | the world is cylinders + planes; if the airframe is ever modelled, a body-exclusion step and its ratio topic come back |
+| `/uav/*` normalisation layer, `/sensors/*` relay, orphan parameter files | one interface per function (the transport), no orphans | the old layer ended up referenced only by an orphan config |
+| three terminals, MAVProxy router, `/uas1/mavlink_*` | one MAVLink endpoint to SITL plus the truth tap | fewer moving parts; the FSM owns the link |
+| `/fastlio_occupancy_grid` as the planner input | ego-planner builds its own ESDF from `/cloud_registered`; a grid is optional and only for RViz/fallback | one map, one consumer |
+
+## 8. Safety gates (owned by `fsm/`)
 
 1. **Odometry sanity** before feeding the FCU: rate >= 5 Hz, position jump < 0.5 m between scans, speed
    < 3 m/s, `/lio/status` degeneracy above threshold.  On violation: stop ExternalNav, hold; if it
@@ -175,4 +236,4 @@ bridges report `+2.5`.
 4. **Planner failure**: if `/planner/status` reports failure for > 1 s while moving, hold; if it
    persists, fly straight to the goal slowly.
 5. **No GPS, no compass**: arming depends on a healthy EKF (origin set, vision healthy).  A transiently
-   invalid FCU state is tolerated for 3 s -- the old project lost 4 of 8 flights to a single bad sample.
+   invalid FCU state is tolerated for 3 s -- the old project lost 4 of 8 flights to one bad sample.
