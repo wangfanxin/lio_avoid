@@ -1,0 +1,34 @@
+# SITL basics that the model does NOT set by itself.
+#
+# MEASURED 2026-10-13: with `-w` (wipe EEPROM) and only the LIO source-map parameters loaded, arming is
+# refused with "Arm: Motors: Check frame class and type" -- FRAME_CLASS/FRAME_TYPE are parameters, and
+# the `--model quad` switch only selects the SIMULATED physics.  sim_vehicle.py normally supplies these
+# through its airframe defaults; running the binary directly means supplying them here.
+#
+# Frame class 1 = Quad, type 1 = X, which is the geometry the SITL `quad` model simulates.  If this
+# were wrong the vehicle would flip on takeoff rather than fail a check -- which is exactly why the FCU
+# link test asserts that it takes off and holds before anything else is measured.
+FRAME_CLASS 1
+FRAME_TYPE 1
+
+# A battery failsafe in the middle of a 60 s mission is a harness artefact, not a finding.
+BATT_FS_LOW_ACT 0
+BATT_FS_CRT_ACT 0
+FS_THR_ENABLE 0
+
+# ONE IMU.  MEASURED 2026-10-13: SITL simulates three IMUs, each with its own error model, and after the
+# simple accel calibration the arming check correctly refuses with "Arm: Accels inconsistent" -- they
+# really do disagree.  This airframe carries one IMU (the MID-360 housing's, whose data is what the LIO
+# consumes anyway), so declare one: the consistency check then has nothing to compare and passes for the
+# right reason.  It also halves the EKF's work, which matters for the real-time budget in S7.
+#
+# This file is loaded AFTER apm_lio_only.parm so that EK3_IMU_MASK here (1) overrides that file's 3.
+INS_ENABLE_MASK 1
+EK3_IMU_MASK 1
+
+# Auto-disarm off.  MEASURED 2026-10-13: with the default 10 s, an armed vehicle that has not taken off
+# disarms itself -- which is correct behaviour for a person, and a race for a script that is still
+# initialising (and it is exactly what made "takeoff accepted but nothing happens" take so long to
+# explain: the FCU's own narration ends with "Disarming motors").  The FSM's own safety gates are what
+# protect this vehicle; a timer inside the firmware is not the right place for them here.
+DISARM_DELAY 0

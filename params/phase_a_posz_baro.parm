@@ -1,0 +1,23 @@
+# PHASE A STEP (a): altitude from the BAROMETER, horizontal and yaw from the LIO.
+#
+# This file exists only because of PLAN.md decision 15: fly the rectangle first (a), then fix the LIO's
+# 2.5 deg tilt and fly it again with all five sources on the LIO (b).  Phase A does NOT close until (b)
+# passes, so this file must be deleted from the launch command at that point -- it is a stepping stone,
+# and it is a separate file precisely so that "which configuration flew" is visible in the command line
+# rather than hidden inside apm_lio_only.parm.
+#
+# WHY (a) IS NEEDED AT ALL: EK3_SRC1_POSZ = 6 makes the altitude loop eat the LIO's z, and a pitch
+# error of theta costs theta x distance in height -- at the old stack's 2.5 deg that is 43 mm per metre,
+# i.e. ~86 mm over the 2.0 m leg, against an A2 target of 50 mm.  A2 would fail by construction, not
+# because the estimator is bad.
+#
+# 1 = Baro, 0 = None.  SITL carries a barometer, so this works today, and it is the old project's own
+# rectangle configuration -- a proven path, not an experiment.
+#
+# LOAD ORDER: this file must be passed AFTER apm_lio_only.parm, and after it, nothing else.
+EK3_SRC1_POSZ 1
+EK3_SRC1_VELZ 0
+EK3_SRC2_POSZ 1
+EK3_SRC2_VELZ 0
+EK3_SRC3_POSZ 1
+EK3_SRC3_VELZ 0
