@@ -102,6 +102,43 @@ No rotation, nothing to calibrate, and the "which frame is this in" class of err
    pitch of the LIO's estimate that round 7 found (and that A2's 31-37 mm is made of) is unaffected, and
    neither is any noise or jitter question.
 
+### 0.45 Where B (body FLU) is used, and why it cannot be merged -- but can be demoted
+
+**B is used in exactly four places:**
+
+1. **The parent of the sensor mount**: `S = B` rotated by the 45 deg nose-down mount and offset by
+   (0.05, 0, 0.10).  Without B there is nothing to hang the housing on.
+2. **The published odometry frame**: `/odom` (after the LIO applies `odom_robo`) is the body pose -- what
+   the planner consumes as `base_link` and what RViz draws.  `/lio/odom` is the same state in S.
+3. **The FCU's external-nav attitude**: ArduPilot wants the *body* attitude; its own body convention is
+   FRD, which is B under a fixed 180 deg roll.  (Mission A sets `VISO_POS_X/Y/Z = 0`, i.e. we send the body
+   origin, not the sensor's.)
+4. **Any body-relative command** (`MAV_FRAME_BODY_NED` / `BODY_OFFSET_NED`) and every footprint or
+   collision check, all of which are defined about the body origin.
+
+**It cannot be merged into W or L**, and the reason is not bookkeeping: W and L are *fixed* frames, B is
+the *moving* one.  Its pose in L is exactly what the LIO measures; merging would assert the vehicle never
+rotates.
+
+**But it can be demoted, and that is worth doing.**  B is not an independent frame with its own
+conventions: it is a *fixed offset from S* and *the frame the odometry is published in*.  So:
+
+| frame | who ever mentions it | why |
+|---|---|---|
+| **W** | the mission file, the FSM at set-up, RViz | the world geometry lives here |
+| **L** | LIO output, the planner, the FSM loop, the metrics | the map and the state live here |
+| **B** | `/odom`, `base_link`, the external-nav message, body-relative commands | one rigid offset from S, one 180 deg roll from the FCU's body |
+| **S** | only `sim/lidar_imu` (publishes here) and the LIO (consumes here, and reports `/lio/odom`) | an implementation detail of the sensor + LIO pair |
+
+So the chain reads: **sim generates in S -> the LIO consumes S and publishes B (in L) -> everything else
+speaks B in L, or W at mission set-up.**  Only two files in the project ever name S, and one number (the
+mount) connects S to B.
+
+**The failure this demotion must not hide**: feeding the FCU the *sensor* attitude instead of the *body*
+attitude.  The vehicle would look pitched 45 deg to its own controller, which would then try to correct
+it.  The parked attitude test (section 5, T2/T3) is where that is caught, in its sharp form: **on the pad
+the FCU's reported pitch must be ~0, never ~45 deg.**
+
 ### 0.4 The four conversions
 
 | # | conversion | nature | pinned by |
@@ -205,6 +242,7 @@ Three classes are needed, because each pins something the others are blind to:
 | T1 | +East, +North, +Up moves, 0.5 m each, heading fixed | translation | the 6 position signs; axis swaps | one short scripted motion (or one flight) |
 | T2 | parked at 3 spawn headings: 0, +90, -90 deg | rotation | FRD<->FLU 180 deg roll, quaternion direction, yaw sign, and that the LIO's yaw *tracks* rather than sitting at a constant | free: restart the sim ~1 min each, no arming, no flight |
 | T3 | parked, tilted (pitch/roll 10 deg) | rotation | the mount's sign and angle; gravity direction in the sensor frame (round 7 already measured 45.001 deg parked) | free-ish: spawn on a tilted pad or command attitude while parked |
+| T3b | parked, level: read the FCU's reported pitch | rotation | **that we feed the FCU the BODY attitude, not the SENSOR's.**  A 45 deg reading here means the housing attitude reached the external-nav message.  Expected: 0 deg within a degree | free: parked, no arming |
 | T4 | crab move: heading 0 deg, translate +North | decoupled | velocity frame (ODOMETRY's body-FRD velocity vs a NED velocity) | one short flight |
 | T5 | same translation at two headings (0 and +90 deg) | rotation + translation | the lever arm t = (0.05, 0, 0.10) | one parked rotation + one move |
 | T6 | in flight: reconstructed pillar bearings from the LIO's map vs world.yaml | shape | the mount angle *as the LIO sees it* (a wrong mount tilts the map) | one flight |
