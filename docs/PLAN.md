@@ -26,6 +26,8 @@ Every result reports **how many of how many** flights completed and diverged.
 | 8 | **LIO input is a standard `PointCloud2`** with fields x,y,z,intensity,time and `lidar_type: 3` | the Livox `CustomMsg` path in this fork **drops the per-point time**, i.e. no motion compensation; the standard path keeps it |
 | 9 | **Real MID-360 scan pattern** (`scan_mode/mid360.csv`, 200 kHz, non-repetitive) | measured: azimuth 0-360 deg, elevation -7.16..+52.16 deg, 5 us per point |
 | 10 | **GPU ray casting parked**, CPU only | the GPU port failed its own correctness check (2.98 m disagreement); CPU does 20 000 rays in 9.8 ms |
+| 11 | **Rectangle first; ego-planner deferred, its interface built now** (`/planner/traj`, `nav_msgs/Path`, frame L, §4.1) | user's call: prove the whole chain on the square before adding a planner.  Because the rectangle source publishes the *same* interface, mission A also validates the integration point, and adding the planner later cannot change the FSM |
+| 12 | **Setpoints and telemetry at 50 Hz** (`SR1_POSITION = 50`, `SR1_EXTRA1 = 50`; vision 50 Hz) | 50 Hz is the firmware's own declared ceiling for the stream-rate parameters, and the bridge verifies the achieved rates with its own counters (`ARCHITECTURE.md` §4b) |
 
 ## 3. Acceptance numbers
 
@@ -47,7 +49,7 @@ Prior evidence that these are achievable: with GPS as the source the accepted co
 11 flights to completion, 0 diverged, A1 4.4-5.9 mm, A2 31-37 mm (a 2.5 deg frame tilt; 1.7-2.2 mm once
 one rotation is allowed), B2 <= 30 mm, B3 <= 68 mm (`docs/figures/round7/`).
 
-## 4. Work order
+## 4. Work order (reordered 2026-10-13: rectangle first, the planner DEFERRED but its interface built now)
 
 1. (done) inventory, keep-list, delete the old trees, fresh skeleton
 2. (done) analytic ray casting + world generator + real MID-360 pattern + the 0.5 m scan check
@@ -55,9 +57,33 @@ one rotation is allowed), B2 <= 30 mm, B3 <= 68 mm (`docs/figures/round7/`).
    the wire
 4. `sim/lidar_imu` -> cloud + IMU -> RViz shows cloud and pillars
 5. **`common/frames.py` + `Calib`** and the six convention tests (three need no flight)
-6. Super-LIO and FAST-LIO built and fed the same simulated sensor -> LIO bake-off
-7. `bridge/` + `fsm/` -> mission A with the acceptance metrics
-8. `planner/` -> mission B
+6. the LIO: build the clean upstream, carry over the measured configuration, feed it the simulated
+   sensor, verify its odometry against the truth tap.  (The Super-LIO vs FAST-LIO bake-off is a later
+   refinement, not a gate: one LIO working end to end is what mission A needs.)
+7. **MISSION A -- the rectangle.**  `planner/rectangle_source` publishes the trajectory interface of
+   §4.1; `bridge/` + `fsm/` consume it.  This is the milestone: the square is flown with the LIO as the
+   EKF's only source, and A1-A4 / B1-B4 are measured with their counts.
+8. **DEFERRED -- ego-planner.**  Nothing in the FSM changes: a ~30-line adapter turns the planner's
+   B-spline into the same `/planner/traj`, and then mission B is flown through the identical path.
+
+### 4.1 The trajectory interface (built now, used by the rectangle, filled by the planner later)
+
+| item | value |
+|---|---|
+| topic | **`/planner/traj`** |
+| type | **`nav_msgs/Path`** (poses with stamps), frame **L** |
+| rate | points at >= 20 Hz of trajectory time; republished at >= 2 Hz so a consumer that joins late still has a fresh horizon |
+| content | position + yaw per point; dense enough that the FSM can difference it for velocity and acceleration |
+| producer today | `planner/rectangle_source` -- the square from `worlds/pillars.yaml`, corner holds included |
+| producer later | `planner/ego_adapter` -- samples the planner's B-spline into the same Path; the planner itself is untouched |
+| FSM's obligations | sample it at 50 Hz, convert L -> F, stream the setpoints, enforce the safety gates, publish `/fsm/phase` |
+| source's obligations | keep the path inside the arena, leave >= the vehicle's footprint to any pillar, and never publish a path that starts further than 0.5 m from the current state |
+
+Why a `nav_msgs/Path` and not a bespoke message: it carries what both sources can produce without a new
+package, and it keeps the *planner's* message types out of the flight-critical code -- the adapter is the
+only file that will ever include `traj_utils`.  If the planner turns out to need acceleration feed-forward
+that a Path cannot express, the interface can be extended then, with the rectangle source proving the old
+form still works.
 
 ## 5. Rules (carried over from the rounds that produced the numbers)
 

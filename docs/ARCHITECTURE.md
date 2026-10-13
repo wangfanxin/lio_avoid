@@ -149,7 +149,7 @@ so `sim/` can fly a scripted square and publish exactly the same topics.  That i
 | 1 SITL | MAVLink: setpoints 84, commands 76, external nav 102/331 | MAVLink: 31, 32, 0, 253; truth tap UDP 400 Hz | the true state, the EKF, the modes, the FCU local frame |
 | 2 `sim/` | truth UDP 400 Hz; `/clicked_point` (W); `worlds/*.yaml` | `/livox/lidar` 10 Hz (S), `/livox/imu` 200 Hz (S), `/clock` 100 Hz, `/sim/rtf` 1 Hz, `/sim/truth/odom` 100 Hz (W), `/sim/world/markers` 1 Hz (W) | the world, the sensor models, the clock authority |
 | 3 `lio/` | `/livox/lidar`, `/livox/imu` | `/lio/odom` 10 Hz, `/odom` 200 Hz, `/cloud_registered` 10 Hz (all L), `/lio/map`, `/lio/status`, `/tf` | the LIO world frame L and its odometry |
-| 4 `planner/` | `/odom`, `/cloud_registered`, `/planner/goal` | `/planner/traj`, `/planner/status`, `/planner/vis/*` | the trajectory and its own ESDF/grid |
+| 4 `planner/` | `/odom`, `/cloud_registered`, `/planner/goal` | `/planner/traj` (`nav_msgs/Path`, L) | the trajectory.  **Today that is `rectangle_source` (the square); ego-planner is deferred and arrives as an adapter that publishes the same Path** -- so the FSM cannot tell the difference (`PLAN.md` §4.1) |
 | 5 `fsm/`+`bridge/` | FCU pose/state, `/odom`, `/planner/traj`, `/lio/status`, the mission file | setpoints, external nav, `/planner/goal`, `/fsm/phase` | scheduling, arrival, the gates, every conversion |
 | 6 RViz | everything visual | tool topics | nothing (display and world editing only) |
 | 7 `tools/` | everything | logs, tables, figures | the evidence |
@@ -174,8 +174,7 @@ so `sim/` can fly a scripted square and publish exactly the same topics.  That i
 | `/lio/status` | `diagnostic_msgs/DiagnosticArray` | 1 Hz | measured scan rate, effective points, degeneracy lambda2/lambda1, map size | -- | box 3 -> box 5 gate, box 7 |
 | `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | 200 Hz / static | `world_w -> odom -> base_link -> mid360_link` | -- | box 5 (static pair), box 3 (odom edge) |
 | `/planner/goal` | `geometry_msgs/PoseStamped` | on demand | next goal, converted W -> L by box 5 | **L** | box 5 -> box 4 |
-| `/planner/traj` | `traj_utils/Bspline` | **10-50 Hz** | horizon: control points, start/end time, yaw | **L** | box 4 -> box 5 |
-| `/planner/vis/*` | `visualization_msgs/MarkerArray` | 10 Hz | goal, path, ESDF slice | **L** | box 4 -> RViz |
+| `/planner/traj` | **`nav_msgs/Path`** | points at >= 20 Hz of trajectory time, republished >= 2 Hz | pose + yaw per point (dense enough to difference for velocity/acceleration) | **L** | box 4 (`rectangle_source` today, `ego_adapter` later) -> box 5 |
 | `/planner/status` | `std_msgs/String` | 1-10 Hz | replan ok/fail + reason | -- | box 4 -> box 5 |
 | `/fsm/phase` | `std_msgs/String` | on change + 1 Hz | preflight / takeoff / hold / leg1..4 / land / abort | -- | box 5 -> box 7 (window segmentation) |
 | setpoint 84 | MAVLink | **20-50 Hz** | sampled position (+ optional velocity/accel/yaw/yaw_rate), `LOCAL_NED` | F, NED on the wire | box 5 -> box 1 |
