@@ -49,6 +49,27 @@ pillars:
 # braces (mount: {x: 0.05, ...}), and format() reads those as placeholders -- which is exactly how the
 # first version of this file died with "KeyError: 'x'" and silently wrote no world at all.
 TEMPLATE_TAIL = """
+# The attitude the vehicle is parked in when the LIO initialises.  THIS is what decides the LIO world's
+# yaw: the fork's kf_init removes the body's heading from its world, so L's x-axis becomes the body's
+# forward axis at that instant.  Facing North (yaw 0) makes the FCU's local NED the textbook NED of this
+# world -- (x, y, z)_ned = (N, E, -U) -- with no rotation anywhere in the mission path; facing East would
+# make L coincide with W's axes but would rotate the FCU's "North" onto East.  The two cannot both hold,
+# and the FCU link is the one that must be provable: see docs/FRAMES.md section 0.3.
+spawn:
+  x: 0.0
+  y: 0.0
+  z: @SPAWN_Z@
+  yaw_deg: @SPAWN_YAW@        # 0 = the body's x-axis points North (W's +y)
+
+# Where the vehicle sits before take-off.  The origin of this world is the PAD, i.e. the pad centre at
+# ground level; the vehicle's own origin starts @SPAWN_Z@ m above it, which is the one constant between
+# the LIO's zero and this world's zero (see FRAMES.md 0.3, item 1).
+pad:
+  x: 0.0
+  y: 0.0
+  radius: 0.35
+  height: @SPAWN_Z@
+
 arena:
   floor_z: 0.0
   ceiling_z: 4.5
@@ -213,6 +234,11 @@ def main() -> int:
                          "about the body, i.e. ceiling only and almost no floor, and the vertical "
                          "channel would lose its best constraint (at 0.5 m: 23.5 %% of returns are "
                          "floor with 45 deg, ~0 %% with 0 deg).  Set 0 only for an A/B experiment")
+    ap.add_argument("--spawn-z", type=float, default=0.205,
+                    help="height of the vehicle origin above the pad at spawn (the pad's own height)")
+    ap.add_argument("--spawn-yaw", type=float, default=0.0,
+                    help="body heading at spawn, degrees, 0 = North.  This decides the LIO world's yaw; "
+                         "see the comment in the emitted file and docs/FRAMES.md 0.3")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                   "..", "worlds", "pillars.yaml"))
     args = ap.parse_args()
@@ -244,7 +270,19 @@ def main() -> int:
     tail = (TEMPLATE_TAIL.replace("@WLO@", "%.1f" % -halfw).replace("@WHI@", "%.1f" % halfw)
             .replace("@SX0@", "%.1f" % square[0]).replace("@SX1@", "%.1f" % square[2])
             .replace("@SY0@", "%.1f" % square[1]).replace("@SY1@", "%.1f" % square[3])
+            .replace("@SPAWN_Z@", "%.3f" % args.spawn_z)
+            .replace("@SPAWN_YAW@", "%.1f" % args.spawn_yaw)
             .replace("@MOUNT_PITCH@", "%.1f" % args.mount_pitch))
+    # VERIFY THE SUBSTITUTION LANDED.  An earlier version of this generator silently dropped the pad
+    # block (a rewrite lost it) and a patch script printed "updated" while the replace had not matched
+    # at all -- the same failure mode the project's rule 3 exists for: a change must be verified to have
+    # reached its consumer, and a generator is a consumer of its own template.
+    for tok in ("@WLO@", "@WHI@", "@SX0@", "@SY0@", "@SPAWN_Z@", "@SPAWN_YAW@", "@MOUNT_PITCH@"):
+        if tok in tail or tok in head:
+            raise SystemExit("template token %s was not substituted" % tok)
+    for need in ("spawn:", "pad:", "arena:", "pillars:"):
+        if need not in head + body + tail:
+            raise SystemExit("emitted world is missing the %s block" % need)
     with open(args.out, "w") as fh:
         fh.write(head + body + tail)
     print("wrote %s" % args.out)

@@ -68,6 +68,27 @@ pillars:
   - {x: +4.500, y: +2.500, r: 0.30, z0: 0.0, z1: 4.2}
   - {x: +4.500, y: +4.500, r: 0.30, z0: 0.0, z1: 4.2}
 
+# The attitude the vehicle is parked in when the LIO initialises.  THIS is what decides the LIO world's
+# yaw: the fork's kf_init removes the body's heading from its world, so L's x-axis becomes the body's
+# forward axis at that instant.  Facing North (yaw 0) makes the FCU's local NED the textbook NED of this
+# world -- (x, y, z)_ned = (N, E, -U) -- with no rotation anywhere in the mission path; facing East would
+# make L coincide with W's axes but would rotate the FCU's "North" onto East.  The two cannot both hold,
+# and the FCU link is the one that must be provable: see docs/FRAMES.md section 0.3.
+spawn:
+  x: 0.0
+  y: 0.0
+  z: 0.205
+  yaw_deg: 0.0        # 0 = the body's x-axis points North (W's +y)
+
+# Where the vehicle sits before take-off.  The origin of this world is the PAD, i.e. the pad centre at
+# ground level; the vehicle's own origin starts 0.205 m above it, which is the one constant between
+# the LIO's zero and this world's zero (see FRAMES.md 0.3, item 1).
+pad:
+  x: 0.0
+  y: 0.0
+  radius: 0.35
+  height: 0.205
+
 arena:
   floor_z: 0.0
   ceiling_z: 4.5
