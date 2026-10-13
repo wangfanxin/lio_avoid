@@ -1,0 +1,192 @@
+# Mission A: the EKF takes EVERY source from the LIO.  No GPS, no compass, no barometer.
+#
+# BASIS: this file is the old project's `sim/config/apm_real_drone.parm`, which was generated from the
+# real aircraft's own parameter list and checked line by line against the FCU's live parameter names
+# (docs/COMPONENTS.md section 10).  Its five-source block is the configuration the real drone flies.
+# What is NEW here (and stated as such) is listed under "DEVIATIONS" at the bottom.
+#
+# HOW TO USE
+#   sim_vehicle.py ... --defaults <copter defaults>,<airframe>,<this file>   (this file LAST, it wins)
+#   and ALWAYS with WIPE_EEPROM=1: SITL's eeprom.bin overrides --defaults at boot, which is how
+#   VISO_TYPE silently stayed 0 through several attempts in the old project.
+#
+# FORMAT: ArduPilot parm files do NOT support trailing comments -- a "#" after a value invalidates it.
+# Every comment sits on its own line.
+#
+# ============================================ EKF core
+AHRS_EKF_TYPE 3
+EK3_ENABLE 1
+EK3_PRIMARY 0
+EK3_IMU_MASK 3
+EK3_AFFINITY 0
+EK3_SRC_OPTIONS 0
+
+# ==================================== vision odometry (the LIO)
+# VISO_TYPE 1 = the MAVLink backend.  Without it AP_VisualOdom::enabled() is false and
+# AP_NavEKF_Source::pre_arm_check() blocks arming with "EK3 sources require VisualOdom".
+VISO_TYPE 1
+VISO_DELAY_MS 10
+VISO_POS_M_NSE 0.2
+VISO_VEL_M_NSE 0.1
+VISO_YAW_M_NSE 0.2
+VISO_QUAL_MIN 0
+VISO_ORIENT 0
+VISO_SCALE 1
+VISO_POS_X 0
+VISO_POS_Y 0
+VISO_POS_Z 0
+
+# THE ACCURACY CONTRACT.  A visual velocity more than EK3_VIS_VERR_MAX from the EKF's own estimate is
+# REJECTED, so this number is what "the LIO must be accurate enough" means in metres per second.
+# The old project added it while the EKF was fusing a velocity uncorrelated with real motion
+# (correlation -0.048).  Do not loosen it to make a bad odometry fly.
+EK3_VIS_VERR_MAX 0.9
+EK3_VIS_VERR_MIN 0.1
+
+# =================== ALL FIVE SOURCES FROM THE LIO
+# YAW=6 is the important one: the EKF ADOPTS the LIO's heading instead of cross-checking it against a
+# compass, which is why no frame alignment is needed anywhere -- and why the old project's +-180 deg
+# "alignment" was the bug rather than the fix.  Consequence to remember when reading the logs: the
+# absolute orientation of the LIO's world is arbitrary; only its shape matters.
+EK3_SRC1_POSXY 6
+EK3_SRC1_VELXY 6
+EK3_SRC1_POSZ 6
+EK3_SRC1_VELZ 6
+EK3_SRC1_YAW 6
+EK3_SRC2_POSXY 6
+EK3_SRC2_VELXY 6
+EK3_SRC2_POSZ 6
+EK3_SRC2_VELZ 6
+EK3_SRC2_YAW 6
+EK3_SRC3_POSXY 6
+EK3_SRC3_VELXY 6
+EK3_SRC3_POSZ 6
+EK3_SRC3_VELZ 6
+EK3_SRC3_YAW 6
+
+# ============================================ EKF tuning (the old project's verified block)
+EK3_ABIAS_P_NSE 0.02
+EK3_ACC_BIAS_LIM 1.0
+EK3_ACC_P_NSE 0.35
+EK3_ALT_M_NSE 2.0
+EK3_BETA_MASK 0
+EK3_CHECK_SCALE 100
+EK3_ERR_THRESH 0.2
+EK3_FLOW_USE 1
+EK3_GBIAS_P_NSE 0.001
+EK3_GLITCH_RAD 25
+EK3_GND_EFF_DZ 4.0
+EK3_GSF_RST_MAX 2
+EK3_GSF_RUN_MASK 3
+EK3_GSF_USE_MASK 3
+EK3_GYRO_P_NSE 0.015
+EK3_HGT_DELAY 60
+EK3_HGT_I_GATE 500
+EK3_HRT_FILT 2.0
+EK3_MAGB_P_NSE 0.0001
+EK3_MAGE_P_NSE 0.001
+EK3_MAG_CAL 3
+EK3_MAG_EF_LIM 50
+EK3_MAG_I_GATE 300
+EK3_MAG_MASK 0
+EK3_MAG_M_NSE 0.05
+EK3_NOAID_M_NSE 10.0
+EK3_OGN_HGT_MASK 0
+EK3_POSNE_M_NSE 0.5
+EK3_POS_I_GATE 500
+EK3_RNG_USE_HGT -1
+EK3_RNG_USE_SPD 2.0
+EK3_TAU_OUTPUT 25
+EK3_VELD_M_NSE 0.5
+EK3_VELNE_M_NSE 0.3
+EK3_VEL_I_GATE 500
+EK3_WIND_PSCALE 1.0
+EK3_WIND_P_NSE 0.2
+EK3_YAW_I_GATE 300
+EK3_YAW_M_NSE 0.5
+
+# ==================================== sensors the aircraft does not have
+COMPASS_USE 0
+COMPASS_USE2 0
+COMPASS_USE3 0
+
+# ============================================ filters
+INS_GYRO_FILTER 20
+INS_ACCEL_FILTER 20
+INS_HNTCH_ENABLE 0
+
+# ================================= failsafe / guided
+FS_EKF_THRESH 1.0
+GUID_TIMEOUT 3.0
+# 8 = bit3 SetAttitudeTarget_ThrustAsThrust.  With 0 the SET_ATTITUDE_TARGET thrust field means CLIMB
+# RATE, so an attitude controller sending "0.55 thrust" climbs forever.  The old project settled on 8.
+GUID_OPTIONS 8
+
+# ============================================================
+# DEVIATIONS FROM THE OLD PROJECT'S FILE (each one deliberate)
+# ============================================================
+# Old sim kept GPS so it could use the FCU's own solution as truth.  We do not need that any more --
+# the truth comes from the SITL tap -- so mission A is flown with NO GPS AT ALL, which is what
+# "the EKF source is the LIO" means.  Side effect: the EKF ORIGIN MUST BE SET EXPLICITLY, because
+# without GPS ArduPilot cannot derive it; the FSM sends SET_GPS_GLOBAL_ORIGIN once after the LIO is
+# live (the old project never exercised this: docs/MEASUREMENTS.md says so in as many words).
+GPS1_TYPE 0
+SIM_GPS1_TYPE 0
+
+# Arming: the vision (VISO) check must stay enabled; GPS / compass / baro checks are skipped because
+# the aircraft does not carry them.  The old project used exactly this mask, with the real drone's
+# ARMING_CHECK 798192 as its inverted twin.  VERIFY THE BITS against this firmware's AP_Arming.h
+# before flying (see docs/PLAN.md rule 3: a parameter change must be verified to have reached the
+# consumer -- a wrong mask here silently arms a vehicle whose EKF has no position).
+ARMING_SKIPCHK 250382
+
+# Waypoint/loiter speeds and accelerations from the real aircraft (the old file's rename map).
+ATC_ANGLE_MAX 30.0
+LAND_ALT_LOW_M 10.0
+LAND_SPD_MS 0.5
+LOIT_ACC_MAX_M 5.0
+LOIT_BRK_ACC_M 2.5
+LOIT_BRK_JRK_M 5.0
+LOIT_SPEED_MS 12.5
+PILOT_ACC_Z 2.5
+PILOT_SPD_DN 0.0
+PILOT_SPD_UP 2.5
+RTL_ALT_M 15.0
+WP_ACC 2.5
+WP_ACC_Z 1.0
+WP_JERK 1.0
+WP_RFND_USE 1
+WP_SPD 10.0
+WP_SPD_DN 1.5
+WP_SPD_UP 2.5
+WP_TER_MARGIN 10.0
+WP_RADIUS_M 0.5
+LOIT_BRK_DELAY 1.0
+PILOT_Y_RATE 202.5
+
+# ============================================================================
+# WHAT MUST **NOT** BE IN THIS FILE
+# ============================================================================
+# Any ATC_RAT_* rate gain.  Measured in the old project: copying the real aircraft's gains silently
+# overrode the simulation airframe's damping profile, the roll-rate loop limit-cycled at |R-RDes|
+# median 22 deg/s (max 34.6) and the vehicle TUMBLED at t=133 s, while the flight that did not load
+# those gains tracked to 0.1 deg/s.  Rate gains describe an airframe; this file describes a source map.
+#
+# ============================================================================
+# PREREQUISITE BEFORE FLYING MISSION A (measured, not a worry)
+# ============================================================================
+# EK3_SRC1_POSZ=6 means the ALTITUDE LOOP eats the LIO's z.  The old project had to fall back to the
+# barometer (POSZ 1 / VELZ 0) in simulation because the LIO's height was "~0.9 m off five seconds
+# after arming, then running away", and after landing the altitude datum walked off to -12 m.
+#
+# Our round-7 measurements (docs/GPS-VALIDATION-PIPELINE.md, ROUND 7) show the LIO's vertical is good
+# -- 31-37 mm rms as scored, 1.9-2.2 mm once one rigid rotation is allowed -- but that rotation is a
+# 2.35-2.61 deg PITCH of the whole estimate, and a pitch error of theta costs theta * horizontal
+# distance in height: at 2.5 deg that is 43 mm per metre of travel.  Over the 2.0 m leg of the square
+# the FCU would see a phantom 86 mm climb and chase it.
+#
+# So: FIND AND FIX THE 2.5 deg BEFORE TRUSTING POSZ=6.  It is the one open defect from the old work
+# (injected within a second of liftoff, initialisation is provably clean: parked ground-truth attitude
+# error 0.001 deg).  If it cannot be fixed quickly, mission A can still be flown with POSZ 1 (baro
+# height) / VELZ 0 while keeping the horizontal channels on the LIO -- that is a documented,
+# deliberate fallback, not a silent one.

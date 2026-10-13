@@ -1,0 +1,14 @@
+# runtime, build products, caches -- none of this belongs in the repo
+__pycache__/
+*.pyc
+*.so
+*.o
+build/
+install/
+log/
+logs/
+*.bag
+*.BIN
+*.pcd
+# the LIO pattern is 17 MB of vendor data; it is fetched by tools/ or by hand (see STATUS.md)
+sim/mid360_pattern.csv

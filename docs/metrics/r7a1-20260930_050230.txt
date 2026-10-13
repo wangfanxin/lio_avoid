@@ -1,0 +1,60 @@
+==============================================================================
+ACCEPTANCE  run=r7a1-20260930_050230  BIN=/home/fanxin/gazebo_apm/src/ardupilot/logs/00000141.BIN
+==============================================================================
+frame declaration: truth SIM2 (NED, m, origin=EKF origin) | lio /odom (world, rigidly
+  aligned on the route phase, yaw -9.948 deg) | time = sim seconds, FCU offset -0.0056 s
+LIO samples in the airborne span: 12158
+
+--- A. LIO vs truth ---
+   phase                 span(s)       n   h_rms(m)   h_max(m)   z_rms(m)
+   post_takeoff_hold        3.00     600     1.4800     2.0850     0.0220
+   route_active            40.01    7997     0.5265     1.4994     0.0086
+   landing                 15.64    3128     0.2214     0.2569     0.0041
+
+   A1  route h_rms  0.5265 m   target <= 0.020   FAIL
+   A2  route z_rms  0.0086 m   target <= 0.050   PASS
+   A4  post_takeoff h_rms 1.4800 m  target <= 0.050  FAIL
+
+   A3  per-sample jitter (rms of the 2nd difference, m)
+       /odom at 222 Hz (IMU rate); truth SIM2 resampled onto those stamps.
+       VERDICT WINDOW = route only (7997 of 12158 samples); whole-flight and frozen numbers
+       are printed underneath for continuity.  RATIO = vs same-run truth; ABS = mm/sample.
+     East   route: LIO 0.000453 truth 0.000187  fair ratio  2.43x (<= 2x)  abs  0.453 mm (<= 0.50 mm)  FAIL
+            whole flight: LIO 0.000485 truth 0.000151 ->  3.20x ;  /frozen 0.000310 =   1.6x
+     North  route: LIO 0.000191 truth 0.000127  fair ratio  1.50x (<= 5x)  abs  0.191 mm (<= 0.50 mm)  PASS
+            whole flight: LIO 0.000192 truth 0.000103 ->  1.87x ;  /frozen 0.000034 =   5.7x
+     Up     route: LIO 0.000084 truth 0.000008  fair ratio 10.12x (<= 10x)  abs  0.084 mm (<= 0.15 mm)  FAIL
+            whole flight: LIO 0.000390 truth 0.000353 ->  1.10x ;  /frozen 0.000027 =  14.5x
+       A3 OVERALL: FAIL (East 2.43x/0.453mm, Up 10.12x/0.084mm)
+
+--- B. is the trajectory square?  (measured in TRUTH) ---
+   truth East  0.023 .. 2.060   extent 2.037 m  (nominal 2.0)
+   truth North 0.006 .. 1.228   extent 1.222 m  (nominal 1.2)
+   B1  East  2.037 m  target <= 2.100  PASS
+   B1  North 1.222 m  target <= 1.260  PASS
+
+   leg boundaries from the FSM log:  wall_epoch - monotonic = 1790647066.351592 s (spread 0.000003)
+     waypoint 1/4 starts at sim 62.15 s
+     waypoint 2/4 starts at sim 74.15 s
+     waypoint 3/4 starts at sim 82.15 s
+     waypoint 4/4 starts at sim 94.14 s
+
+   B2  leg straightness (REAL leg boundaries from the FSM log)
+     leg1     span 12.0s  endpoints (0.03,0.01)->(2.04,0.03)  max dev 0.022 m
+     leg2     span 8.0s  endpoints (2.04,0.03)->(2.06,1.21)  max dev 0.008 m
+     leg3     span 12.0s  endpoints (2.06,1.21)->(0.06,1.22)  max dev 0.019 m
+     leg4     span 8.0s  endpoints (0.06,1.22)->(0.03,0.04)  max dev 0.009 m
+
+   B3  corner arrival (truth distance to each commanded corner)
+     corner 1  truth (0.02, 0.01)  commanded (0.00, 0.00)  error 0.024 m  PASS
+     corner 2  truth (2.04, 0.03)  commanded (2.00, 0.00)  error 0.048 m  PASS
+     corner 3  truth (2.06, 1.21)  commanded (2.00, 1.20)  error 0.060 m  PASS
+     corner 4  truth (0.06, 1.22)  commanded (0.00, 1.20)  error 0.062 m  PASS
+     corner 5  truth (0.03, 0.04)  commanded (0.00, 0.00)  error 0.044 m  PASS
+   B3  corner arrival: max 0.062 m  mean 0.047 m   target <= 0.100  PASS
+
+   B4  landing
+     modes: [4, 9]
+     statustext of note: ['PrecLand: Failsafe Measures']
+     MSG n=12
+     VISP n=0  (expected 0: this mode sends no vision to the FCU)
