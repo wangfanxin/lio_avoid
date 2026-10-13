@@ -54,14 +54,53 @@ merged into it), the body (4, with 2 as its FRD alias), and the sensor (5, a fix
 message, three conventions.  This is the single most likely place for a silent sign/frame error, and it
 is why the move tests in §5 are not optional.
 
-### 0.3 Why frame 6 merges into frame 3 (unchanged from before)
+### 0.3 Making L and W coincide on purpose (the user's question)
 
-The fork's initialisation removes the vehicle's heading from its world (`kf_init`: gravity alignment,
-then `yaw = atan2(n.y, n.x)` of the body x-axis, then `rot = g_lidar_robo_yaw * R_yaw_inv * init_rot`),
-so the LIO world's x-axis IS the body's forward axis at initialisation.  With the vehicle parked on the
-pad at a known heading, `W <- LIO_world` is a **known constant** (yaw = -heading_at_init, plus the known
-sensor offset), not a per-run unknown.  The old project measured varying rotations because its heading
-at initialisation was not fixed.
+**Yes, and it is the single biggest simplification available.**  The mechanism is exact, not approximate:
+the fork's `kf_init` aligns gravity and then *removes the vehicle's heading* (`yaw = atan2(n.y, n.x)` of
+the body x-axis, then `rot = g_lidar_robo_yaw * R_yaw_inv * init_rot`), so **L's x-axis is the body's
+forward axis at the instant the LIO initialises**.  If the vehicle is parked on the pad facing a known
+direction when the LIO starts, the whole L <- W relationship is decided by one number we choose at spawn
+time.  Two consequences follow, and they pull in opposite directions:
+
+| spawn heading at LIO init | L relative to W | the FCU's local NED relative to W |
+|---|---|---|
+| **facing North** (W's +y) | L = W rotated by -90 deg (x_L = North) | **the standard permutation** `(x_ned, y_ned, z_ned) = (N, E, -U)`; "North" means North |
+| facing East (W's +x) | **L = W exactly** (axes identical) | a 90 deg rotation: the FCU's "North" is W's East |
+
+They cannot both hold: with `EK3_SRC1_YAW=6` the EKF **adopts the LIO's yaw**, and the LIO's yaw zero is
+the body's forward axis at init.  So the FCU's "North" *is* the body's init heading, and L's x-axis is the
+same direction; making L = W forces the FCU's North to be W's East.
+
+**Recommendation: spawn facing North.**  What must be provable is the **FCU link** -- that is where the
+mission is sent and where a silent rotation flies the square rotated while every internal check passes.
+Facing North makes that link the textbook permutation with no yaw parameter anywhere in the mission path,
+and leaves L offset from W by a constant -90 deg that lives in one line of `frames.py` and is verified
+once.  The planner does not care: its map and its state are both in L.
+
+With that choice the mission transform collapses to a swap and a sign flip:
+
+```
+(x_ned, y_ned, z_ned) = (N_rel, E_rel, -U_rel)      # relative to the EKF origin (the pad)
+```
+
+No rotation, nothing to calibrate, and the "which frame is this in" class of errors loses its hiding place.
+
+**What is left, and what each part costs:**
+
+1. **Origin.**  L's origin is the LIO's init position, which the fork sets to the lever arm
+   `g_odom_robo.t_ = (0.05, 0, 0.10)` -- about 0.3 m above the pad.  Either (a) subtract the constant in
+   one place (no LIO change; my preference to start), or (b) add a **default-off** parameter to `kf_init`
+   so the *published body odometry* starts at exactly (0,0,0).  (b) is ~5 lines and must stay default-off,
+   so the upstream A/B in the LIO bake-off remains a real A/B.
+2. **The spawn condition is declared and checked, not assumed.**  `worlds/pillars.yaml` therefore carries
+   an explicit `spawn:` block (position + yaw), and the FSM asserts from the truth tap that the vehicle
+   really was parked, level and at that heading when the LIO initialised.  If it was not, the flight does
+   not start: coincidence makes the chain simple *and* makes it depend on one initial condition, so that
+   condition gets a check instead of a hope.
+3. **What coincidence does NOT fix.**  It is a frame statement, not an estimator statement: the 2.5 deg
+   pitch of the LIO's estimate that round 7 found (and that A2's 31-37 mm is made of) is unaffected, and
+   neither is any noise or jitter question.
 
 ### 0.4 The four conversions
 
