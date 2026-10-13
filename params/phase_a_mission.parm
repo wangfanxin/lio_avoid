@@ -10,12 +10,12 @@
 #
 # The rate limits are left as the airframe's; only the horizontal transit speed and the waypoint radius
 # are mission parameters.
-WP_SPD 0.5
-LOIT_SPEED_MS 0.5
+WP_SPD 0.25
+LOIT_SPEED_MS 0.25
 WP_RADIUS_M 0.05
-WP_ACC 0.8
-WP_JERK 2.0
-LOIT_ACC_MAX_M 0.8
-LOIT_BRK_ACC_M 0.5
-LOIT_BRK_JRK_M 1.0
+WP_ACC 0.3
+WP_JERK 1.0
+LOIT_ACC_MAX_M 0.3
+LOIT_BRK_ACC_M 0.25
+LOIT_BRK_JRK_M 0.5
 PSC_ACCZ_P 0.5

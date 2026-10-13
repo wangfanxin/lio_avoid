@@ -41,6 +41,7 @@ GATES = {
     "lio_timeout_s": 1.0,
     "geofence_m": 4.60,
     "arrive_m": 0.06,
+    "arrive_z_m": 0.35,
     "leg_timeout_s": 25.0,
     "rate_hz": 50.0,
 }
@@ -438,24 +439,28 @@ class Mission:
                 st = self.bridge.state()
                 err_cmd = float(np.linalg.norm(np.array(st.pos) - corner))
                 err_truth = float(np.linalg.norm(self.tap.p - corner))
-                # BOTH must be inside the tolerance.  MEASURED 2026-10-13 on the first complete flight:
-                # declaring arrival on the FCU's own estimate alone advanced the mission while the
-                # TRUTH was still 0.13-0.34 m from the corner, and B3 (which is measured against the
-                # truth) then failed at three corners out of four and B1's box came out 0.47 m too wide.
-                # The estimator cannot grade its own homework.
-                if err_cmd < GATES["arrive_m"] and err_truth < GATES["arrive_m"]:
-                    self.log("corner %d reached: FCU err %.3f m, truth err %.3f m, %.1f s"
-                             % (i, err_cmd, err_truth, time.monotonic() - t_leg))
+                h_cmd = float(np.linalg.norm(np.array(st.pos)[:2] - corner[:2]))
+                h_truth = float(np.linalg.norm(self.tap.p[:2] - corner[:2]))
+                dz_truth = float(self.tap.p[2] - corner[2])
+                # ARRIVAL IS HORIZONTAL, and the vertical gets a band.  MEASURED 2026-10-13, and it is
+                # this configuration's own documented property rather than a defect: with step (a) the
+                # altitude loop runs on the BAROMETER (EK3_SRC1_POSZ = 1, PLAN.md decision 15), the EKF's
+                # z sits at 1.97-2.01 while the truth is 2.09-2.19, so a 3-D arrival test could never
+                # pass -- it read as a 0.18 m "estimator bias" when the horizontal error was 3-5 cm.
+                # Every route metric (B1 box, B2 straightness, B3 corners) is horizontal; A2 removes the
+                # vertical mean for exactly this reason.
+                if (h_cmd < GATES["arrive_m"] and h_truth < GATES["arrive_m"] and
+                        abs(dz_truth) < GATES["arrive_z_m"]):
+                    self.log("corner %d reached: horizontal FCU %.3f m / truth %.3f m, vertical %+.3f m "
+                             "(band %.2f), %.1f s" % (i, h_cmd, h_truth, dz_truth,
+                                                      GATES["arrive_z_m"],
+                                                      time.monotonic() - t_leg))
                     break
                 if time.monotonic() - t_leg > GATES["leg_timeout_s"]:
-                    # print the ESTIMATOR-vs-TRUTH offset per axis, not just the two norms: a steady
-                    # offset that does not shrink is a different defect from a loop that oscillates, and
-                    # the norm alone cannot tell them apart (MEASURED: 0.044 m on the FCU's estimate
-                    # against 0.183 m on the truth, stable for 25 s -- a bias, not a limit cycle)
-                    off = np.array(st.p) - self.tap.p
-                    return ("corner %d timed out after %.0f s: FCU err %.3f m, truth err %.3f m, "
-                            "estimator-vs-truth offset [%+.3f %+.3f %+.3f] m"
-                            % (i, GATES["leg_timeout_s"], err_cmd, err_truth, *off))
+                    off = np.array(st.pos) - self.tap.p
+                    return ("corner %d timed out after %.0f s: horizontal FCU %.3f m / truth %.3f m, "
+                            "vertical %+.3f m, estimator-vs-truth offset [%+.3f %+.3f %+.3f] m"
+                            % (i, GATES["leg_timeout_s"], h_cmd, h_truth, dz_truth, *off))
         return None
 
     def land(self):

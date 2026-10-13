@@ -194,11 +194,24 @@ def main() -> int:
              fair[2] <= args.jitter_fair_u)
     print("   [%s] A3" % ("PASS" if a3_ok else "FAIL"))
 
-    # B1 box extents (truth only)
-    ex = pw[:, 0].max() - pw[:, 0].min()
-    ny = pw[:, 1].max() - pw[:, 1].min()
+    # B1 box extents (truth only) -- over the ROUTE, not over the whole flight.
+    #
+    # MEASURED 2026-10-13: taking every truth sample above 0.5 m included the approach from the PAD to
+    # the first corner, so the box came out 2.54 x 1.57 m for a 2.0 x 1.2 m square -- the pad is
+    # (0,0) and the square starts at (0.5, 0.4), so the box was measuring pad->square, not the square.
+    # The window is now from the arrival at corner 1 (the phase log's leg2 entry) to the end of the
+    # last leg, which is the route the acceptance talks about.
+    t_sim_all = np.array([int(r.get("t_sim_us", 0)) for r in phases])
+    leg_idx = [phases.index(r) for r in legs]
+    route_t0 = t_sim_all[leg_idx[1]] if len(leg_idx) > 1 else t_sim_all[leg_idx[0]]
+    route_t1 = t_sim_all[leg_idx[-1] + 1] if leg_idx[-1] + 1 < len(phases) else int(t_tap[-1])
+    m_route = np.flatnonzero((t_tap >= route_t0) & (t_tap <= route_t1))
+    p_route = p_tap[m_route] if len(m_route) else pw
+    ex = float(p_route[:, 0].max() - p_route[:, 0].min())
+    ny = float(p_route[:, 1].max() - p_route[:, 1].min())
     print()
-    print("B1 truth box extents     E %.3f m  N %.3f m   (target <= 2.10 / 1.26)" % (ex, ny))
+    print("B1 truth box extents over the route (%.1f s): E %.3f m  N %.3f m   (target <= 2.10 / 1.26)"
+          % (len(m_route) and (t_tap[m_route][-1] - t_tap[m_route][0]) * 1e-6, ex, ny))
 
     # B2 straightness per leg: fit a line to each leg's truth samples, take the max perpendicular error.
     # Windowing is by SIM TIME (the phase log's second column), because the recordings are indexed by it
@@ -229,15 +242,23 @@ def main() -> int:
         print("   leg %d: %5d samples, length %.3f m, worst perpendicular %.1f mm (<= 50) %s"
               % (i + 1, len(m), L, worst * 1e3, "PASS" if worst <= 0.050 else "FAIL"))
 
-    # B3 corner arrival
-    print("B3 corner arrival (truth to the commanded corner):")
+    # B3 corner arrival: HORIZONTAL distance from the truth to the commanded corner, with the vertical
+    # reported next to it.  The vertical is not part of the verdict because in step (a) the altitude
+    # loop runs on the barometer (EK3_SRC1_POSZ = 1) and holds a 0.1-0.2 m datum offset that A2 removes
+    # by construction; every route metric here (B1 box, B2 straightness, B3 corners) is horizontal.
+    print("B3 corner arrival (truth to the commanded corner, horizontal; vertical shown for the record):")
     b3_ok = 0
     for i, c in enumerate(corners):
-        d = np.linalg.norm(pw - c, axis=1)
+        m = np.flatnonzero(np.linalg.norm(pw[:, :2] - c[:2], axis=1) < 0.40)
+        d = np.linalg.norm(pw[:, :2] - c[:2], axis=1)
         best = float(np.min(d))
+        if len(m):
+            dz = float(np.mean(pw[m][:, 2] - c[2]))
+        else:
+            dz = float("nan")
         b3_ok += best <= 0.100
-        print("   corner %d: closest approach %.1f mm (<= 100) %s"
-              % (i + 1, best * 1e3, "PASS" if best <= 0.100 else "FAIL"))
+        print("   corner %d: closest horizontal approach %.1f mm (<= 100) %s   vertical %+.3f m"
+              % (i + 1, best * 1e3, "PASS" if best <= 0.100 else "FAIL", dz))
 
     # B4: the phase log and the FCU's state are elsewhere; this tool reports what it can see
     print()

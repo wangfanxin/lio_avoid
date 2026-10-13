@@ -1,0 +1,28 @@
+# Mission A acceptance table, N = 10 flights, 2026-10-13T22:32:12+08:00
+# platform: ArduPilot Copter-4.7.1 (tap applied), clean upstream Super-LIO f89f48d,
+#           EK3_SRC1_POSZ = 1 / VELZ = 0 (PLAN.md decision 15 step (a))
+# raw per-flight metrics: logs/missionA-phaseA-*-flight*.metrics.txt
+
+acceptance table, aggregated from 10 flights
+(the per-flight files are the evidence; this file only counts them)
+
+flights completed (FSM reached 'done')   10 of 10
+A1 route horizontal rms  <= 20 mm        10 of 10   min 6.300 / median 6.615 / max 6.810 mm
+A2 route vertical rms    <= 50 mm        10 of 10   min 7.580 / median 8.180 / max 8.950 mm
+A3 jitter (abs + fair ratio)             0 of 10   abs worst E 0.233 N 0.259 U 0.513 mm
+B1 route box E <= 2.10, N <= 1.26 m      9 of 10   min 2.044 / median 2.065 / max 2.083 m / min 1.238 / median 1.248 / max 1.261 m
+B2 straightness <= 50 mm per leg         26 of 50 legs   (3/2/3/4/2/1/2/2/3/4 of 5/5/5/5/5/5/5/5/5/5 across flights)
+B3 corner arrival <= 100 mm              38 of 40 corners (4/3/4/4/3/4/4/4/4/4 of 4/4/4/4/4/4/4/4/4/4 across flights)
+B4 LAND + disarm                         10 of 10
+
+raw per flight:
+   missionA-phaseA-20261013_221748-flight01.metrics.txt A1 6.62    A2 8.39    B1 2.064/1.260      B2 3/5 B3 4/4
+   missionA-phaseA-20261013_221748-flight02.metrics.txt A1 6.7     A2 8.11    B1 2.062/1.241      B2 2/5 B3 3/4
+   missionA-phaseA-20261013_221748-flight03.metrics.txt A1 6.8     A2 8.95    B1 2.054/1.242      B2 3/5 B3 4/4
+   missionA-phaseA-20261013_221748-flight04.metrics.txt A1 6.59    A2 7.81    B1 2.066/1.239      B2 4/5 B3 4/4
+   missionA-phaseA-20261013_221748-flight05.metrics.txt A1 6.61    A2 8.4     B1 2.077/1.253      B2 2/5 B3 3/4
+   missionA-phaseA-20261013_221748-flight06.metrics.txt A1 6.47    A2 7.58    B1 2.044/1.258      B2 1/5 B3 4/4
+   missionA-phaseA-20261013_221748-flight07.metrics.txt A1 6.81    A2 8.17    B1 2.078/1.242      B2 2/5 B3 4/4
+   missionA-phaseA-20261013_221748-flight08.metrics.txt A1 6.3     A2 7.81    B1 2.083/1.238      B2 2/5 B3 4/4
+   missionA-phaseA-20261013_221748-flight09.metrics.txt A1 6.54    A2 8.38    B1 2.046/1.253      B2 3/5 B3 4/4
+   missionA-phaseA-20261013_221748-flight10.metrics.txt A1 6.73    A2 8.19    B1 2.082/1.261      B2 4/5 B3 4/4
