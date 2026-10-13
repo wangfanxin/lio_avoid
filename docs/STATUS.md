@@ -18,8 +18,11 @@ is next.
 | 8 | frame conventions researched from source | ArduPilot Copter-4.7.1: setpoints accept only LOCAL_NED / LOCAL_OFFSET_NED / BODY_NED / BODY_OFFSET_NED; `ODOMETRY` is silently DROPPED unless `frame_id = LOCAL_FRD` and `child_frame_id = BODY_FRD`; mavros does ENU->NED itself in `vision_pose_estimate.cpp:133-139` and stamps LOCAL_FRD/BODY_FRD in `odom.cpp:295-296` |
 | 9 | documentation budget | 4 of 5 used, enforced by `tools/docs-budget.py` |
 | 10 | **the "fork" was not a fork** | diffed our old local Super-LIO copy against the clean upstream clone (`f89f48d`): the code differences are NOT our work -- the local copy is an OLDER upstream snapshot.  Upstream has since (a) given `RightJacobianSO3` finite-value guards and a Taylor branch near theta -> 0, and (b) FIXED the undistortion, which in our copy advances each point by the whole interval `dt` instead of the fractional `tau`.  Consequence: **the round-7 accuracy numbers (3D 5.0-6.4 mm) were measured with the older code**; the new stack builds the clean upstream and carries over only our measured configuration (`config/livox_360.yaml`, kept in `src/lio-fork-local/config/`).  A junk 0-byte file literally named `*.h` (a bad shell redirection in an old session) was removed from that copy |
+| 11 | **the plan through mission A is written, for review** | `PLAN.md` §4.2: S3-S7, each with its build, its named gate (with the number it must print) and its risks; plus the one branch that can fail A2 by construction (`EK3_SRC1_POSZ = 6` x the 2.5 deg tilt) with its three options.  Two questions for the user are in `PLAN.md` §7.5-6 |
 
 ## Next, in order
+
+0. **Review of `PLAN.md` §4.2** (this checkpoint): nothing in S3-S7 starts before the plan is approved.
 
 1. **SITL truth tap**: `modules/mavlink` submodule, then the ~30-line env-gated truth broadcast in
    `libraries/SITL/`, then build and **verify the tap on the wire** (a receiver printing the stream).

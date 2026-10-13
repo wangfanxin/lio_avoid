@@ -85,6 +85,82 @@ only file that will ever include `traj_utils`.  If the planner turns out to need
 that a Path cannot express, the interface can be extended then, with the rectangle source proving the old
 form still works.
 
+### 4.2 PHASE A in detail — truth tap to a flown rectangle (for review, 2026-10-13)
+
+Each step is: **build → verify with a named gate → risks and the fallback if the gate fails.** Steps are
+sequential, and every gate prints a number: a step is not finished because code exists.
+
+**S3. The SITL truth tap**
+*Build*: `git submodule update --init --depth 1 modules/mavlink` (currently empty), ArduPilot's own python
+requirements, `./waf configure --board sitl` + `./waf copter`; then ~30 lines in `libraries/SITL/`, gated by
+an environment variable, sending one line per model step (t, p_ned, v_ned, q body→NED, body rates, specific
+force) to a UDP port. `sim/truth_rx.py` receives and republishes `/clock`, `/sim/rtf`, `/sim/truth/odom`.
+*Gate*: a parked 30 s run — tap rate ≥ 380 Hz, `|a|` within 0.05 of 9.7946, quaternion norm 1 ± 1e-6,
+position drift < 1 mm, and the tap's position agreeing with SITL's own `SIM2` log to < 1 mm. Plus a scope
+check: `git diff` shows only the tap file(s) — the flight code is untouched.
+*Risks*: submodule fetch (fallback: the gitee mirror, or fetch only the mavlink headers); build deps
+(`empy`, `pexpect`, `lxml`, `pyparsing`); hooking the tap somewhere that disturbs timing (it must not).
+
+**S4. The sensor node and RViz**
+*Build*: `sim/lidar_imu.py` (truth + world → `PointCloud2` in S at 10 Hz with real per-point times, `Imu`
+in S at 200 Hz), `sim/world_markers.py`, `rviz/*.rviz`.
+*Gate*: achieved rates from the node's own counters (cloud 10.0 ± 0.2 Hz, IMU 200 ± 2 Hz); per-point time
+monotonic over 0…0.099995 s; and the strong one — **accumulate 60 s of cloud, fit the pillar centres, compare
+with `worlds/pillars.yaml`**: agreement to a few mm validates the mount, the pattern, the timing and the
+frame chain *before any LIO exists*. RViz: with Fixed Frame `mid360_link` the raw scan is a clean fan; with
+`world_w` the pillars and the accumulated cloud coincide.
+*Risks*: none serious (9.8 ms/scan measured); if the rates drift, `/sim/rtf` says so.
+
+**S5. `common/frames.py`, `Calib`, and the convention tests**
+*Build*: `frames.py` (the four conversions), `Calib` (measure, then compare against the construction
+prediction), `tools/conv-test-*.py` for T1, T2, T3, T3b, T5 of `FRAMES.md` §5.
+*Gate*: T2/T3/T3b/T5 run **parked, unarmed** (restart the sim per spawn heading); T1 needs one short guided
+move along each axis. Each test prints PASS/FAIL against an explicit expected value, and **each has a
+mutation case**: flip a sign in `frames.py` and the test must fail. A test that passes with the sign flipped
+has no power and is not a gate.
+*Risks*: the spawn heading must be asserted from the tap, and if SITL starts the vehicle somewhere else that
+is exactly what T2 measures — it gets fixed in the simulator, never papered over in the FSM.
+
+**S6. One LIO, end to end**
+*Build*: vendored `livox_ros_driver2` (so Super-LIO's CMake stays pristine — it requires that package
+unconditionally), clean upstream Super-LIO built with colcon, and `lio/config/livox_360.yaml` carrying the
+**measured** values from the old tree, adapted to our input: `lidar_type: 3`, `blind 0.3`, `maxrange 40`,
+`ds_size 0.15`, `voxel_fliter_size 0.2`, `filter_rate 1`, `imu_ng 0.005`, `imu_na 0.1`,
+`gravity_norm 9.7946`, `lidar_imu` identity, `odom_robo` = 45° mount + (0.05, 0, 0.10); outputs `/odom`
+(fitted, 200 Hz), `/cloud_registered`, `/lio/status`.
+*Gate*: (a) parked 60 s — LIO drift < 5 mm, yaw offset vs the tap within 1° (0 by construction); (b) slow
+moves — horizontal rms < 20 mm against the tap; (c) **the tilt test** — the round-7 3D rigid fit on the new
+LIO's trajectory. (c) is the one result that can change the plan, so it is measured before mission A.
+*Risks*: CPU/RTF (LIO ≈ 1 core; gate `/sim/rtf` ≥ 0.8); the LIO's world-yaw convention (the parked test);
+the tilt — see the branch below.
+
+**S7. Mission A — the rectangle**
+*Build*: `planner/rectangle_source` (§4.1), `bridge/` (both implementations), `fsm/` (sampler, arrival
+checks, safety gates, `/fsm/phase`), `tools/recorder` + `tools/metrics` (ported: A1–A4, B1–B4, and counts).
+*Procedure*: pre-flight assertions (S5 green, `Calib` matches construction, EKF origin set without GPS,
+arming checks as configured) → **N = 10 flights**, each recording everything and reporting `/sim/rtf` and the
+achieved rates.
+*Gate*: §3 numbers, every line with "how many of how many", 0 diverged. A flight aborted for a harness reason
+is counted and explained, never dropped silently.
+*Risks and fallbacks*: no-GPS arming (the old `ARMING_SKIPCHK`/`VISO_*` block is the starting point);
+`mavros` vs `pymavlink` differences (both are gates, not alternatives); RTF collapse (the old project's
+aborts) → an RTF gate before every flight; below 0.8 the flight is not started.
+
+**The one branch that can stop Phase A**
+
+`EK3_SRC1_POSZ = 6` makes the altitude loop eat the LIO's z, and a pitch error costs `theta × distance` in
+height: at the 2.5° the old LIO showed that is **43 mm per metre**, i.e. ~86 mm over the 2 m leg against an
+A2 target of 50 mm — A2 would fail even though the estimator is fine.
+
+| option | what it means | cost |
+|---|---|---|
+| **(a) fly A with `EK3_SRC1_POSZ = 1` (baro) and `VELZ = 0`, keeping position and yaw on the LIO** | SITL has a barometer, so this works today; A2 then measures the altitude loop, not the LIO's z. It is the old project's own rectangle configuration, so the path is proven — but it dodges the question | A is not blocked; the LIO's z stays unproven |
+| (b) fix the tilt first (instrument the LIO's state through the climb, find where the 2.5° enters) | A is flown with all five sources on the LIO, as originally intended | delays A by an unknown amount (C++ instrumentation + rebuild cycles) |
+| (c) fly A with `POSZ = 6` anyway | measures the real thing | A2 fails by construction; not a plan |
+
+Recommendation: **(a) to unblock A, (b) immediately after A**, and the report says explicitly that A2's
+number under (a) is the barometer's, not the LIO's.
+
 ## 5. Rules (carried over from the rounds that produced the numbers)
 
 1. Every number carries its frame, origin and window; angles are unwrapped before differencing.
@@ -127,3 +203,10 @@ budget is about prose that has to be kept true).
 4. The old `gazebo_apm` tree holds ~40 historical documents (the evidence chain for every number
    reported in rounds 1-7).  It is a frozen archive rather than a living document set: fold it into the
    budget as well, or leave it frozen?
+5. **Spawn heading** (decides whether L and W can coincide, `FRAMES.md` §0.3): face **North** -- FCU local
+   NED is the textbook `(N, E, -U)` permutation, L = W rotated -90 deg -- or face **East** -- L = W exactly,
+   but the FCU's "North" is W's East.  Recommendation: North.  Either way the spawn condition is asserted
+   from the truth tap before take-off.
+6. **The 2.5 deg tilt vs A2** (`PLAN.md` §4.2, the branch): fly A with `EK3_SRC1_POSZ = 1` (baro) so A2
+   measures the altitude loop and unblock the milestone, or fix the LIO's tilt first.  Recommendation:
+   fly with baro, then fix the tilt as the next task.
