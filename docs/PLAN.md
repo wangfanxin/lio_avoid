@@ -140,9 +140,13 @@ unconditionally), clean upstream Super-LIO built with colcon, and `lio/config/li
 `ds_size 0.15`, `voxel_fliter_size 0.2`, `filter_rate 1`, `imu_ng 0.005`, `imu_na 0.1`,
 `gravity_norm 9.7946`, `lidar_imu` identity, `odom_robo` = 45° mount + (0.05, 0, 0.10); outputs `/odom`
 (fitted, 200 Hz), `/cloud_registered`, `/lio/status`.
-*Gate*: (a) parked 60 s — LIO drift < 5 mm, yaw offset vs the tap within 1° (0 by construction); (b) slow
-moves — horizontal rms < 20 mm against the tap; (c) **the tilt test** — the round-7 3D rigid fit on the new
-LIO's trajectory. (c) is the one result that can change the plan, so it is measured before mission A.
+*Result*: the clean upstream (`f89f48d`, `liblio.so` md5 `e4b82a73cbfb70a7a538514f74936b09`) built with
+the vendored driver and fed by our sensor publishes `/lio/odom` at **10.02 Hz** and `/lio/robo/odom` at
+**199.26 Hz**; parked 40 s the drift is **26.60 mm max / 9.43 mm rms**.  The one thing that made those
+numbers mean anything was turning the sensor's noise ON: with the exact truth as the IMU the same LIO
+tracked to **0.01 mm**, which is a measurement of a simulation with no noise in it, not of an estimator.
+Motion and the tilt (gate (b)/(c)) move to S7 -- see `STATUS.md` row 28 for why the shove harness cannot
+answer them.
 *Risks*: CPU/RTF (LIO ≈ 1 core; gate `/sim/rtf` ≥ 0.8); the LIO's world-yaw convention (the parked test);
 the tilt — see the branch below.
 

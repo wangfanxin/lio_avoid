@@ -140,10 +140,22 @@ def _R_from_q_batch(q):
 
 # --------------------------------------------------------------------------- the sensor
 class Sensor:
-    """Turns one truth window into one cloud in S, plus the IMU samples inside it."""
+    """Turns one truth window into one cloud in S, plus the IMU samples inside it.
+
+    NOISE: on by default, with the values the carried LIO configuration already assumes
+    (`imu_ng: 0.005` rad/s/sqrt(Hz), `imu_na: 0.1` m/s^2/sqrt(Hz)), which the old stack had MEASURED on
+    its own simulated IMU ("the gyro's real disturbance density is ~0.0047 rad/s/sqrt(Hz)",
+    src/lio-fork-local/config/livox_360.yaml).  MEASURED 2026-10-13 here: with a NOISELESS IMU the
+    clean upstream LIO tracked the truth to 0.01 mm parked -- i.e. the estimator was being tested on a
+    problem with no noise in it, and no accuracy number from such a run means anything.  A constant
+    bias is included because the estimator carries bias states; without any bias those states are
+    never exercised.  `--no-noise` reproduces the ideal case for the A/B.
+    """
 
     def __init__(self, world, rays, times, mount_pitch=45.0, lever_arm=None,
-                 intensity=100.0, rmin=0.10, rmax=60.0):
+                 intensity=100.0, rmin=0.10, rmax=60.0,
+                 range_noise=0.010, gyro_noise_density=0.005, accel_noise_density=0.1,
+                 gyro_bias=0.001, accel_bias=0.01, seed=20261013):
         self.world = world
         self.rays = rays
         self.times = times                      # seconds from the scan start, per point
@@ -153,6 +165,13 @@ class Sensor:
         self.rmin = rmin
         self.rmax = rmax
         self.last_cast_ms = float("nan")
+        self.range_noise = range_noise
+        # per-sample standard deviation from a density: sigma = density * sqrt(rate)
+        self.gyro_sigma = gyro_noise_density * math.sqrt(200.0)
+        self.accel_sigma = accel_noise_density * math.sqrt(200.0)
+        self.gyro_bias = np.asarray(gyro_bias, dtype=float) * np.ones(3)
+        self.accel_bias = np.asarray(accel_bias, dtype=float) * np.ones(3)
+        self.rng = np.random.default_rng(seed)
 
     def scan(self, buf: TruthBuffer, t_start_us: int):
         """Cast one scan whose points span [t_start, t_start + times[-1]] with per-point poses."""
@@ -164,8 +183,13 @@ class Sensor:
         pts_w, rng, idx = raycast.cast(origins, R_w_s, self.rays, self.world,
                                        rmin=self.rmin, rmax=self.rmax, return_index=True)
         self.last_cast_ms = (time.perf_counter() - t0) * 1e3
-        # back into the housing frame: p_S = R_WS^T (p_W - origin_W)
+        # back into the housing frame: p_S = R_WS^T (p_W - origin_W), with range noise applied along
+        # the measured direction (a lidar measures a RANGE, so its noise is radial, not per-axis)
         d = pts_w - origins[idx]
+        if self.range_noise > 0.0:
+            # a lidar measures a RANGE: its noise is radial, not per-axis
+            r_noisy = rng + self.rng.normal(0.0, self.range_noise, size=len(rng))
+            d = d * (r_noisy / np.maximum(rng, 1e-9))[:, None]
         pts_s = np.einsum("nij,nj->ni", R_w_s[idx].transpose(0, 2, 1), d)
         return pts_s, idx, rng
 
@@ -181,6 +205,17 @@ class Sensor:
             a_b = F @ buf.accel[i]
             out.append((int(buf.t[i]), R_SB @ w_b, R_SB @ a_b))
         return out
+
+    def imu_sample(self, buf: TruthBuffer, i: int):
+        """One IMU sample in S, with bias and noise if enabled (bias first, then noise)."""
+        F = frames.F_FRD_FLU
+        R_SB = self.R_BS.T
+        w = R_SB @ (F @ buf.gyro[i]) + self.gyro_bias
+        a = R_SB @ (F @ buf.accel[i]) + self.accel_bias
+        if self.gyro_sigma > 0.0:
+            w = w + self.rng.normal(0.0, self.gyro_sigma, size=3)
+            a = a + self.rng.normal(0.0, self.accel_sigma, size=3)
+        return int(buf.t[i]), w, a
 
 
 # --------------------------------------------------------------------------- ROS publishing
@@ -315,6 +350,15 @@ def main() -> int:
     ap.add_argument("--burst", type=int, default=0, help="stop after N scans (0 = run until Ctrl-C)")
     ap.add_argument("--duration", type=float, default=0.0, help="stop after this much SIM time")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--no-noise", action="store_true",
+                    help="publish exact ranges and a noiseless, bias-free IMU.  The A/B case: with it, "
+                         "the clean upstream LIO tracked the truth to 0.01 mm parked, which is how we "
+                         "know the noise model is what makes the accuracy numbers mean something")
+    ap.add_argument("--range-noise", type=float, default=0.010, help="lidar range sigma, m")
+    ap.add_argument("--gyro-noise", type=float, default=0.005, help="gyro density, rad/s/sqrt(Hz)")
+    ap.add_argument("--accel-noise", type=float, default=0.1, help="accel density, m/s^2/sqrt(Hz)")
+    ap.add_argument("--gyro-bias", type=float, default=0.001, help="constant gyro bias, rad/s")
+    ap.add_argument("--accel-bias", type=float, default=0.01, help="constant accel bias, m/s^2")
     args = ap.parse_args()
 
     if args.selftest:
@@ -359,7 +403,17 @@ def main() -> int:
     print("pattern: %s (%s), %d points spanning %.6f s" % (
         pattern or "synthesised", src, len(rays), float(times[-1]) if len(times) else -1.0))
 
-    sensor = Sensor(world, rays, times, mount_pitch=pitch)
+    sensor = Sensor(world, rays, times, mount_pitch=pitch,
+                    range_noise=0.0 if args.no_noise else args.range_noise,
+                    gyro_noise_density=0.0 if args.no_noise else args.gyro_noise,
+                    accel_noise_density=0.0 if args.no_noise else args.accel_noise,
+                    gyro_bias=0.0 if args.no_noise else args.gyro_bias,
+                    accel_bias=0.0 if args.no_noise else args.accel_bias)
+    print("noise: range sigma %.4f m, gyro %.4f rad/s, accel %.4f m/s^2 per sample (density "
+          "%.4f / %.3f at 200 Hz), bias gyro %.4f accel %.4f%s"
+          % (sensor.range_noise, sensor.gyro_sigma, sensor.accel_sigma, args.gyro_noise,
+             args.accel_noise, args.gyro_bias, args.accel_bias,
+             "  [DISABLED]" if args.no_noise else ""), flush=True)
     out = RosOut(args.cloud_topic, args.imu_topic, args.frame)
     stop = install_stop_handler()
 
@@ -415,9 +469,8 @@ def main() -> int:
             imu_counter += 1
             if imu_counter % imu_every == 0:
                 i = len(buf.t) - 1
-                F = frames.F_FRD_FLU
-                R_SB = sensor.R_BS.T
-                out.imu(int(buf.t[i]), R_SB @ (F @ buf.gyro[i]), R_SB @ (F @ buf.accel[i]))
+                t_i, w_i, a_i = sensor.imu_sample(buf, i)
+                out.imu(t_i, w_i, a_i)
                 imu_published += 1
                 out.spin_once()
 

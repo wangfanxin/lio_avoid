@@ -1,0 +1,86 @@
+# The LIO configuration for Phase A, carried from the measured flight stack and adapted to THIS
+# simulator's sensor.
+#
+# PROVENANCE: every value below that is not marked otherwise comes from
+# src/lio-fork-local/config/livox_360.yaml -- the configuration the old stack flew with (10 of 11
+# flights completed, A1 4.4-5.9 mm).  The comments there record WHY each value is what it is
+# (measured A/Bs, with the losing side's numbers), and those comments are not repeated here.
+#
+# WHAT CHANGED, and why:
+#   * lio.sensor.lidar_type: 1 -> 3.  The old bridge published in a layout that made lidar_type 1
+#     (LIVOX) work; our sensor publishes the velodyne layout x,y,z,intensity,time with `time` in
+#     SECONDS, which is what LID_TYPE::VELO16 (3, in src/super_lio/include/common/ds.h) parses at
+#     ROSWrapper.cpp:490-505.  Verified against the clean upstream source, not remembered.
+#   * lio.sensor.gravity_norm: 9.7946 -> 9.80665.  This parameter describes THE SENSOR's local gravity:
+#     on the real aircraft it is 9.7946, and SITL's accelerometer measures 9.80665 (GRAVITY_MSS,
+#     measured on the tap: |a| = 9.8067).  A config that tells the estimator 9.7946 while the sensor
+#     reads 9.80665 is a 0.12 % lie, which is 12 mm of attitude-equivalent error at 1 g; the honest
+#     value for this simulator is the one the sensor reports.  The old value stays in the carried
+#     config for the real drone.
+#   * lio.output.robot stays FALSE, as in the old stack and for the same reason: "the mav lane owns the
+#     FCU link" -- our bridge is the only thing that talks to the FCU.
+#
+# Everything else is the measured set, including the two that were expensive to learn:
+#   * ds_size 0.15 / voxel_fliter_size 0.2 / filter_rate 1 / kf_max_iterations 4 -- the "finer" matcher
+#     (0.10/0.10/6) was tested IN FLIGHT and gave 0.38-0.53 m route error against 0.0048-0.0059 m.
+#   * enable_downsample true -- false is better parked (0.182 -> 0.014 m drift) and tripped an EKF
+#     failsafe in flight, so the voxel step is doing noise suppression the matcher needs.
+/**:
+  ros__parameters:
+    lio.map.save_map: false
+    lio.map.if_filter: true
+    lio.map.save_map_dir: "map"
+    lio.map.map_name: "phase_a.pcd"
+    lio.map.ds_size: 0.15
+    lio.map.save_interval: 500
+
+    lio.eva.timer: false
+
+    lio.ros.lidar_topic: "/livox/lidar"
+    lio.ros.imu_topic: "/livox/imu"
+
+    lio.sensor.lidar_type: 3
+    lio.sensor.blind: 0.3
+    lio.sensor.maxrange: 60.0
+    lio.sensor.filter_rate: 1
+    lio.sensor.enable_downsample: true
+    lio.sensor.voxel_fliter_size: 0.2
+    lio.sensor.gravity_norm: 9.80665
+    lio.sensor.imu_type: 1
+    lio.sensor.imu_na: 0.1
+    lio.sensor.imu_ng: 0.005
+    lio.sensor.imu_nba: 0.0001
+    lio.sensor.imu_nbg: 0.0001
+
+    # IMU <- lidar.  IDENTITY, because the housing publishes both channels untransformed, exactly as
+    # livox_ros_driver2 does on the aircraft (the housing carries its own IMU).  The 45 deg mount is
+    # NOT here -- putting it here is the historical mistake the old config records: it would inject a
+    # spurious 45 deg on the real drone, whose IMU is already in the lidar frame.
+    lio.extrinsic.lidar_imu: [0.0, 0.0, 0.0,
+                              1.0, 0.0, 0.0,
+                              0.0, 1.0, 0.0,
+                              0.0, 0.0, 1.0]
+
+    # Odom(=IMU/Lidar) -> body: THIS is where the mount belongs.  [x, y, z, roll, pitch, yaw] in metres
+    # and degrees.  MEASURED sign convention (ROSWrapper.cpp:107-117 transposes the rpy it builds): the
+    # stated rpy is applied INVERTED, so "45 deg nose-down" is stated as pitch = +45.  Confirmed twice
+    # in the old stack (passing -45 produced 90 deg of measured pitch; the historical 15 deg case
+    # passed -15 and measured +15.00).
+    lio.extrinsic.odom_robo: [0.05, 0.0, 0.1, 0.0, 45.0, 0.0]
+
+    lio.hash_map.hash_capacity: 2000000
+    lio.hash_map.vox_resolution: 0.25
+
+    lio.kf.kf_type: 0
+    lio.kf.kf_max_iterations: 4
+    lio.kf.kf_align_gravity: true
+    lio.kf.kf_quit_eps: 0.001
+
+    lio.output.robot: false
+    lio.output.plan_env_world: false
+    lio.output.plan_env_body: false
+    lio.output.ml_map: false
+    lio.output.planner: false
+    lio.output.map: true
+    lio.output.dense: true
+    lio.output.pub_step: 1
