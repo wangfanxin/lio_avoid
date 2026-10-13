@@ -38,9 +38,9 @@ Every result reports **how many of how many** flights completed and diverged.
 |---|---|---|
 | A1 route horizontal rms | <= 20 mm | truth vs delivered odometry, route window |
 | A2 route vertical rms | <= 50 mm | same window, mean removed |
-| A3 per-sample jitter | fair ratio East <= 2x, North <= 5x, Up <= 10x **and** absolute <= 0.50 / 0.50 / 0.15 mm per sample | 2nd difference, route window |
-| A4 post-take-off horizontal rms | <= 50 mm | first hold after take-off |
-| B1 truth box extents | East <= 2.10 m, North <= 1.26 m | truth only |
+| A3 delivered-odometry continuity | delivery: rate >= 80% of the LIO's 200 Hz and no gap > 3x the median period; wander: rms 2nd difference <= 2.0 mm per axis (10% of A1); outliers: p99 single step <= 10.0 mm | the samples as DELIVERED (no resampling: the FCU never interpolates), route window |
+| A4 post-take-off rms | <= 50 mm horizontal, mean removed | the FCU's own `XKF1` estimate vs the truth, its clock aligned to the sim clock by the take-off ramp (lag reported) |
+| B1 truth box extents | East <= 2.10 m, North <= 1.30 m (command 2.000 / 1.200, so +0.10 on both axes, the same tolerance as B3); the legacy N <= 1.26 is still counted beside it | truth only, route window |
 | B2 straightness per leg | <= 50 mm | truth only |
 | B3 corner arrival | <= 100 mm | distance to the commanded corner |
 | B4 landing | LAND + disarm, no failsafe | BIN modes + statustext |

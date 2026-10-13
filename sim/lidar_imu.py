@@ -139,6 +139,18 @@ def _R_from_q_batch(q):
 
 
 # --------------------------------------------------------------------------- the sensor
+def imu_decimation(tap_hz: float, want_hz: float) -> int:
+    """How many arriving tap samples make one published IMU sample (never less than 1).
+
+    This exists because the rate was once assumed instead of measured: `round(1200/want)` published the
+    IMU at 33.3 Hz whenever the tap arrived decimated.  A tap slower than the wanted IMU rate can only
+    publish every sample it gets -- it cannot invent the rest -- so the answer is 1, not 0.
+    """
+    if tap_hz <= 0.0 or want_hz <= 0.0:
+        return 1
+    return max(1, int(round(tap_hz / want_hz)))
+
+
 class Sensor:
     """Turns one truth window into one cloud in S, plus the IMU samples inside it.
 
@@ -155,7 +167,7 @@ class Sensor:
     def __init__(self, world, rays, times, mount_pitch=45.0, lever_arm=None,
                  intensity=100.0, rmin=0.10, rmax=60.0,
                  range_noise=0.010, gyro_noise_density=0.005, accel_noise_density=0.002,
-                 gyro_bias=0.001, accel_bias=0.01, seed=20261013):
+                 gyro_bias=0.001, accel_bias=0.01, seed=20261013, rate_hz=200.0):
         self.world = world
         self.rays = rays
         self.times = times                      # seconds from the scan start, per point
@@ -166,9 +178,13 @@ class Sensor:
         self.rmax = rmax
         self.last_cast_ms = float("nan")
         self.range_noise = range_noise
-        # per-sample standard deviation from a density: sigma = density * sqrt(rate)
-        self.gyro_sigma = gyro_noise_density * math.sqrt(200.0)
-        self.accel_sigma = accel_noise_density * math.sqrt(200.0)
+        # per-sample standard deviation from a density: sigma = density * sqrt(rate).  The rate is the
+        # IMU rate the samples are actually published at -- it used to be hardcoded 200 Hz while the
+        # IMU went out at 33.3 Hz (see the decimation note in main), which silently made the delivered
+        # noise DENSITY sqrt(6) too low.  It is now the same number the publishing path uses.
+        self.rate_hz = rate_hz
+        self.gyro_sigma = gyro_noise_density * math.sqrt(rate_hz)
+        self.accel_sigma = accel_noise_density * math.sqrt(rate_hz)
         self.gyro_bias = np.asarray(gyro_bias, dtype=float) * np.ones(3)
         self.accel_bias = np.asarray(accel_bias, dtype=float) * np.ones(3)
         self.rng = np.random.default_rng(seed)
@@ -417,11 +433,12 @@ def main() -> int:
                     gyro_noise_density=0.0 if args.no_noise else args.gyro_noise,
                     accel_noise_density=0.0 if args.no_noise else args.accel_noise,
                     gyro_bias=0.0 if args.no_noise else args.gyro_bias,
-                    accel_bias=0.0 if args.no_noise else args.accel_bias)
+                    accel_bias=0.0 if args.no_noise else args.accel_bias,
+                    rate_hz=args.imu_hz)
     print("noise: range sigma %.4f m, gyro %.4f rad/s, accel %.4f m/s^2 per sample (density "
-          "%.4f / %.3f at 200 Hz), bias gyro %.4f accel %.4f%s"
+          "%.4f / %.3f at %.1f Hz), bias gyro %.4f accel %.4f%s"
           % (sensor.range_noise, sensor.gyro_sigma, sensor.accel_sigma, args.gyro_noise,
-             args.accel_noise, args.gyro_bias, args.accel_bias,
+             args.accel_noise, args.imu_hz, args.gyro_bias, args.accel_bias,
              "  [DISABLED]" if args.no_noise else ""), flush=True)
     out = RosOut(args.cloud_topic, args.imu_topic, args.frame)
     stop = install_stop_handler()
@@ -459,7 +476,15 @@ def main() -> int:
 
     buf = TruthBuffer()
     scan_period_us = int(1e6 / args.scan_hz)
-    imu_every = max(1, int(round(1200.0 / args.imu_hz)))     # tap rate / wanted IMU rate
+    # The IMU decimation depends on the rate the tap ACTUALLY arrives at -- never on a hardcoded 1200 Hz.
+    # MEASURED 2026-10-13: this line used to be `round(1200.0 / args.imu_hz)`, but tools/run-mission.sh
+    # starts truth_rx with `--fanout-decimate 6`, so the fanout arrives at 200 Hz and the IMU went out
+    # every 6th sample = 33.3 Hz.  The run's own log said `imu 2538 (33.3 Hz)` while the LIO, the FSM and
+    # every metric believed 200 Hz, so the LIO dead-reckoned on a 33 Hz IMU for the whole campaign.
+    # The rate is now measured from the stream and printed before the first IMU message.
+    imu_every = None
+    imu_rate_hz = None
+    rate_probe = []
     next_scan_us = None
     imu_counter = 0
     scans = 0
@@ -496,9 +521,22 @@ def main() -> int:
             p_w, v_w, q_w = frames.wire_to_world(p_ned, v_ned, q_ned)
             buf.add(t_us, p_w, v_w, q_w, gyro, accel)
 
+            if imu_every is None:
+                rate_probe.append(t_us)
+                if len(rate_probe) >= 40 and rate_probe[-1] > rate_probe[0]:
+                    tap_hz = (len(rate_probe) - 1) * 1e6 / (rate_probe[-1] - rate_probe[0])
+                    imu_every = imu_decimation(tap_hz, args.imu_hz)
+                    imu_rate_hz = tap_hz / imu_every
+                    print("  tap arrives at %.1f Hz -> one IMU sample every %d (%.1f Hz)"
+                          % (tap_hz, imu_every, imu_rate_hz), flush=True)
+                    if imu_rate_hz < 0.95 * args.imu_hz:
+                        print("  WARNING: %.1f Hz IMU asked for, %.1f Hz delivered -- the tap cannot feed"
+                              " it (raise the fan-out rate: truth_rx --fanout-decimate 1)"
+                              % (args.imu_hz, imu_rate_hz), flush=True)
+
             # IMU: decimate the tap (never interpolate across real samples)
             imu_counter += 1
-            if imu_counter % imu_every == 0:
+            if imu_every is not None and imu_counter % imu_every == 0:
                 i = len(buf.t) - 1
                 t_i, w_i, a_i = sensor.imu_sample(buf, i)
                 out.imu(t_i, w_i, a_i)
@@ -549,6 +587,11 @@ def main() -> int:
     print("  points         %d total, %d per scan (expected %d)"
           % (points_total, points_total // max(1, scans), len(rays)))
     print("  imu messages   %d (%.1f Hz)" % (imu_published, imu_published / max(1e-9, wall)))
+    print("  imu rate       startup probe saw the tap at %.1f Hz, decimation %s, asked %.1f Hz ->"
+          " %.1f Hz"
+          % ((len(rate_probe) - 1) * 1e6 / max(rate_probe[-1] - rate_probe[0], 1) if len(rate_probe) > 1 else 0.0,
+             imu_every if imu_every is not None else "-", args.imu_hz,
+             imu_rate_hz if imu_rate_hz is not None else 0.0))
     print("  raycast        %.2f ms/scan (%.0f Hz capable)" % (sensor.last_cast_ms,
                                                                1000.0 / max(1e-9, sensor.last_cast_ms)))
     print("  truth samples  %d" % buf.total)
@@ -602,7 +645,15 @@ def _selftest(args) -> int:
     rays, times, _ = raycast.load_pattern(raycast.default_pattern_path(), n=2000)
     if times is None:
         times = np.linspace(0.0, 0.1, len(rays), endpoint=False)
-    sens = Sensor(world, rays, times, mount_pitch=45.0)
+    # frame arithmetic is checked with NO noise: `scan` returns the NOISELESS range in `rng` and applies
+    # the radial noise to the point, so comparing norm(point) with rng only means something at sigma=0.
+    # MEASURED 2026-10-13: with the default 10 mm range noise this check failed by 5.6 mm -- the returned
+    # range is the one the raycast found, and the point carries the noisy one.  Both facts are now
+    # asserted separately, so neither can change silently.
+    sens = Sensor(world, rays, times, mount_pitch=45.0, range_noise=0.0,
+                  gyro_noise_density=0.0, accel_noise_density=0.0, gyro_bias=0.0, accel_bias=0.0)
+    sens_noisy = Sensor(world, rays, times, mount_pitch=45.0, range_noise=0.010,
+                        gyro_noise_density=0.0, accel_noise_density=0.0, gyro_bias=0.0, accel_bias=0.0)
     buf2 = TruthBuffer()
     for i in range(241):
         t = int(i * (1e6 / 1200))
@@ -618,6 +669,12 @@ def _selftest(args) -> int:
     back = o_w + R_w_s @ pts_s[0]
     check("S -> W reconstruction keeps the range",
           float(np.linalg.norm(back - o_w)), float(rng[0]), 1e-9)
+    # ... and with noise ON the point carries a radial offset of about the range sigma, in the same
+    # direction, while `rng` still reports the raycast's own range
+    pts_n, _, rng_n = sens_noisy.scan(buf2, 0)
+    off = np.linalg.norm(pts_n - pts_s, axis=1)
+    check("radial range noise is applied to the point, not to `rng`",
+          bool(abs(float(np.median(off)) - 0.010) < 0.006 and float(np.max(off)) < 0.06), True)
     # and a motion-compensated scan must NOT equal a single-pose scan
     buf3 = TruthBuffer()
     for i in range(241):
@@ -629,9 +686,16 @@ def _selftest(args) -> int:
     check("a climbing vehicle's scan differs from a parked one (motion is simulated)",
           moved > 0.005, True)
 
+    # the decimation must follow the rate that actually arrives (the 2026-10-13 defect: a 200 Hz fan-out
+    # with a hardcoded 1200 Hz gave every 6th sample = 33.3 Hz, and the LIO integrated that)
+    check("decimation from a full-rate tap", imu_decimation(1200.0, 200.0), 6)
+    check("decimation from a decimated tap", imu_decimation(200.0, 200.0), 1)
+    check("a tap slower than the wanted IMU rate publishes every sample",
+          imu_decimation(100.0, 200.0), 1)
+    check("never decimate to zero", imu_decimation(0.0, 200.0), 1)
+
     print("lidar_imu selftest:", "PASS" if ok else "FAIL")
     return 0 if ok else 1
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -119,15 +119,15 @@ kill "$REC_PID" 2>/dev/null
 sleep 1
 echo
 echo "== metrics =="
+BINFILE=$(ls "$OUT"/logs/*.BIN 2>/dev/null | tail -1)
 python3 "$REPO/tools/metrics.py" --tap "$OUT/tap.csv" --odom "$OUT/lio.csv" \
-    --phase "$OUT/phase.csv" \
+    --phase "$OUT/phase.csv" --bin "${BINFILE:-}" \
     --corners "0.5,0.4,2.0;2.5,0.4,2.0;2.5,1.6,2.0;0.5,1.6,2.0" \
     | tee "$OUT/metrics.txt"
 MET_RC=${PIPESTATUS[0]}
 
 echo
 echo "== the FCU's own log =="
-BINFILE=$(ls "$OUT"/logs/*.BIN 2>/dev/null | tail -1)
 if [ -n "$BINFILE" ]; then
     python3 "$REPO/tools/bin-triage.py" "$BINFILE" | tail -25
     cp "$BINFILE" "$OUT/flight.BIN" 2>/dev/null || true

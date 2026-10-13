@@ -163,12 +163,13 @@ so `sim/` can fly a scripted square and publish exactly the same topics.  That i
 | `/clock` | `rosgraph_msgs/Clock` | 50 Hz requested, **48.0 measured** | sim time (the single time authority) | -- | box 2 -> all |
 | `/sim/rtf` | `std_msgs/Float32` | 1 Hz | sim seconds per wall second (**1.000-1.002 measured** with the sensor node running) | -- | box 2 -> box 7 |
 | `/livox/lidar` | `sensor_msgs/PointCloud2` | **10 Hz requested, 10.004 measured** | 20 000 points; x,y,z,intensity,time; `time` = per-point offset 0..0.099995 s in SECONDS (what `LID_TYPE::VELO16` reads); stamp = scan start | **S** (`mid360_link`) | box 2 -> box 3 |
-| `/livox/imu` | `sensor_msgs/Imu` | **200 Hz requested, 201.8 measured** | gyro rad/s, accel m/s^2, no orientation, in S | **S** | box 2 -> box 3 |
+| `/livox/imu` | `sensor_msgs/Imu` | **200 Hz requested; 201.8 measured on a full-rate tap, 199.4-200.1 measured in the mission** (the mission's fan-out is decimated to 200 Hz, and the decimation is derived from the rate that arrives, not assumed -- see `STATUS.md` row 37) | gyro rad/s, accel m/s^2, no orientation, in S | **S** | box 2 -> box 3 |
 | `/sim/truth/odom` | `nav_msgs/Odometry` | 100 Hz requested, **92.7 measured** (the node also parses 1200 lines/s; the lossless truth channel is the tap CSV) | true body pose/velocity (never used for control) | **W** | box 2 -> box 7 |
 | `/sim/world/markers` | `visualization_msgs/MarkerArray` | 1 Hz, transient-local | 46 pillars + arena + the mission square (49 markers measured) | **W** | box 2 -> RViz |
 | `/clicked_point` | `geometry_msgs/PointStamped` | on click | operator adds or moves a pillar | **W** | RViz -> box 2 |
 | `/goal_pose` | `geometry_msgs/PoseStamped` | on click | operator sets the mission-B goal | **W** | RViz -> box 5 |
-| `/lio/odom` | `nav_msgs/Odometry` | **10 Hz** | ESKF state at scan rate, child `mid360_link` | **L** | box 3 -> box 7 |
+| `/lio/odom` | `nav_msgs/Odometry` | **10 Hz** | ESKF state at scan rate, with the velocity the FSM needs (its twin `/lio/robo/odom` carries only the pose) | **L** | box 3 -> box 7 |
+| `/lio/robo/odom` | `nav_msgs/Odometry` | **200 Hz** (= the IMU rate: published from the IMU callback with the IMU's stamp) | body pose, zero twist | **L** | box 3 -> box 5, recorder |
 | `/odom` | `nav_msgs/Odometry` | **200 Hz** | fitted body pose + velocity, child `base_link` | **L** | box 3 -> box 4, box 5, RViz |
 | `/cloud_registered` | `sensor_msgs/PointCloud2` | **10 Hz** | the scan registered into the map | **L** | box 3 -> box 4, RViz |
 | `/lio/map` | `sensor_msgs/PointCloud2` | 0.2-1 Hz | accumulated map (optional) | **L** | box 3 -> RViz |
@@ -180,7 +181,7 @@ so `sim/` can fly a scripted square and publish exactly the same topics.  That i
 | `/fsm/phase` | `std_msgs/String` | on change + 1 Hz | preflight / takeoff / hold / leg1..4 / land / abort | -- | box 5 -> box 7 (window segmentation) |
 | setpoint 84 | MAVLink | **20-50 Hz** | sampled position (+ optional velocity/accel/yaw/yaw_rate), `LOCAL_NED` | F, NED on the wire | box 5 -> box 1 |
 | command 76 | MAVLink | on demand | arm / takeoff / land / mode | -- | box 5 -> box 1 |
-| vision 102 / odometry 331 | MAVLink | **20-100 Hz** | LIO pose + velocity (+attitude) | F, NED on the wire | box 5 -> box 1 |
+| vision 102 / odometry 331 | MAVLink | **48.2 Hz measured at the FCU** (`VISP`/`VISV` in its own log): box 5 re-samples the newest LIO message in its own 50 Hz loop, so this is not the LIO's output rate and not the recorder's rate | LIO pose + velocity (+attitude) | F, NED on the wire | box 5 -> box 1 |
 | telemetry 32 | MAVLink | **20-50 Hz** | FCU local position/velocity (**z DOWN**) | F | box 1 -> box 5 |
 | telemetry 31 | MAVLink | **20-50 Hz** | FCU attitude (FRD body -> NED) | F/B | box 1 -> box 5 |
 | 0 / 253 | MAVLink | 1-2 Hz / on event | armed, mode, health / text | -- | box 1 -> box 5 |
