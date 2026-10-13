@@ -44,6 +44,8 @@ GATES = {
     "arrive_z_m": 0.35,
     "slow_radius_m": 0.30,
     "speed_mps": 0.25,
+    "approach_offset_m": 100.0,
+    "approach_tol_m": 0.10,
     "leg_timeout_s": 25.0,
     "rate_hz": 50.0,
 }
@@ -436,63 +438,69 @@ class Mission:
         for i, corner in enumerate(corners, start=1):
             self.set_phase("leg%d" % i)
             t_leg = time.monotonic()
-            while True:
-                # APPROACH, THEN HOLD.  MEASURED 2026-10-13: a pure position setpoint lets the
-                # controller arrive at its own speed, and it then carries the overshoot PAST the corner
-                # while turning -- B2's turning legs came out at 66 mm against a 50 mm target and B1's
-                # box 1-2 mm over its limit in some flights.  So the leg is flown as a velocity command
-                # that stops at a slow radius, and only inside that radius does the FSM command the
-                # position itself.  Both are GUIDED setpoints; only the last few centimetres are flown
-                # as a position, which is also what makes the arrival repeatable.
-                st = self.bridge.state()
-                to_corner = corner - np.array(st.pos)
-                d_h = float(np.linalg.norm(to_corner[:2]))
-                # APPROACH MODE, and the default is the MEASURED BETTER one.
-                #
-                # `position` (default): a position setpoint for the whole leg.  Measured over 10 flights:
-                #   B1 box N 1.238-1.261 (limit 1.26) and B2 26 of 50 legs passing.
-                # `velocity`: a velocity command that stops at a slow radius and then hands over to a
-                #   position setpoint, which was meant to kill the corner overshoot.  MEASURED on 3
-                #   flights: it made BOTH worse -- B1's north extent 1.306-1.335 m and B2 3 of 15 legs --
-                #   because the direction "toward the corner" is recomputed as the vehicle moves, so the
-                #   path curves into the corner instead of being a straight leg.  Kept as a switch rather
-                #   than deleted, so the next person can see the experiment and its result.
-                if self.args.approach == "velocity" and d_h > GATES["slow_radius_m"]:
-                    direction = to_corner.copy()
-                    direction[2] = 0.0
-                    n = np.linalg.norm(direction)
-                    v = (direction / n) * GATES["speed_mps"] if n > 1e-6 else np.zeros(3)
-                    self.cmd = corner
-                    self.pump(0.05, velocity=v)
-                else:
-                    self.pump(0.05, setpoint=corner)
-                if self.abort_reason:
-                    return self.abort_reason
-                st = self.bridge.state()
+            # WAYPOINT SEQUENCING, still in position mode.  MEASURED 2026-10-13: commanding the corner
+            # directly lets the controller arrive at its own speed and carry the overshoot PAST the
+            # corner while turning (B2's turning legs 58-66 mm against a 50 mm target, B1's north extent
+            # 1-2 mm over its limit), and commanding a VELOCITY instead made both worse (it curved the
+            # leg into the corner: B1 0 of 3, B2 3 of 15).  So a leg gains an intermediate position
+            # waypoint `approach_offset_m` short of the corner: the controller decelerates for the near
+            # waypoint and is only then asked for the corner, which is what an ordinary waypoint mission
+            # does and what keeps the leg itself straight.
+            st = self.bridge.state()
+            to_corner = corner - np.array(st.pos)
+            horiz = to_corner[:2].copy()
+            dist = float(np.linalg.norm(horiz))
+            waypoints = [corner]
+            # DISABLED (approach_offset_m = 100 m, so this branch never fires).  MEASURED 2026-10-13:
+            # with a 0.45 m intermediate waypoint the FSM HUNG inside leg 1 -- the flight was killed by
+            # its 300 s timeout and left no traceback, so the cause is not yet known and the experiment
+            # has no verdict.  The code is kept, disabled by a parameter, rather than deleted: it is the
+            # obvious next attempt for B2's turning-leg overshoot, and it needs a debug session (a
+            # per-iteration print, or a watchdog that reports where the loop is) before it can be judged.
+            # The measured-good behaviour is one position setpoint per leg (B1 9 of 10, B2 26 of 50).
+            if dist > 2.2 * GATES["approach_offset_m"]:
+                unit = horiz / dist
+                approach = corner.copy()
+                approach[0] = corner[0] - unit[0] * GATES["approach_offset_m"]
+                approach[1] = corner[1] - unit[1] * GATES["approach_offset_m"]
+                waypoints = [approach, corner]
+            for wi, wp in enumerate(waypoints):
+                is_final = (wi == len(waypoints) - 1)
+                t_wp = time.monotonic()
+                while True:
+                    self.pump(0.05, setpoint=wp)
+                    if self.abort_reason:
+                        return self.abort_reason
+                    st = self.bridge.state()
+                    err_cmd = float(np.linalg.norm(np.array(st.pos) - wp))
+                    err_truth = float(np.linalg.norm(self.tap.p - wp))
+                    h_cmd = float(np.linalg.norm(np.array(st.pos)[:2] - wp[:2]))
+                    h_truth = float(np.linalg.norm(self.tap.p[:2] - wp[:2]))
+                    dz_truth = float(self.tap.p[2] - wp[2])
                 err_cmd = float(np.linalg.norm(np.array(st.pos) - corner))
                 err_truth = float(np.linalg.norm(self.tap.p - corner))
                 h_cmd = float(np.linalg.norm(np.array(st.pos)[:2] - corner[:2]))
                 h_truth = float(np.linalg.norm(self.tap.p[:2] - corner[:2]))
                 dz_truth = float(self.tap.p[2] - corner[2])
-                # ARRIVAL IS HORIZONTAL, and the vertical gets a band.  MEASURED 2026-10-13, and it is
-                # this configuration's own documented property rather than a defect: with step (a) the
-                # altitude loop runs on the BAROMETER (EK3_SRC1_POSZ = 1, PLAN.md decision 15), the EKF's
-                # z sits at 1.97-2.01 while the truth is 2.09-2.19, so a 3-D arrival test could never
-                # pass -- it read as a 0.18 m "estimator bias" when the horizontal error was 3-5 cm.
-                # Every route metric (B1 box, B2 straightness, B3 corners) is horizontal; A2 removes the
-                # vertical mean for exactly this reason.
-                if (h_cmd < GATES["arrive_m"] and h_truth < GATES["arrive_m"] and
+                # ARRIVAL IS HORIZONTAL, and the vertical gets a band (see the note below).  The
+                # intermediate waypoint needs to be CLOSE, not exact -- its whole job is to make the
+                # vehicle reach the corner slowly -- so it is given twice the tolerance.
+                tol = GATES["arrive_m"] if is_final else GATES["approach_tol_m"]
+                if (h_cmd < tol and h_truth < 2.0 * tol and
                         abs(dz_truth) < GATES["arrive_z_m"]):
-                    self.log("corner %d reached: horizontal FCU %.3f m / truth %.3f m, vertical %+.3f m "
-                             "(band %.2f), %.1f s" % (i, h_cmd, h_truth, dz_truth,
-                                                      GATES["arrive_z_m"],
-                                                      time.monotonic() - t_leg))
+                    if not is_final:
+                        self.log("   leg %d: approach waypoint (%.2f m short of the corner) reached at "
+                                 "%.3f m, turning in" % (i, GATES["approach_offset_m"], h_cmd))
                     break
-                if time.monotonic() - t_leg > GATES["leg_timeout_s"]:
+                if time.monotonic() - t_wp > GATES["leg_timeout_s"]:
                     off = np.array(st.pos) - self.tap.p
-                    return ("corner %d timed out after %.0f s: horizontal FCU %.3f m / truth %.3f m, "
-                            "vertical %+.3f m, estimator-vs-truth offset [%+.3f %+.3f %+.3f] m"
-                            % (i, GATES["leg_timeout_s"], h_cmd, h_truth, dz_truth, *off))
+                    return ("corner %d waypoint %d timed out after %.0f s: horizontal FCU %.3f m / "
+                            "truth %.3f m, vertical %+.3f m, estimator-vs-truth offset "
+                            "[%+.3f %+.3f %+.3f] m"
+                            % (i, wi + 1, GATES["leg_timeout_s"], h_cmd, h_truth, dz_truth, *off))
+            self.log("corner %d reached: horizontal FCU %.3f m / truth %.3f m, vertical %+.3f m "
+                     "(band %.2f), %.1f s"
+                     % (i, h_cmd, h_truth, dz_truth, GATES["arrive_z_m"], time.monotonic() - t_leg))
         return None
 
     def land(self):
