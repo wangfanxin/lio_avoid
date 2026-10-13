@@ -1,0 +1,124 @@
+/**:
+  ros__parameters:
+    lio.map.save_map: false
+    lio.map.if_filter: true
+    lio.map.save_map_dir: "map"
+    lio.map.map_name: "map.pcd"
+    # 2026-09-26 (goal round 3-1-2, step 3): the map was the coarsest thing in the chain.
+    # MEASURED before this change: at 0.5 m the whole scan collapses to 1181 of 5184 points
+    # (scripts/compare/scan-point-budget.py), and the map is what the scan is matched
+    # against, so 0.5 m bounded the achievable pose precision.  0.25 m keeps 2415 points.
+    # 2026-09-30 (round 7): the refinement the note above defers was tested IN FLIGHT and is much
+    # worse.  Three flights at ds_size 0.10 + voxel_fliter_size 0.10 + kf_max_iterations 6 gave A1
+    # route h_rms 0.3849 / 0.4052 / 0.5265 m against 0.0048-0.0059 m for the values kept here
+    # (70-100x worse), post-takeoff h_rms 1.07-1.48 m against 0.0125-0.0150 m, and the delivered
+    # jitter 76 per cent worse in East, not better.  The LIO's own state and the published /odom were
+    # displaced identically (so not the adapter), no time shift explained it (best-shift h_rms
+    # 0.5114 m at -1 s against 0.0058 m at 0 s for the values kept here), and the sim's IMU was clean
+    # in all of them -- it is the matcher: at this sim's ~2880 points per frame a 0.10 m input voxel
+    # starves it.  The values in this file are UNCHANGED by that experiment and by this note.
+    # Full record: docs/GPS-VALIDATION-PIPELINE.md, ROUND 7.
+    lio.map.ds_size: 0.15
+    lio.map.save_interval: 500
+
+    lio.ros.lidar_topic: "/livox/lidar"
+    lio.ros.imu_topic: "/livox/imu"
+
+    lio.sensor.lidar_type: 1
+    lio.sensor.blind: 0.3
+    lio.sensor.maxrange: 60.0
+    # POINT STRIDE, not a frame rate.  ROSWrapper.cpp does
+    #   for (i = 0; i < pl_orig.size(); i += g_filter_rate)
+    # and the node default is 1.  At 3 this sim fed the estimator 960 of its 2880
+    # points per frame (a real MID-360 emits ~20000), which is the right order of
+    # magnitude to explain scan matching that slips whenever the vehicle moves.
+    lio.sensor.filter_rate: 1
+    # 2026-09-26 (goal round 1-2): setting this to false was tried and MEASURED.  At rest it
+    # is a clear win -- parked drift 0.182 -> 0.014 m (scripts/compare/parked-drift-ab.sh) --
+    # but in flight the same setting tripped an EKF failsafe 0.4 s into the route (BIN 53,
+    # "EKF Failsafe: changed to Land Mode"), so the voxel step is also doing noise suppression
+    # the matcher needs once the aircraft is moving.  Reverted to true; the refinement
+    # (0.05-0.1 m instead of 0.2 m) is being picked off-line against bags/flight_2026*.
+    lio.sensor.enable_downsample: true
+    # Applied to the INPUT SCAN (super_lio.cpp:427 DownSample()), not the map, so
+    # this is the dominant point-count knob after filter_rate.  Node default is 0.2.
+    # 0.5 is what the real drone uses, and is fine for a real MID-360's ~20000
+    # points/frame; at this sim's 2880 points/frame it starves the matcher.
+    lio.sensor.voxel_fliter_size: 0.2
+    lio.sensor.gravity_norm: 9.7946
+    lio.sensor.imu_type: 1
+    lio.sensor.imu_na: 0.1
+    # 2026-09-26 (goal round 3-1-2, step 2): set from measurement, not habit.
+    # MEASURED on a parked-but-idle window of BIN 57 (scripts/compare/imu-noise-check.py):
+    # the gyro's real disturbance density is ~0.0047 rad/s/sqrt(Hz) (0.066 rad/s std on z
+    # from airframe vibration) against the 0.1 declared here -- 20x too large.  A filter told
+    # to distrust the gyro leans on the lidar for rotation, and matched against a coarse map
+    # that is how the pose wanders while standing still.
+    # imu_na is left at 0.1 on purpose: the accelerometer's measured disturbance density is
+    # 0.165 m/s^2/sqrt(Hz) (2.34 m/s^2 std), so 0.1 is already at, not above, the real thing.
+    lio.sensor.imu_ng: 0.005
+    lio.sensor.imu_nba: 0.0001
+    lio.sensor.imu_nbg: 0.0001
+
+    # Every element must be a float: ROS 2's params-file parser rejects a
+    # sequence that mixes integers and floats ("Sequence should be of same type.
+    # Value type 'integer' do not belong at line_num N"), and it aborts the node
+    # at startup.  FAST-LIO's equivalent yaml is all-float, so match that.
+    # IMU<-Lidar.  Super-LIO does p_world = sys_init_pose_ * g_lidar_imu * p_lidar
+    # (super_lio.cpp map_init), so this matrix maps a lidar-frame point into the IMU
+    # frame.
+    #
+    # It is IDENTITY because the IMU and the lidar are the same rigid assembly: a real
+    # MID360 carries its IMU inside the housing and livox_ros_driver2 publishes both
+    # /livox/lidar and /livox/imu in that one housing frame, untransformed (lddc.cpp
+    # 490-495 copies acc_x/y/z straight through).  The simulation bridge does the same
+    # (see patches/apply-patches.sh patch 4), so the two streams arrive in the same
+    # frame in simulation and on hardware, and the same value serves both.  On real
+    # hardware put Livox's documented internal IMU-to-lidar offset here; it is small.
+    #
+    # HISTORY: this used to hold the 45 deg mount as a hand-transposed Ry(-45).  That
+    # was an artefact of the bridge rotating the IMU into the BODY frame while leaving
+    # the cloud in the lidar frame -- a sim-only mixed-frame pair.  Encoding the mount
+    # here would inject a spurious 45 deg on the real drone, whose IMU is already in
+    # the lidar frame.
+    lio.extrinsic.lidar_imu: [0.0, 0.0, 0.0,
+                              1.0, 0.0, 0.0,
+                              0.0, 1.0, 0.0,
+                              0.0, 0.0, 1.0]
+    # Odom(=IMU/Lidar) frame -> body.  This is where the MOUNT belongs: the housing is
+    # bolted to the airframe 5 cm forward, 10 cm up and 45 deg nose-down, so the LIO's
+    # own frame is pitched 45 deg relative to the body.  /lio/robo/odom is the body
+    # frame and is what feeds the FCU.
+    #
+    # This is a HARDWARE fact, not a sim value -- the real drone mounts the same
+    # housing at the same angle -- so it is identical in simulation and on the drone.
+    # [x, y, z, roll, pitch, yaw] in metres and degrees.  MEASURED sign convention: the
+    # transform actually applied is the INVERSE of the stated rpy, so to rotate the lidar
+    # frame down onto the body (Ry(-45)) the value passed is pitch = +45.  Confirmed twice:
+    # passing -45 produced rpy pitch +90 (45 from the mount + 45 from the sign), and the
+    # historical 15 deg case passed pitch -15 and measured dpitch +15.00.
+    lio.extrinsic.odom_robo: [0.05, 0.0, 0.1, 0.0, 45.0, 0.0]
+
+    lio.hash_map.hash_capacity: 2000000
+    lio.hash_map.vox_resolution: 0.25
+
+    lio.kf.kf_type: 0
+    lio.kf.kf_max_iterations: 4
+    lio.kf.kf_align_gravity: true
+    lio.kf.kf_quit_eps: 0.001
+
+    # 2026-09-28: ONE vision writer only.  With this true the LIO publishes
+    # /mavros/vision_pose/pose itself (raw FLU, unconverted, lidar rate); once MAVROS's
+    # vision_pose plugin was allowlisted that became a SECOND vision source feeding the
+    # same EKF alongside mav/vision_publisher.py, and every flight failed with
+    # "EKF variance" -> LAND.  The mav lane owns the FCU link, so this must stay false.
+    lio.output.robot: false
+    lio.output.plan_env_world: false
+    lio.output.plan_env_body: false
+    lio.output.ml_map: false
+    lio.output.planner: false
+    lio.output.map: true
+    lio.output.dense: true
+    lio.output.pub_step: 1
+
+    lio.eva.timer: true
