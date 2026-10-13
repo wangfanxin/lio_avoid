@@ -64,6 +64,20 @@ class Sample:
         self.accel = np.array([float(x) for x in parts[16:19]])
 
 
+def _install_stop_handler():
+    """SIGTERM/SIGINT set a flag instead of tearing the ROS context down mid-publish."""
+    import signal
+
+    stop = {"flag": False}
+
+    def handler(signum, frame):
+        stop["flag"] = True
+
+    signal.signal(signal.SIGTERM, handler)
+    signal.signal(signal.SIGINT, handler)
+    return stop
+
+
 def udp_socket_drops(port: int) -> int:
     """How many datagrams the KERNEL dropped for our socket (Linux /proc/net/udp, field 13).
 
@@ -264,7 +278,14 @@ class RosSink:
         from geometry_msgs.msg import TransformStamped
         from tf2_ros import TransformBroadcaster
 
-        rclpy.init(args=[])
+        # rclpy's default signal handlers shut the context down on SIGTERM, and the next publish then
+        # raises "publisher's context is invalid" from inside the receive loop: an exception that hides
+        # the real event.  Our own handler only sets a flag (see sim/lidar_imu.py for the measurement).
+        try:
+            from rclpy.signals import SignalHandlerOptions
+            rclpy.init(args=[], signal_handler_options=SignalHandlerOptions.NO)
+        except Exception:
+            rclpy.init(args=[])
         self.rclpy = rclpy
         self.node = Node("truth_rx")
         qos = QoSProfile(depth=50, history=HistoryPolicy.KEEP_LAST,
@@ -463,6 +484,11 @@ def main() -> int:
     ap.add_argument("--save", default=None, help="write the report to this file")
     ap.add_argument("--csv", default=None,
                     help="write every sample (t_us, p_ned, v_ned, q, gyro, accel) for offline checks")
+    ap.add_argument("--fanout", type=int, default=14561,
+                    help="forward every raw tap line to this local UDP port so other sim nodes "
+                         "(sim/lidar_imu.py) can consume the same stream; 0 = off.  Only one process "
+                         "can bind the tap's port, so the fan-out is what lets the sensor node exist "
+                         "as a separate process without doubling the SITL-side traffic")
     args = ap.parse_args()
 
     if args.selftest:
@@ -495,8 +521,17 @@ def main() -> int:
         csv = open(args.csv, "w")
         csv.write("t_us,inst,pn,pe,pd,vn,ve,vd,qw,qx,qy,qz,wx,wy,wz,ax,ay,az\n")
 
+    fan = None
+    if args.fanout:
+        fan = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        fan.setblocking(False)
+        fan_addr = ("127.0.0.1", args.fanout)
+        fanned = 0
+        print("fanning every tap line out to udp/127.0.0.1:%d" % args.fanout, flush=True)
+
     print("listening on udp/127.0.0.1:%d  (SITL needs LIO_TRUTH_TAP=%d)" % (args.port, args.port),
           flush=True)
+    stop = _install_stop_handler()
     wall_timeout = args.wall_timeout or (3.0 * args.duration + 10.0 if args.duration > 0 else 0.0)
     t_start_wall = time.monotonic()
     last_progress = time.monotonic()
@@ -521,6 +556,12 @@ def main() -> int:
                 stats.bad_lines += 1
                 continue
             stats.add(s)
+            if fan is not None:
+                try:
+                    fan.sendto(data, fan_addr)
+                    fanned += 1
+                except OSError:
+                    pass
             if csv is not None:
                 csv.write("%d,%d,%s,%s,%s\n" % (
                     s.t_us, s.instance,
@@ -537,6 +578,9 @@ def main() -> int:
                 print("t=%8.3f s  rate %6.1f Hz  |a| %.4f  span %.6f m  qdev %.1e" % (
                     r["sim_s"], r["rate_hz"], r["gravity_mean"], r["p_span_max_m"],
                     r["quat_norm_dev_max"]), flush=True)
+            if stop["flag"]:
+                print("\nstop requested", flush=True)
+                break
             if args.duration > 0 and stats.n > 1 and \
                     (stats.t_last_us - stats.t_first_us) * 1e-6 >= args.duration:
                 break
@@ -551,6 +595,8 @@ def main() -> int:
         # vanishes from /proc/net/udp and the count silently becomes "unavailable"
         drops = udp_socket_drops(args.port)
         sock.close()
+        if fan is not None:
+            fan.close()
 
     if csv is not None:
         csv.close()
@@ -564,6 +610,8 @@ def main() -> int:
             stats.ros_published, ros_hz, sink.odom_hz_requested))
     if drops >= 0:
         extra.append("kernel UDP drops %d" % drops)
+    if fan is not None:
+        extra.append("fanned out       %d lines to port %d" % (fanned, args.fanout))
 
     ros_ok = True
     if sink is not None:

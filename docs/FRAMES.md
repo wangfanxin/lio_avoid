@@ -128,6 +128,16 @@ No rotation, nothing to calibrate, and the "which frame is this in" class of err
    the physics and tests T5/T6 measure it against the world instead of trusting either wording.
    (`common/frames.py` self-test also settles the second half: with L's x = the body's forward axis,
    the mount does not change L's *heading*, only the elevation of its axes.)
+
+   **MEASURED 2026-10-13, and worth knowing before reading any scan picture:** tilting a *dome* does
+   not tilt a fan.  With the housing 45 deg nose-down the pattern's elevation band (-7.16..+52.16 deg
+   about the housing) becomes a *cone about a tilted axis*, so the world-elevation coverage runs from
+   about -52 deg (forward-down) to about +83 deg (backward-up) -- which is exactly why this mount keeps
+   the floor AND the ceiling in view.  Measured split at the pad: **floor 29.6 %, ceiling 16.8 %,
+   walls 8.7 %, pillars 44.9 %**; a level housing gives **floor 4.7 %, ceiling 7.1 %, pillars 74.3 %**.
+   Those two lines are the mount test (an earlier check that demanded a ceiling-dominated level case
+   was based on a 2D argument and was simply wrong; a 2D band would have made the max world elevation
+   +7 deg and the ceiling unreachable, yet the ceiling is measured at 16.8 %).
 2. **The published odometry frame**: `/odom` (after the LIO applies `odom_robo`) is the body pose -- what
    the planner consumes as `base_link` and what RViz draws.  `/lio/odom` is the same state in S.
 3. **The FCU's external-nav attitude**: ArduPilot wants the *body* attitude; its own body convention is

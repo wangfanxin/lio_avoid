@@ -158,13 +158,14 @@ so `sim/` can fly a scripted square and publish exactly the same topics.  That i
 
 | topic | type | rate | content | frame | producer -> consumer |
 |---|---|---|---|---|---|
-| truth tap (UDP, not ROS) | ASCII line | **400 Hz** | t, p_ned, v_ned, q(w,x,y,z body->NED), gyro FRD, accel FRD | SITL native, declared | box 1 -> box 2 |
-| `/clock` | `rosgraph_msgs/Clock` | 100 Hz | sim time (the single time authority) | -- | box 2 -> all |
-| `/sim/rtf` | `std_msgs/Float64` | 1 Hz | sim seconds per wall second, plus the achieved lidar/IMU rates | -- | box 2 -> box 7 |
-| `/livox/lidar` | `sensor_msgs/PointCloud2` | **10 Hz** | 20 000 points; x,y,z,intensity,time; `time` = per-point offset 0..0.1 s | **S** | box 2 -> box 3 |
-| `/livox/imu` | `sensor_msgs/Imu` | **200 Hz** | gyro rad/s, accel m/s^2, no orientation | **S** | box 2 -> box 3 |
-| `/sim/truth/odom` | `nav_msgs/Odometry` | 100 Hz | true body pose/velocity (never used for control) | **W** | box 2 -> box 7 |
-| `/sim/world/markers` | `visualization_msgs/MarkerArray` | 1 Hz / on change | pillars, arena, the clear rectangle | **W** | box 2 -> RViz |
+| truth tap (UDP, not ROS) | ASCII line | **1200 Hz measured** (the model rate) | `TAP <inst> <t_us> p_ned v_ned q(w,x,y,z body->NED) gyro FRD accel FRD` | SITL native, declared (PLAN #13) | box 1 -> box 2 |
+| tap fan-out (UDP, local) | the same lines | 1200 Hz | the same stream, re-sent to 14561 so `sim/lidar_imu.py` can consume it as a second process (only one process can bind the tap's port) | as above | box 2 -> box 2 |
+| `/clock` | `rosgraph_msgs/Clock` | 50 Hz requested, **48.0 measured** | sim time (the single time authority) | -- | box 2 -> all |
+| `/sim/rtf` | `std_msgs/Float32` | 1 Hz | sim seconds per wall second (**1.000-1.002 measured** with the sensor node running) | -- | box 2 -> box 7 |
+| `/livox/lidar` | `sensor_msgs/PointCloud2` | **10 Hz requested, 10.004 measured** | 20 000 points; x,y,z,intensity,time; `time` = per-point offset 0..0.099995 s in SECONDS (what `LID_TYPE::VELO16` reads); stamp = scan start | **S** (`mid360_link`) | box 2 -> box 3 |
+| `/livox/imu` | `sensor_msgs/Imu` | **200 Hz requested, 201.8 measured** | gyro rad/s, accel m/s^2, no orientation, in S | **S** | box 2 -> box 3 |
+| `/sim/truth/odom` | `nav_msgs/Odometry` | 100 Hz requested, **92.7 measured** (the node also parses 1200 lines/s; the lossless truth channel is the tap CSV) | true body pose/velocity (never used for control) | **W** | box 2 -> box 7 |
+| `/sim/world/markers` | `visualization_msgs/MarkerArray` | 1 Hz, transient-local | 46 pillars + arena + the mission square (49 markers measured) | **W** | box 2 -> RViz |
 | `/clicked_point` | `geometry_msgs/PointStamped` | on click | operator adds or moves a pillar | **W** | RViz -> box 2 |
 | `/goal_pose` | `geometry_msgs/PoseStamped` | on click | operator sets the mission-B goal | **W** | RViz -> box 5 |
 | `/lio/odom` | `nav_msgs/Odometry` | **10 Hz** | ESKF state at scan rate, child `mid360_link` | **L** | box 3 -> box 7 |

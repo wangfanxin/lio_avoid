@@ -23,6 +23,11 @@ is next.
 | 13 | **the parked gate passes, with numbers** | `logs/s3-parked-20261013_204606/`: **1200.5 Hz** mean and worst-1 s, `|a|` = 9.8067 (want 9.8066 +- 0.01), `a_z` = -9.8067 (FRD sign), quaternion norm deviation **0.00e+00**, worst gap **0.8 ms**, 0 backwards samples, position span **0.000000 m**, 0 unparsable lines, **0 kernel UDP drops**.  The receiver's own self-test is 16 checks, 8 of them mutations that must fail (`sim/truth_rx.py --selftest`) |
 | 14 | **the tap agrees with the firmware's own record** | `tools/bin-vs-tap.py` against that run's BIN (SIM2, 400 Hz): position difference **max 0.0004 mm** (N/E 0.0000, D 0.0004), clock **bias +0.0000 ms**, **drift +0.06 ppm**.  The tap is not a re-invention of the state, and its timestamps are the clock the autopilot uses |
 | 15 | **the ROS side is live and correct** | `tools/sim-ros-check.sh`: `/clock` 48.0 Hz, `/sim/truth/odom` **92.7 Hz** (self-counted, 100 requested), `/sim/rtf` 1.00, TF `world_w -> truth_base_link`; the message content is `(0, 0, +0.099976)` with quaternion `(0.70711, 0, 0, 0.70711)` = W yaw +90 deg, so the wire->W conversion is verified on live data, not only in the unit test |
+| 16 | **S4 done: the simulated MID-360 sees the world that is there** | `sim/lidar_imu.py` live: `/livox/lidar` **10.004 Hz**, 20 000 points, fields `x,y,z,intensity,time` all FLOAT32 at offsets 0/4/8/12/16, stamp at the scan start, frame `mid360_link`; `/livox/imu` **201.8 Hz**; raycast **13-16 ms/scan** (63-75 Hz capable) with a per-point pose for every point; 0 skipped windows.  `sim/lidar_imu.py --selftest`: 12 checks, including that pose interpolation CLAMPS outside the truth window (an earlier version extrapolated 50 ms and the test caught it) |
+| 17 | **S4 gate: the clouds land on the world file** | `tools/sim-pillar-gate.sh`, stable over repeated runs: surface residual **p95 = 0.0000 m**, **37 of 37** fitted pillars within 30 mm centre and radius, predicted-vs-observed sensor-frame direction **median 2.1 deg / worst 3.1 deg**, the fewest pillar returns in the **NE** quadrant (where the empty block x[0,3] y[0,2] is).  Figure: `docs/figures/s4_map.png` (120 000 points against the declared pillars) |
+| 18 | **S4 power check: the gate notices a wrong mount** | a level housing through the same gate: floor **4.7 %** vs 29.6 %, pillars **74.3 %** vs 44.9 %, walls 13.9 % vs 8.7 % -- reproducible, three runs |
+| 19 | **two negative results that stop future work on them** | (a) the S->W round trip is *self-consistent*, so the residual and the pillar fit **cannot** see a wrong mount: whatever direction the caster fired, the inverse maps it onto the same hit.  The mount is gated by the surface split instead.  (b) A **mirrored azimuth is unobservable**: mirroring az maps ray j to -az, and the ray that then lands on a given pillar is the mirror of the ray that landed on the mirrored pillar, so the sensor-frame direction of the point on that pillar is the same either way (measured: floor 0.295 vs 0.296, pillars 0.457 vs 0.449, direction 3.06 vs 3.05 deg).  The azimuth sign is therefore a convention fixed by the right-handed housing frame, recorded here so it is not "fixed" later |
+| 20 | **a harness bug that made the gate flaky** | when two `sim/lidar_imu.py` processes overlap, both publish `/livox/lidar` and the fitter silently collects a MIXTURE of two mounts -- the correct configuration failed with the wrong mount's profile.  `tools/sim-pillar-gate.sh` now clears and refuses strays and waits for each sensor to die; two consecutive gate runs then gave identical numbers to three decimals |
 
 **Facts S3 established that the rest of Phase A depends on**
 
@@ -43,14 +48,12 @@ is next.
 
 ## Next, in order
 
-1. **S4 `sim/lidar_imu`**: tap truth -> `PointCloud2` in S at 10 Hz with real per-point times + `Imu` in S
-   at 200 Hz; then the pillar-fit gate (accumulate 60 s of cloud, fit the 46 pillar centres, compare with
-   `worlds/pillars.yaml`) and the RViz check.
-2. **S5** `common/frames.py` (done, 18 self-test checks) + `Calib`, then the convention tests of
-   `FRAMES.md` §5 -- T2/T3/T3b/T5 need no flight.
-3. **S6** one LIO end to end (with the 2.5 deg tilt re-measured on the clean upstream).
-4. **S7** `bridge/` (both implementations) + `fsm/` -> mission A with the acceptance metrics.
-5. **S8 (deferred)** `planner/` (ego-planner) -> mission B.
+1. **S5**: `common/frames.py` is written and self-tested (18 checks); what remains is `Calib` against
+   the live construction and the convention tests of `FRAMES.md` §5 -- T2/T3/T3b/T5 need only a parked
+   simulator with a different spawn heading, T1 needs one short guided move.
+2. **S6** one LIO end to end (with the 2.5 deg tilt re-measured on the clean upstream).
+3. **S7** `bridge/` (both implementations) + `fsm/` -> mission A with the acceptance metrics.
+4. **S8 (deferred)** `planner/` (ego-planner) -> mission B.
 
 ## Open questions that block something
 

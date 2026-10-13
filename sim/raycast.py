@@ -89,6 +89,28 @@ def synth_pattern(n: int = 20000, az_per_rev: int = 360, seed: int = 0) -> np.nd
     return np.column_stack([np.radians(az), np.radians(elev)])
 
 
+def default_pattern_path() -> str | None:
+    """Where the real MID-360 pattern lives, or None.
+
+    It is 17 MB of vendor data and is deliberately NOT in the repo (`.gitignore`), so it lives in the
+    runtime tree.  MEASURED 2026-10-13: a node that silently fell back to a synthesised rosette looked
+    exactly like a node using the real pattern -- the only clue was one word in a start-up line --
+    and the real pattern is the whole reason the sensor has a realistic blind zone and a
+    non-repetitive sampling.  So callers get None and are expected to refuse, not to substitute.
+    """
+    candidates = [
+        os.environ.get("LIO_PATTERN"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "mid360_pattern.csv"),
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "scan_mode", "mid360.csv"),
+        "/home/fanxin/lio_avoid/sim/mid360_pattern.csv",
+        os.path.expanduser("~/lio_avoid/sim/mid360_pattern.csv"),
+    ]
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return None
+
+
 def load_pattern(path: str | None, n: int = 20000, start: int = 0):
     """Return (rays, times, source).
 
@@ -140,19 +162,41 @@ def load_pattern(path: str | None, n: int = 20000, start: int = 0):
 
 
 # --------------------------------------------------------------------------- ray casting
-def cast(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: World, *,
-         rmin: float = 0.10, rmax: float = 40.0, return_full: bool = False):
-    """Cast `rays` (N,2: azimuth, elevation) from `origin` with attitude `R` (body->world).
+def as_per_ray_pose(origin, R, n: int):
+    """Accept ONE pose (3,) / (3,3) or PER-RAY poses (N,3) / (N,3,3); return (o (N,3), R (N,3,3)).
 
-    The sensor frame is the body frame rotated by the mount, already folded into R by the caller.
-    Returns (points_world (M,3), ranges (M,)) with non-hits dropped; with return_full=True it also
-    returns best_t (N,) where misses are +inf, which is what the self-test compares against.
+    Per-ray poses are what a real scan needs: a MID-360 emits its ~20 000 points over 100 ms at 5 us
+    spacing, so a moving vehicle casts every point from a slightly different place and attitude.  That
+    distortion is physical, it is what the LIO's undistortion has to remove, and a simulator that casts
+    a whole scan from one pose would hand the estimator a cleaner problem than the real one.
+    """
+    o = np.asarray(origin, dtype=float)
+    if o.ndim == 1:
+        o = np.broadcast_to(o, (n, 3))
+    Rm = np.asarray(R, dtype=float)
+    if Rm.ndim == 2:
+        Rm = np.broadcast_to(Rm, (n, 3, 3))
+    if o.shape != (n, 3) or Rm.shape != (n, 3, 3):
+        raise ValueError("pose shapes %s / %s do not match %d rays" % (o.shape, Rm.shape, n))
+    return o, Rm
+
+
+def cast(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: World, *,
+         rmin: float = 0.10, rmax: float = 40.0, return_full: bool = False,
+         return_index: bool = False):
+    """Cast `rays` (N,2: azimuth, elevation) from `origin` with attitude `R` (sensor->world).
+
+    `origin` and `R` may be one pose or one pose per ray (see `as_per_ray_pose`).  The sensor frame is
+    the body frame rotated by the mount, already folded into R by the caller.
+    Returns (points_world (M,3), ranges (M,)) with non-hits dropped; `return_full=True` adds best_t
+    (N,) where misses are +inf, and `return_index=True` instead returns the N-ray indices of the hits,
+    which is how the scan simulator gets each surviving point's own pose back.
     """
     n = len(rays)
     az, el = rays[:, 0], rays[:, 1]
     d_body = np.column_stack([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
-    d = d_body @ R.T                                           # to world
-    o = np.broadcast_to(origin, d.shape)
+    o, Rm = as_per_ray_pose(origin, R, n)
+    d = np.einsum("nij,nj->ni", Rm, d_body)                    # to world, per ray
 
     best_t = np.full(n, np.inf)
 
@@ -162,7 +206,7 @@ def cast(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: World, *,
             continue
         dz = d[:, 2]
         with np.errstate(divide="ignore", invalid="ignore"):
-            t = (z_plane - o[0, 2]) / dz
+            t = (z_plane - o[:, 2]) / dz
         ok = np.isfinite(t) & (t > 0)
         best_t = np.where(ok & (t < best_t), t, best_t)
 
@@ -172,9 +216,11 @@ def cast(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: World, *,
             for plane, sign in ((lo, +1.0), (hi, -1.0)):
                 dd = d[:, axis]
                 with np.errstate(divide="ignore", invalid="ignore"):
-                    t = (plane - o[0, axis]) / dd
-                ok = np.isfinite(t) & (t > 0)
-                hit = o + t[:, None] * d
+                    t = (plane - o[:, axis]) / dd
+                    ok = np.isfinite(t) & (t > 0)
+                    # the multiply must stay inside errstate: a ray parallel to the wall gives
+                    # t = inf, and inf * 0 = nan raises a warning on every scan
+                    hit = o + t[:, None] * d
                 # only count it if the hit is inside the box on the other horizontal axis
                 other = 1 - axis
                 olo, ohi = (world.walls["x"] if other == 0 else world.walls["y"])
@@ -192,7 +238,7 @@ def cast(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: World, *,
     # pillars), because the mask costs more than the vectorised quadratic it saves.  So: no culling.
     # The scalar reference in brute_force() is what keeps this honest.
     for cx, cy, r, z0, z1 in world.pillars:
-        ox, oy = o[0, 0] - cx, o[0, 1] - cy
+        ox, oy = o[:, 0] - cx, o[:, 1] - cy
         dx, dy = d[:, 0], d[:, 1]
         a = dx * dx + dy * dy
         b = 2.0 * (ox * dx + oy * dy)
@@ -205,13 +251,15 @@ def cast(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: World, *,
         t1 = (-b - sq) / (2.0 * a)
         t2 = (-b + sq) / (2.0 * a)
         t = np.where(t1 > 0, t1, t2)
-        hit_z = o[0, 2] + t * d[:, 2]
+        hit_z = o[:, 2] + t * d[:, 2]
         ok &= (t > 0) & (hit_z >= z0) & (hit_z <= z1)
         best_t = np.where(ok & (t < best_t), t, best_t)
 
     good = np.isfinite(best_t) & (best_t >= rmin) & (best_t <= rmax)
     t = best_t[good]
     pts = o[good] + t[:, None] * d[good]
+    if return_index:
+        return pts, t, np.flatnonzero(good)
     if return_full:
         return pts, t, best_t
     return pts, t
@@ -222,24 +270,24 @@ def cast_full(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: World,
     """Reference implementation: every ray tested against every pillar, no culling.
 
     Only used by --selftest to prove the culled path in cast() returns the same hits.  A dense forest
-    makes this the slow one on purpose.
+    makes this the slow one on purpose.  Accepts per-ray poses like cast().
     """
     n = len(rays)
     az, el = rays[:, 0], rays[:, 1]
     d_body = np.column_stack([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
-    d = d_body @ R.T
-    o = np.broadcast_to(origin, d.shape)
+    o, Rm = as_per_ray_pose(origin, R, n)
+    d = np.einsum("nij,nj->ni", Rm, d_body)
     best_t = np.full(n, np.inf)
     for z_plane in (world.floor_z, world.ceiling_z):
         if z_plane is None:
             continue
         dz = d[:, 2]
         with np.errstate(divide="ignore", invalid="ignore"):
-            t = (z_plane - o[0, 2]) / dz
+            t = (z_plane - o[:, 2]) / dz
         ok = np.isfinite(t) & (t > 0)
         best_t = np.where(ok & (t < best_t), t, best_t)
     for cx, cy, r, z0, z1 in world.pillars:
-        ox, oy = o[0, 0] - cx, o[0, 1] - cy
+        ox, oy = o[:, 0] - cx, o[:, 1] - cy
         dx, dy = d[:, 0], d[:, 1]
         a = dx * dx + dy * dy
         b = 2.0 * (ox * dx + oy * dy)
@@ -252,7 +300,7 @@ def cast_full(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: World,
         t1 = (-b - sq) / (2.0 * a)
         t2 = (-b + sq) / (2.0 * a)
         t = np.where(t1 > 0, t1, t2)
-        hit_z = o[0, 2] + t * d[:, 2]
+        hit_z = o[:, 2] + t * d[:, 2]
         ok &= (t > 0) & (hit_z >= z0) & (hit_z <= z1)
         best_t = np.where(ok & (t < best_t), t, best_t)
     good = np.isfinite(best_t) & (best_t >= rmin) & (best_t <= rmax)
@@ -269,18 +317,23 @@ def brute_force(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: Worl
     true miss -- and, like cast(..., return_full=True), WITHOUT the blind-zone/max-range gate, so the
     two can be compared directly.  (An earlier version of this test gated one side and not the other,
     which made 208 of 400 rays look like disagreements when both were right.)
+
+    Accepts per-ray poses like cast(), which is how the per-ray path gets an independent check.
     """
-    pts, rngs = [], []
-    out = np.full(min(limit, len(rays)), np.inf)
-    for i in range(min(limit, len(rays))):
+    n = min(limit, len(rays))
+    o_all, R_all = as_per_ray_pose(origin, R, len(rays))
+    out = np.full(n, np.inf)
+    for i in range(n):
         az, el = float(rays[i, 0]), float(rays[i, 1])
+        origin_i = o_all[i]
+        R_i = R_all[i]
         db = np.array([math.cos(el) * math.cos(az), math.cos(el) * math.sin(az), math.sin(el)])
-        d = R @ db
+        d = R_i @ db
         best = math.inf
         for z_plane in (world.floor_z, world.ceiling_z):
             if z_plane is None or abs(d[2]) < 1e-15:
                 continue
-            t = (z_plane - origin[2]) / d[2]
+            t = (z_plane - origin_i[2]) / d[2]
             if t > 0:
                 best = min(best, t)
         if world.walls:
@@ -288,17 +341,17 @@ def brute_force(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: Worl
                 for plane in (lo, hi):
                     if abs(d[axis]) < 1e-15:
                         continue
-                    t = (plane - origin[axis]) / d[axis]
+                    t = (plane - origin_i[axis]) / d[axis]
                     if t <= 0 or t >= best:
                         continue
-                    h = origin + t * d
+                    h = origin_i + t * d
                     other = 1 - axis
                     olo, ohi = (world.walls["x"] if other == 0 else world.walls["y"])
                     if olo <= h[other] <= ohi and (world.ceiling_z is None or
                                                    world.floor_z <= h[2] <= world.ceiling_z):
                         best = t
         for cx, cy, r, z0, z1 in world.pillars:
-            ox, oy = origin[0] - cx, origin[1] - cy
+            ox, oy = origin_i[0] - cx, origin_i[1] - cy
             a = d[0] * d[0] + d[1] * d[1]
             if a < 1e-15:
                 continue
@@ -310,14 +363,11 @@ def brute_force(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: Worl
             sq = math.sqrt(disc)
             for t in ((-b - sq) / (2.0 * a), (-b + sq) / (2.0 * a)):
                 if t > 0 and t < best:
-                    hz = origin[2] + t * d[2]
+                    hz = origin_i[2] + t * d[2]
                     if z0 <= hz <= z1:
                         best = t
                         break
         out[i] = best if math.isfinite(best) else math.inf
-        if math.isfinite(best):
-            pts.append(origin + best * d)
-            rngs.append(best)
     return out
 
 
@@ -390,7 +440,33 @@ def main() -> int:
         _, rng = cast(origin, R, rays, w)
         print("  gate check at the last trial: %d of %d finite ranges survive the blind-zone gate"
               % (len(rng), int(np.isfinite(vec).sum())))
-        print("  SELFTEST %s" % ("PASS" if bad == 0 else "FAIL (%d of 6 differ)" % bad))
+
+        # PER-RAY POSES: this is the motion-compensated path the scan simulator uses, so it gets its
+        # own check against the same independent reference.  A vehicle moving at 1 m/s covers 10 cm in
+        # one 100 ms scan, so if this path were wrong the clouds would carry a distortion of that size
+        # and the LIO's undistortion would be measured against a lie.
+        rng_np = np.random.default_rng(7)
+        n_rays = len(rays)
+        o_pr = np.column_stack([rng_np.uniform(-3, 3, n_rays), rng_np.uniform(-3, 3, n_rays),
+                                rng_np.uniform(0.5, 3.5, n_rays)])
+        yaw = rng_np.uniform(-np.pi, np.pi, n_rays)
+        pitch = rng_np.uniform(-0.3, 0.3, n_rays)
+        R_pr = np.stack([rpy_to_R(0.0, pitch[i], yaw[i]) for i in range(n_rays)])
+        _, _, vec_pr = cast(o_pr, R_pr, rays, w, return_full=True)
+        bru_pr = brute_force(o_pr, R_pr, rays, w, limit=400)
+        m = len(bru_pr)
+        a, b = vec_pr[:m], bru_pr
+        same_mask_pr = np.isfinite(a) == np.isfinite(b)
+        diff_pr = np.max(np.abs(np.where(np.isfinite(a), a, 0) - np.where(np.isfinite(b), b, 0)))
+        ok_pr = bool(same_mask_pr.all() and diff_pr < 1e-9)
+        spread = float(np.linalg.norm(o_pr[:m] - o_pr[0], axis=1).max())
+        print("  per-ray poses: %d-ray sample spread up to %.2f m across the scan, vector %d hits, "
+              "brute force %d hits, max |drange| %.2e m, identical=%s"
+              % (m, spread, int(np.isfinite(a).sum()), int(np.isfinite(b).sum()), float(diff_pr),
+                 ok_pr))
+        bad += 0 if ok_pr else 1
+
+        print("  SELFTEST %s" % ("PASS" if bad == 0 else "FAIL (%d of 7 differ)" % bad))
         return 0 if bad == 0 else 1
 
     if args.scale:
