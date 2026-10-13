@@ -42,6 +42,8 @@ GATES = {
     "geofence_m": 4.60,
     "arrive_m": 0.06,
     "arrive_z_m": 0.35,
+    "slow_radius_m": 0.30,
+    "speed_mps": 0.25,
     "leg_timeout_s": 25.0,
     "rate_hz": 50.0,
 }
@@ -202,7 +204,7 @@ class Mission:
         if pts:
             self.path_l = np.array(pts)
 
-    def pump(self, seconds=None, setpoint=None, until=None):
+    def pump(self, seconds=None, setpoint=None, until=None, velocity=None):
         """The main loop body: poll everything, stream at 50 Hz, run the gates."""
         period = 1.0 / GATES["rate_hz"]
         t_end = None if seconds is None else time.monotonic() + seconds
@@ -220,7 +222,9 @@ class Mission:
             if now >= self.next_stream:
                 self.next_stream = now + period
                 self.stream_external_nav()
-                if setpoint is not None:
+                if velocity is not None:
+                    self.bridge.send_velocity(velocity, self.args.yaw)
+                elif setpoint is not None:
                     self.cmd = np.asarray(setpoint, dtype=float)
                     self.bridge.send_position(self.cmd, self.args.yaw)
                 n += 1
@@ -433,7 +437,35 @@ class Mission:
             self.set_phase("leg%d" % i)
             t_leg = time.monotonic()
             while True:
-                self.pump(0.05, setpoint=corner)
+                # APPROACH, THEN HOLD.  MEASURED 2026-10-13: a pure position setpoint lets the
+                # controller arrive at its own speed, and it then carries the overshoot PAST the corner
+                # while turning -- B2's turning legs came out at 66 mm against a 50 mm target and B1's
+                # box 1-2 mm over its limit in some flights.  So the leg is flown as a velocity command
+                # that stops at a slow radius, and only inside that radius does the FSM command the
+                # position itself.  Both are GUIDED setpoints; only the last few centimetres are flown
+                # as a position, which is also what makes the arrival repeatable.
+                st = self.bridge.state()
+                to_corner = corner - np.array(st.pos)
+                d_h = float(np.linalg.norm(to_corner[:2]))
+                # APPROACH MODE, and the default is the MEASURED BETTER one.
+                #
+                # `position` (default): a position setpoint for the whole leg.  Measured over 10 flights:
+                #   B1 box N 1.238-1.261 (limit 1.26) and B2 26 of 50 legs passing.
+                # `velocity`: a velocity command that stops at a slow radius and then hands over to a
+                #   position setpoint, which was meant to kill the corner overshoot.  MEASURED on 3
+                #   flights: it made BOTH worse -- B1's north extent 1.306-1.335 m and B2 3 of 15 legs --
+                #   because the direction "toward the corner" is recomputed as the vehicle moves, so the
+                #   path curves into the corner instead of being a straight leg.  Kept as a switch rather
+                #   than deleted, so the next person can see the experiment and its result.
+                if self.args.approach == "velocity" and d_h > GATES["slow_radius_m"]:
+                    direction = to_corner.copy()
+                    direction[2] = 0.0
+                    n = np.linalg.norm(direction)
+                    v = (direction / n) * GATES["speed_mps"] if n > 1e-6 else np.zeros(3)
+                    self.cmd = corner
+                    self.pump(0.05, velocity=v)
+                else:
+                    self.pump(0.05, setpoint=corner)
                 if self.abort_reason:
                     return self.abort_reason
                 st = self.bridge.state()
@@ -588,6 +620,9 @@ def main() -> int:
                          "recordings identify L->F (and which must never be used for the mission)")
     ap.add_argument("--calib-file", default="",
                     help="json with R_WL/t_WL measured by tools/lio-vs-truth.py --write-calib")
+    ap.add_argument("--approach", default="position", choices=["position", "velocity"],
+                    help="how a leg is flown: 'position' (the measured better one, B1 9 of 10 / B2 26 "
+                         "of 50) or 'velocity' (tried, made both worse: B1 0 of 3 / B2 3 of 15)")
     ap.add_argument("--alt", type=float, default=2.0, help="mission altitude above the pad, m")
     ap.add_argument("--hold", type=float, default=3.0)
     ap.add_argument("--yaw", type=float, default=0.0, help="commanded yaw, rad (0 = North)")

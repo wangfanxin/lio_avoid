@@ -1,0 +1,37 @@
+# Phase A step (b): the altitude channel from the LIO (EK3_SRC1_POSZ = 6 / VELZ = 6)
+# 2026-10-13T22:43:36+08:00
+
+acceptance table, aggregated from 3 flights
+(the per-flight files are the evidence; this file only counts them)
+
+flights completed (FSM reached 'done')   3 of 3
+A1 route horizontal rms  <= 20 mm        3 of 3   min 6.400 / median 6.530 / max 6.610 mm
+A2 route vertical rms    <= 50 mm        3 of 3   min 7.800 / median 8.010 / max 8.160 mm
+A3 jitter (abs + fair ratio)             0 of 3   abs worst E 0.217 N 0.248 U 0.485 mm
+B1 route box E <= 2.10, N <= 1.26 m      1 of 3   min 2.065 / median 2.072 / max 2.073 m / min 1.257 / median 1.262 / max 1.262 m
+B2 straightness <= 50 mm per leg         5 of 15 legs   (1/1/3 of 5/5/5 across flights)
+B3 corner arrival <= 100 mm              12 of 12 corners (4/4/4 of 4/4/4 across flights)
+B4 LAND + disarm                         3 of 3
+
+raw per flight:
+   missionA-poszLio-20261013_223255-flight01.metrics.txt A1 6.61    A2 8.16    B1 2.072/1.262      B2 1/5 B3 4/4
+   missionA-poszLio-20261013_223255-flight02.metrics.txt A1 6.53    A2 7.8     B1 2.065/1.257      B2 1/5 B3 4/4
+   missionA-poszLio-20261013_223255-flight03.metrics.txt A1 6.4     A2 8.01    B1 2.073/1.262      B2 3/5 B3 4/4
+
+# and the experiment that made things worse (approach=velocity):
+acceptance table, aggregated from 3 flights
+(the per-flight files are the evidence; this file only counts them)
+
+flights completed (FSM reached 'done')   3 of 3
+A1 route horizontal rms  <= 20 mm        3 of 3   min 6.600 / median 6.650 / max 6.720 mm
+A2 route vertical rms    <= 50 mm        3 of 3   min 8.150 / median 8.300 / max 8.300 mm
+A3 jitter (abs + fair ratio)             0 of 3   abs worst E 0.216 N 0.232 U 0.497 mm
+B1 route box E <= 2.10, N <= 1.26 m      0 of 3   min 2.067 / median 2.077 / max 2.129 m / min 1.306 / median 1.311 / max 1.335 m
+B2 straightness <= 50 mm per leg         3 of 15 legs   (1/1/1 of 5/5/5 across flights)
+B3 corner arrival <= 100 mm              12 of 12 corners (4/4/4 of 4/4/4 across flights)
+B4 LAND + disarm                         3 of 3
+
+raw per flight:
+   missionA-approach-20261013_223737-flight01.metrics.txt A1 6.6     A2 8.15    B1 2.067/1.335      B2 1/5 B3 4/4
+   missionA-approach-20261013_223737-flight02.metrics.txt A1 6.72    A2 8.3     B1 2.129/1.306      B2 1/5 B3 4/4
+   missionA-approach-20261013_223737-flight03.metrics.txt A1 6.65    A2 8.3     B1 2.077/1.311      B2 1/5 B3 4/4

@@ -1,0 +1,21 @@
+# PHASE A STEP (b): the altitude channel ALSO comes from the LIO.  This is the configuration the
+# objective is defined by ("the LIO is the EKF's only source"), and step (a) -- the barometer -- is only
+# the stepping stone that unblocked the milestone (PLAN.md decision 15).
+#
+# LOAD ORDER: after apm_lio_only.parm and INSTEAD of phase_a_posz_baro.parm.
+#
+# WHAT THIS CHANGES, and the risk it carries: with POSZ/VELZ = 6 the altitude loop eats the LIO's z, so
+# a pitch error theta costs theta x distance in height.  The old fork showed a 2.5 deg pitch of its whole
+# estimate (43 mm per metre, ~86 mm over the 2 m leg against A2's 50 mm target), which is why (a) came
+# first.  MEASURED on the clean upstream (2026-10-13, tools/lio-vs-truth.py on the calibration flight):
+# the 6-DOF excess rotation is 0.261 deg -- 0.0046 m per metre, i.e. 9 mm over the 2 m leg -- so the
+# defect the old fork carried is NOT present here and (b) is expected to pass.
+#
+# The vertical jitter (A3's U channel, 0.51 mm per sample against a 0.15 mm target) is the number to
+# watch: with the barometer it was filtered out of the loop, and now the loop sees it directly.
+EK3_SRC1_POSZ 6
+EK3_SRC1_VELZ 6
+EK3_SRC2_POSZ 6
+EK3_SRC2_VELZ 6
+EK3_SRC3_POSZ 6
+EK3_SRC3_VELZ 6

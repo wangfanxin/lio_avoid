@@ -18,6 +18,15 @@ FAN=14561
 TAG="${1:-$(date +%Y%m%d_%H%M%S)}"
 OUT="/home/fanxin/lio_avoid/logs/missionA-$TAG"
 mkdir -p "$OUT"
+# ALT_MODE selects the altitude source and therefore WHICH PHASE this flight is evidence for:
+#   baro = step (a), the stepping stone (EK3_SRC1_POSZ = 1 / VELZ = 0)
+#   lio  = step (b), the configuration mission A is defined by (POSZ = 6 / VELZ = 6)
+ALT_MODE="${ALT_MODE:-baro}"
+case "$ALT_MODE" in
+    baro) ALT_PARM="$REPO/params/phase_a_posz_baro.parm" ;;
+    lio)  ALT_PARM="$REPO/params/phase_a_posz_lio.parm" ;;
+    *) echo "ALT_MODE must be baro or lio, not '$ALT_MODE'" >&2; exit 1 ;;
+esac
 
 set +u
 source /opt/ros/humble/setup.bash
@@ -35,14 +44,14 @@ sleep 1
 echo "== revisions under test =="
 echo "   ardupilot : $(git -C "$AP" describe --tags --always) $(git -C "$AP" rev-parse --short HEAD) (tap applied: $(git -C "$AP" --no-pager diff --stat | tail -1 | tr -s ' '))"
 echo "   super_lio : $(git -C /home/fanxin/lio_avoid/src/Super-LIO rev-parse --short HEAD)  liblio $(md5sum "$WS/install/super_lio/lib/liblio.so" | cut -c1-16)"
-echo "   config    : lio/config/livox_360.yaml + params/apm_lio_only.parm,sitl_basics.parm,phase_a_posz_baro.parm"
+echo "   config    : lio/config/livox_360.yaml + apm_lio_only,sitl_basics,${ALT_MODE}_posz,phase_a_mission"
 echo "   run dir   : $OUT"
 echo
 
 cd "$OUT" || exit 1
 setsid nohup env LIO_TRUTH_TAP=$TAP "$BIN" --model quad --speedup 1 -I0 \
     --home -35.363261,149.165230,584,0 --serial0 tcp:5760 \
-    --defaults "$REPO/params/apm_lio_only.parm,$REPO/params/sitl_basics.parm,$REPO/params/phase_a_posz_baro.parm,$REPO/params/phase_a_mission.parm" \
+    --defaults "$REPO/params/apm_lio_only.parm,$REPO/params/sitl_basics.parm,$ALT_PARM,$REPO/params/phase_a_mission.parm" \
     -w > sitl.log 2>&1 &
 SITL=$!
 cd - > /dev/null
