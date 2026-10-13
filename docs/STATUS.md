@@ -18,29 +18,52 @@ is next.
 | 8 | frame conventions researched from source | ArduPilot Copter-4.7.1: setpoints accept only LOCAL_NED / LOCAL_OFFSET_NED / BODY_NED / BODY_OFFSET_NED; `ODOMETRY` is silently DROPPED unless `frame_id = LOCAL_FRD` and `child_frame_id = BODY_FRD`; mavros does ENU->NED itself in `vision_pose_estimate.cpp:133-139` and stamps LOCAL_FRD/BODY_FRD in `odom.cpp:295-296` |
 | 9 | documentation budget | 4 of 5 used, enforced by `tools/docs-budget.py` |
 | 10 | **the "fork" was not a fork** | diffed our old local Super-LIO copy against the clean upstream clone (`f89f48d`): the code differences are NOT our work -- the local copy is an OLDER upstream snapshot.  Upstream has since (a) given `RightJacobianSO3` finite-value guards and a Taylor branch near theta -> 0, and (b) FIXED the undistortion, which in our copy advances each point by the whole interval `dt` instead of the fractional `tau`.  Consequence: **the round-7 accuracy numbers (3D 5.0-6.4 mm) were measured with the older code**; the new stack builds the clean upstream and carries over only our measured configuration (`config/livox_360.yaml`, kept in `src/lio-fork-local/config/`).  A junk 0-byte file literally named `*.h` (a bad shell redirection in an old session) was removed from that copy |
-| 11 | **the plan through mission A is written, for review** | `PLAN.md` §4.2: S3-S7, each with its build, its named gate (with the number it must print) and its risks; plus the one branch that can fail A2 by construction (`EK3_SRC1_POSZ = 6` x the 2.5 deg tilt) with its three options.  Two questions for the user are in `PLAN.md` §7.5-6 |
+| 11 | **the plan through mission A is written, for review** | `PLAN.md` §4.2: S3-S7, each with its build, its named gate (with the number it must print) and its risks; plus the one branch that can fail A2 by construction (`EK3_SRC1_POSZ = 6` x the 2.5 deg tilt) with its three options.  **Approved by the user 2026-10-13**, with decisions 13-15 |
+| 12 | **S3 done: the truth tap is on the wire and verified** | all 15 submodules fetched (1.4 G, the `ghproxy.net` rewrite); pristine Copter-4.7.1 built in **3m06s** (md5 `8da6cc8539f5d7056ff0d8276628d0e6`), then with the tap (md5 `ef489d4aeef62ec7daae01d8f12cdc81`, 3.6 s incremental).  The tap is **67 added lines in ONE file** (`libraries/SITL/SIM_Aircraft.cpp`), kept as `patches/0001-sitl-truth-tap.patch`; `tools/apm-apply-patch.sh` re-applies it and the re-applied diff is md5-identical to the first pass, so the patch *is* the change |
+| 13 | **the parked gate passes, with numbers** | `logs/s3-parked-20261013_204606/`: **1200.5 Hz** mean and worst-1 s, `|a|` = 9.8067 (want 9.8066 +- 0.01), `a_z` = -9.8067 (FRD sign), quaternion norm deviation **0.00e+00**, worst gap **0.8 ms**, 0 backwards samples, position span **0.000000 m**, 0 unparsable lines, **0 kernel UDP drops**.  The receiver's own self-test is 16 checks, 8 of them mutations that must fail (`sim/truth_rx.py --selftest`) |
+| 14 | **the tap agrees with the firmware's own record** | `tools/bin-vs-tap.py` against that run's BIN (SIM2, 400 Hz): position difference **max 0.0004 mm** (N/E 0.0000, D 0.0004), clock **bias +0.0000 ms**, **drift +0.06 ppm**.  The tap is not a re-invention of the state, and its timestamps are the clock the autopilot uses |
+| 15 | **the ROS side is live and correct** | `tools/sim-ros-check.sh`: `/clock` 48.0 Hz, `/sim/truth/odom` **92.7 Hz** (self-counted, 100 requested), `/sim/rtf` 1.00, TF `world_w -> truth_base_link`; the message content is `(0, 0, +0.099976)` with quaternion `(0.70711, 0, 0, 0.70711)` = W yaw +90 deg, so the wire->W conversion is verified on live data, not only in the unit test |
+
+**Facts S3 established that the rest of Phase A depends on**
+
+* The model steps at **1200 Hz** (`SIM_RATE_HZ`), not 400: the tap is a 1200 Hz truth channel, and any
+  200 Hz IMU / 10 Hz cloud the sensor node produces is a decimation of it, checked against it.
+* `--serial0 tcp:5760` **without `:wait`** is mandatory for unattended runs: the firmware default
+  `tcp:5760:wait` blocks in `accept()` before the sketch's main loop, so the model never steps, the tap
+  says nothing and no BIN is written.  `tools/sitl-parked.sh` therefore waits for the tap's own banner
+  instead of assuming the simulator started.
+* Parked logs need `LOG_DISARMED 1` (`params/s3-gate.parm`), otherwise there is no BIN at all.
+* The Python receiver tops out at ~93 % of a requested 100 Hz odometry while parsing 1200 lines/s, so
+  **the lossless truth channel for metrics is the CSV** (every sample) and the ROS topics serve RViz and
+  liveness.  The achieved rate is measured and gated rather than assumed.
+* The simulated accelerometer reads **9.80665** (`GRAVITY_MSS`) while the LIO's measured config carries
+  **9.7946** (0.12 % apart) -- a real difference to settle in S6, not to paper over.
+* At rest the sim's body origin sits at NED `(0, 0, -0.1)`, i.e. 0.100 m above the origin, matching the
+  0.10 m mounting height in `odom_robo` (`src/lio-fork-local/config/livox_360.yaml`).
 
 ## Next, in order
 
-0. **Review of `PLAN.md` §4.2** (this checkpoint): nothing in S3-S7 starts before the plan is approved.
-
-1. **SITL truth tap**: `modules/mavlink` submodule, then the ~30-line env-gated truth broadcast in
-   `libraries/SITL/`, then build and **verify the tap on the wire** (a receiver printing the stream).
-2. `sim/lidar_imu`: UDP truth -> `PointCloud2` (real pattern, per-point time) + `Imu` 200 Hz -> RViz.
-3. `common/frames.py` + `Calib`, then the six convention tests of `FRAMES.md` §5 -- T2/T3/T5 need no
-   flight (restart the sim with a different spawn heading).
-4. Build Super-LIO and FAST-LIO, feed both the same simulated sensor, bake off.
-5. `bridge/` (both implementations) + `fsm/` -> mission A with the acceptance metrics.
-6. `planner/` (ego-planner) -> mission B.
+1. **S4 `sim/lidar_imu`**: tap truth -> `PointCloud2` in S at 10 Hz with real per-point times + `Imu` in S
+   at 200 Hz; then the pillar-fit gate (accumulate 60 s of cloud, fit the 46 pillar centres, compare with
+   `worlds/pillars.yaml`) and the RViz check.
+2. **S5** `common/frames.py` (done, 18 self-test checks) + `Calib`, then the convention tests of
+   `FRAMES.md` §5 -- T2/T3/T3b/T5 need no flight.
+3. **S6** one LIO end to end (with the 2.5 deg tilt re-measured on the clean upstream).
+4. **S7** `bridge/` (both implementations) + `fsm/` -> mission A with the acceptance metrics.
+5. **S8 (deferred)** `planner/` (ego-planner) -> mission B.
 
 ## Open questions that block something
 
-See `PLAN.md` §7.  The two that matter soonest: the truth tap's frame (SITL-native NED/FRD, my
-preference), and whether the planner chain expects `map` or `odom` as the LIO world's ROS frame name.
+See `PLAN.md` §7.  The one that matters soonest: whether the planner chain (ego-planner, RViz configs)
+expects `map` or `odom` as the LIO world's ROS frame name -- our TF tree publishes `world_w`, and the
+answer decides whether the LIO's world is also `odom` or `map`.
 
 ## Machine state
 
-* WSL: `/home/fanxin/lio_avoid` is the runtime tree (sim/tools/env.sh mirrored from the repo); the
-  ArduPilot clone is `src/ardupilot` and is NOT yet built.
+* WSL: `/home/fanxin/lio_avoid` is the runtime tree (repo mirrored in); ArduPilot is `src/ardupilot`,
+  **built**, with the truth tap applied as a patch (md5 `ef489d4aeef62ec7daae01d8f12cdc81`).
+* Evidence from S3: `logs/s3-parked-20261013_204606/` (report + tap CSV + BIN + bin-vs-tap),
+  `logs/s3-ros-20261013_205009/` (report + receiver log).
+* ROS 2 Humble at `/opt/ros/humble` (source it; `set -u` must be off while sourcing).
 * No simulation is running; nothing is left running from the previous rounds.
 * `darklio_*`, `dr_lio_ws`, `drlio_*` and every other project in `/home/fanxin` were left untouched.

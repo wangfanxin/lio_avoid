@@ -28,6 +28,9 @@ Every result reports **how many of how many** flights completed and diverged.
 | 10 | **GPU ray casting parked**, CPU only | the GPU port failed its own correctness check (2.98 m disagreement); CPU does 20 000 rays in 9.8 ms |
 | 11 | **Rectangle first; ego-planner deferred, its interface built now** (`/planner/traj`, `nav_msgs/Path`, frame L, §4.1) | user's call: prove the whole chain on the square before adding a planner.  Because the rectangle source publishes the *same* interface, mission A also validates the integration point, and adding the planner later cannot change the FSM |
 | 12 | **Setpoints and telemetry at 50 Hz** (`SR1_POSITION = 50`, `SR1_EXTRA1 = 50`; vision 50 Hz) | 50 Hz is the firmware's own declared ceiling for the stream-rate parameters, and the bridge verifies the achieved rates with its own counters (`ARCHITECTURE.md` §4b) |
+| 13 | **The truth tap speaks SITL-native NED/FRD** | user's call on my recommendation (2026-10-13): the wire format is the simulator's own, and every conversion then lives in one place (`common/frames.py`) |
+| 14 | **The vehicle spawns facing North** | user's call (2026-10-13), `FRAMES.md` §0.3 option 1: FCU local NED is the textbook `(N, E, -U)` permutation with no yaw anywhere, L = W rotated -90 deg.  The spawn condition is **asserted from the truth tap before every take-off**, never assumed |
+| 15 | **Mission A flies with `EK3_SRC1_POSZ = 1` / `VELZ = 0` first; the LIO's z follows immediately after** | user's call (2026-10-13): "先 a 后 b，最后一定得是 b 通过的" -- unblock the milestone on the barometer, then fix the 2.5 deg tilt so that `POSZ = 6` passes too.  **Phase A is only closed when (b) passes**: the tilt is not allowed to become permanent |
 
 ## 3. Acceptance numbers
 
@@ -90,7 +93,7 @@ form still works.
 Each step is: **build → verify with a named gate → risks and the fallback if the gate fails.** Steps are
 sequential, and every gate prints a number: a step is not finished because code exists.
 
-**S3. The SITL truth tap**
+**S3. The SITL truth tap — DONE 2026-10-13, all three gates pass**
 *Build*: `git submodule update --init --depth 1 modules/mavlink` (currently empty), ArduPilot's own python
 requirements, `./waf configure --board sitl` + `./waf copter`; then ~30 lines in `libraries/SITL/`, gated by
 an environment variable, sending one line per model step (t, p_ned, v_ned, q body→NED, body rates, specific
@@ -100,6 +103,15 @@ position drift < 1 mm, and the tap's position agreeing with SITL's own `SIM2` lo
 check: `git diff` shows only the tap file(s) — the flight code is untouched.
 *Risks*: submodule fetch (fallback: the gitee mirror, or fetch only the mavlink headers); build deps
 (`empy`, `pexpect`, `lxml`, `pyparsing`); hooking the tap somewhere that disturbs timing (it must not).
+
+*Result*: 67 added lines in one file, delivered as `patches/0001-sitl-truth-tap.patch` and re-applied by
+`tools/apm-apply-patch.sh` (the re-applied diff is md5-identical, so the patch is the change).  Parked
+30 s: **1200.5 Hz**, `|a|` 9.8067, `a_z` negative, quaternion norm deviation 0, worst gap 0.8 ms,
+position span 0.000000 m, 0 UDP drops; against the firmware's own SIM2 record: **position max 0.0004 mm,
+clock bias +0.0000 ms, drift +0.06 ppm**.  Three facts the rest of the phase inherits: the model steps at
+1200 Hz (not 400); `--serial0 tcp:5760` must be passed WITHOUT `:wait` or the sketch never starts; parked
+BINs need `LOG_DISARMED 1`.  Evidence: `docs`-adjacent run dirs `logs/s3-parked-*/`, `logs/s3-ros-*/`
+(see `STATUS.md`).
 
 **S4. The sensor node and RViz**
 *Build*: `sim/lidar_imu.py` (truth + world → `PointCloud2` in S at 10 Hz with real per-point times, `Imu`
@@ -161,6 +173,10 @@ A2 target of 50 mm — A2 would fail even though the estimator is fine.
 Recommendation: **(a) to unblock A, (b) immediately after A**, and the report says explicitly that A2's
 number under (a) is the barometer's, not the LIO's.
 
+**DECIDED (user, 2026-10-13): (a) then (b), and Phase A is only closed when (b) passes** -- see §2 #15.
+So S7 is flown twice: once with `POSZ = 1` to get the milestone and the horizontal numbers, and once with
+`POSZ = 6` after the tilt is fixed, which is the run that closes the phase.
+
 ## 5. Rules (carried over from the rounds that produced the numbers)
 
 1. Every number carries its frame, origin and window; angles are unwrapped before differencing.
@@ -203,10 +219,7 @@ budget is about prose that has to be kept true).
 4. The old `gazebo_apm` tree holds ~40 historical documents (the evidence chain for every number
    reported in rounds 1-7).  It is a frozen archive rather than a living document set: fold it into the
    budget as well, or leave it frozen?
-5. **Spawn heading** (decides whether L and W can coincide, `FRAMES.md` §0.3): face **North** -- FCU local
-   NED is the textbook `(N, E, -U)` permutation, L = W rotated -90 deg -- or face **East** -- L = W exactly,
-   but the FCU's "North" is W's East.  Recommendation: North.  Either way the spawn condition is asserted
-   from the truth tap before take-off.
-6. **The 2.5 deg tilt vs A2** (`PLAN.md` §4.2, the branch): fly A with `EK3_SRC1_POSZ = 1` (baro) so A2
-   measures the altitude loop and unblock the milestone, or fix the LIO's tilt first.  Recommendation:
-   fly with baro, then fix the tilt as the next task.
+5. **DECIDED 2026-10-13 -- spawn heading: North** (§2 #14).  The tap frame is DECIDED too: SITL-native
+   NED/FRD (§2 #13).
+6. **DECIDED 2026-10-13 -- the 2.5 deg tilt: option (a) first, then (b)** (§2 #15).  The milestone is flown
+   with the barometer as the altitude source, and Phase A does not close until `POSZ = 6` passes as well.

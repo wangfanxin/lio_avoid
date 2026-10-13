@@ -1,0 +1,7 @@
+# S3 gate parameters: the parked truth-tap run.
+#
+# The only reason this file exists is logging: with the firmware default LOG_DISARMED = 0 nothing is
+# written to a BIN while the vehicle sits on the pad, and the gate wants to compare the tap against
+# the firmware's own SIM2 record of the same state.  MEASURED 2026-10-13: without this, the run
+# produced no BIN at all ("no BIN written" in the gate report).
+LOG_DISARMED 1

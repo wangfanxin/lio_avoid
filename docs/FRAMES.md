@@ -65,8 +65,21 @@ time.  Two consequences follow, and they pull in opposite directions:
 
 | spawn heading at LIO init | L relative to W | the FCU's local NED relative to W |
 |---|---|---|
-| **facing North** (W's +y) | L = W rotated by -90 deg (x_L = North) | **the standard permutation** `(x_ned, y_ned, z_ned) = (N, E, -U)`; "North" means North |
-| facing East (W's +x) | **L = W exactly** (axes identical) | a 90 deg rotation: the FCU's "North" is W's East |
+| **facing North** (W's +y) | L's x is W's North, so the map W -> L is a -90 deg yaw and the map L -> W is +90 deg | **the standard permutation** `(x_ned, y_ned, z_ned) = (N, E, -U)`; "North" means North |
+| facing East (W's +x) | **L = W exactly** (axes identical, both maps identity) | a 90 deg rotation: the FCU's "North" is W's East |
+
+Direction convention, because this is exactly where a sign hides: `R_WL` maps **L coordinates to W**
+(`v_W = R_WL @ v_L`), so `R_WL[:,0]` is L's x-axis written in W.  Facing North that column is
+`(0, 1, 0)` and `yaw(R_WL) = +90 deg`; the inverse map `R_LW = R_WL.T` has yaw -90 deg.  Both numbers
+appear in this project's notes, so `frames.py` says which one every function returns, and
+`Calib.yaw_deg()` reports `R_WL`'s yaw (measured +90.000 deg for a North spawn, `common/frames.py`
+self-test).
+
+**Note added 2026-10-13 (the module's own test caught it):** "North" here is a **compass** heading
+(0 = North), while a rotation about W's z is an **ENU** yaw (0 = East, anticlockwise).  They differ by
+90 deg and the same word "yaw" is used for both in older notes.  `frames.py` therefore has
+`R_WB_from_heading(heading_deg)` for the compass reading and `R_z(angle_rad)` for the ENU one, and
+never takes one where the other belongs.
 
 They cannot both hold: with `EK3_SRC1_YAW=6` the EKF **adopts the LIO's yaw**, and the LIO's yaw zero is
 the body's forward axis at init.  So the FCU's "North" *is* the body's init heading, and L's x-axis is the
@@ -107,7 +120,14 @@ No rotation, nothing to calibrate, and the "which frame is this in" class of err
 **B is used in exactly four places:**
 
 1. **The parent of the sensor mount**: `S = B` rotated by the 45 deg nose-down mount and offset by
-   (0.05, 0, 0.10).  Without B there is nothing to hang the housing on.
+   (0.05, 0, 0.10).  Without B there is nothing to hang the housing on.  Sign, stated once: a
+   nose-down mount means the housing's forward axis lies **below** the body's, i.e. in body
+   coordinates `x_S = (cos 45, 0, -sin 45)` and `R_BS = R_y(+45)` -- the housing's *up* axis tilts
+   forward.  The flight stack states the same mount as `odom_robo` pitch +45 with its rpy applied
+   inverted, so the two documents disagree in words and agree in physics; `R_body_sensor()` encodes
+   the physics and tests T5/T6 measure it against the world instead of trusting either wording.
+   (`common/frames.py` self-test also settles the second half: with L's x = the body's forward axis,
+   the mount does not change L's *heading*, only the elevation of its axes.)
 2. **The published odometry frame**: `/odom` (after the LIO applies `odom_robo`) is the body pose -- what
    the planner consumes as `base_link` and what RViz draws.  `/lio/odom` is the same state in S.
 3. **The FCU's external-nav attitude**: ArduPilot wants the *body* attitude; its own body convention is
