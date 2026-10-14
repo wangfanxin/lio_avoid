@@ -17,6 +17,7 @@ usage: planner/rectangle_source.py [--z 0.8] [--rate 4] [--speed 0.25]
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import sys
@@ -76,6 +77,11 @@ def main() -> int:
     ap.add_argument("--z", type=float, default=None, help="override the mission altitude, m")
     ap.add_argument("--spacing", type=float, default=0.05, help="path point spacing, m")
     ap.add_argument("--rate", type=float, default=4.0, help="republish rate, Hz")
+    ap.add_argument("--calib-file", default="",
+                    help="the MEASURED L->W calibration -- the SAME file the FSM converts with.  "
+                         "Without it this node publishes the path using the PREDICTED transform, and if "
+                         "the FSM then converts L->F with a measured one, the commanded points are "
+                         "offset by the difference between the two.")
     args = ap.parse_args()
 
     corners, mission = load_square(args.world)
@@ -88,13 +94,34 @@ def main() -> int:
     print("   %d path points at %.0f mm spacing, %d corners"
           % (len(path_w), args.spacing * 1000, len(corners)))
 
-    # W -> L with the PREDICTED calibration (spawn facing North, L's axes = the body's at init)
-    calib = frames.Calib.predicted(spawn_heading_deg=0.0, world_axes="body")
+    # W -> L.  MEASURED 2026-10-13, and it cost 51 mm: this node used the PREDICTED transform while the
+    # FSM converted L->F with the MEASURED one, and the two disagree in t (predicted t_N = +50 mm, from
+    # the sensor's 0.05 m lever arm, against a measured t_N = -4 mm).  The commanded corners therefore
+    # sat 51 mm SOUTH of the intended ones in every flight, the aircraft flew faithfully to them, and the
+    # box looked translated in N -- in the command, not in the aircraft.  The source now takes the same
+    # file the FSM takes, and prints the difference either way so a mismatch cannot be silent again.
+    predicted = frames.Calib.predicted(spawn_heading_deg=0.0, world_axes="body")
+    calib = predicted
+    if args.calib_file and os.path.exists(args.calib_file):
+        with open(args.calib_file) as fh:
+            d = json.load(fh)
+        calib = frames.Calib(R_WL=np.array(d["R_WL"]), t_WL=np.array(d["t_WL"]))
+        print("   using the MEASURED calibration from %s (%s)"
+              % (args.calib_file, d.get("yaw_deg", float("nan"))))
+    else:
+        print("   no --calib-file: using the PREDICTED calibration"
+              " (the FSM must use the predicted one too, or the commands will be offset)")
+    dt = calib.t_WL - predicted.t_WL
+    print("   measured - predicted t = [%+.4f %+.4f %+.4f] m  (|%.1f| mm)"
+          % (dt[0], dt[1], dt[2], float(np.linalg.norm(dt)) * 1e3))
     R_LW = calib.R_WL.T
     path_l = (R_LW @ (path_w - calib.t_WL).T).T
-    print("   predicted L<-W: yaw %+.3f deg, t = [%+.4f %+.4f %+.4f] m"
+    # what the FSM will compute back, printed here so the round trip is visible in the log
+    back = (calib.R_WL @ path_l.T).T + calib.t_WL
+    err = np.linalg.norm(back - path_w, axis=1)
+    print("   L<-W: yaw %+.3f deg, t = [%+.4f %+.4f %+.4f] m;  worst W->L->F round-trip error %.6f mm"
           % (math.degrees(math.atan2(R_LW[1, 0], R_LW[0, 0])), -calib.t_WL[0], -calib.t_WL[1],
-             -calib.t_WL[2]))
+             -calib.t_WL[2], float(err.max()) * 1e3))
 
     import rclpy
     from rclpy.node import Node

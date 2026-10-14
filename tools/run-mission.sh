@@ -91,8 +91,6 @@ LIO_PID=$!
 sleep 5
 kill -0 "$LIO_PID" 2>/dev/null || { echo "the LIO died:"; tail -20 "$OUT/lio.log"; exit 1; }
 
-python3 "$REPO/planner/rectangle_source.py" > "$OUT/traj.log" 2>&1 &
-TRAJ_PID=$!
 python3 "$REPO/tools/record-odom.py" --topic /lio/robo/odom --csv "$OUT/lio.csv" \
     --seconds 0 > "$OUT/rec.log" 2>&1 &
 REC_PID=$!
@@ -101,6 +99,7 @@ sleep 3
 echo "== flying =="
 NAV_SOURCE="${NAV_SOURCE:-lio}"
 CALIB_ARG=""
+TRAJ_CALIB_ARG=""
 if [ "$NAV_SOURCE" = "lio" ]; then
     CALIB="$REPO/../_stage/calib.json"
     if [ ! -f "$CALIB" ]; then
@@ -108,7 +107,13 @@ if [ "$NAV_SOURCE" = "lio" ]; then
         exit 1
     fi
     CALIB_ARG="--calib-file $CALIB"
+    # the trajectory source must invert the SAME transform the FSM applies (see planner/rectangle_source.py):
+    # with the predicted one here and the measured one there, every commanded corner moved 51 mm in N
+    TRAJ_CALIB_ARG="--calib-file $CALIB"
 fi
+python3 "$REPO/planner/rectangle_source.py" $TRAJ_CALIB_ARG > "$OUT/traj.log" 2>&1 &
+TRAJ_PID=$!
+sleep 1
 python3 "$REPO/fsm/mission_fsm.py" --nav-source "$NAV_SOURCE" $CALIB_ARG \
     --tap-port 0 --alt 2.0 --hold 3.0 ${FSM_ARGS:-} \
     --phase-log "$OUT/phase.csv" > "$OUT/fsm.log" 2>&1

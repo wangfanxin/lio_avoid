@@ -269,7 +269,11 @@ def main() -> int:
                 err = p_e[m][ia] - p_tap_ned[ib]
                 off = err.mean(axis=0)
                 res = err - off
-                h_rms = float(np.sqrt(np.mean(np.sum(res[:, :2] ** 2, axis=1)))) * 1e3
+                # NAMED a4_*: this block used to assign plain `h_rms` (in MILLIMETRES) over A1's `h_rms`
+                # (in METRES), so the final verdict line silently tested A4 against A1's 20 mm bound and
+                # printed "A1/A2/B1 FAIL" on flights where all three passed.  The batch summary parses the
+                # per-line numbers and was unaffected, but the per-flight file is the evidence and was wrong.
+                a4_h_rms = float(np.sqrt(np.mean(np.sum(res[:, :2] ** 2, axis=1)))) * 1e3
                 # the SAME offset while parked separates a datum from a tracking error: a datum is the
                 # same number before and after take-off, a tracking error is not
                 mp = ~m
@@ -283,10 +287,10 @@ def main() -> int:
                       "vertical alignment residual %.1f mm):" % (int(m.sum()), len(t_e), best_lag * 1e-6,
                                                                  best * 1e3))
                 print("   horizontal rms %8.2f mm  (<= 50, mean removed)   vertical rms %8.2f mm"
-                      % (h_rms, float(np.sqrt(np.mean(res[:, 2] ** 2))) * 1e3))
+                      % (a4_h_rms, float(np.sqrt(np.mean(res[:, 2] ** 2))) * 1e3))
                 print("   datum offsets removed: N %+.4f m  E %+.4f m  D %+.4f m%s"
                       % (*off, parked))
-                print("   [%s] A4" % ("PASS" if h_rms <= 50.0 else "FAIL"))
+                print("   [%s] A4" % ("PASS" if a4_h_rms <= 50.0 else "FAIL"))
             else:
                 print("A4: no samples after take-off in the FCU's log  [FAIL]")
         else:
@@ -376,7 +380,8 @@ def main() -> int:
     print("   note: the disarm itself is in the FSM's own output and the FCU's BIN, not in this file")
     print()
     verdict = (h_rms <= 0.020 and v_rms <= 0.050 and not aborted and ex <= 2.10 and ny <= 1.30)
-    print("A1/A2/B1 %s" % ("PASS" if verdict else "FAIL"))
+    print("A1/A2/B1 %s   (A1 %.2f mm <= 20, A2 %.2f mm <= 50, B1 E %.3f <= 2.10, N %.3f <= 1.30, "
+          "aborted %s)" % ("PASS" if verdict else "FAIL", h_rms * 1e3, v_rms * 1e3, ex, ny, aborted))
     return 0 if not aborted else 1
 
 
