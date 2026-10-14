@@ -1,0 +1,54 @@
+ego-planner -> /planner/traj: does a vehicle slower than the plan's own timing break the republish rate?
+generated 2026-10-14 by tools/ego-offline-test.py (commands below, re-runnable)
+
+WHY THIS EXISTS
+The batch of 5 nominal runs (docs/metrics/ego-offline-batch.txt) came back 4 of 5: run 3 failed the
+>= 2 Hz republish criterion with a 0.67 Hz worst interval.  Its adapter log says why, and the reason is
+not the adapter:
+
+  ego_adapter REPORT: ... paths published 103, withheld 10 | republish 4.00 Hz (median over 102 intervals)
+     withheld    1 x  starts 0.521 m from the vehicle
+     withheld    1 x  starts 0.578 m from the vehicle
+     withheld    1 x  starts 0.805 m from the vehicle
+     withheld    1 x  starts 1.004 m from the vehicle
+     withheld    1 x  starts 1.208 m from the vehicle
+     withheld    1 x  starts 1.417 m from the vehicle
+     withheld    1 x  starts 1.648 m from the vehicle
+     withheld    1 x  starts 3.482 m from the vehicle
+
+Ten consecutive withholdings whose start distance marches away from the vehicle is the signature of ONE
+stale plan being held while the vehicle flies away from it -- i.e. the planner stopped replanning.  It
+stops because `EGOReplanFSM::execFSMCallback`'s EXEC_TRAJ case tests arrival on the TRAJECTORY's own
+clock and position (`pos = info->position_traj_.evaluateDeBoorT(t_cur)`, then WAIT_TARGET once
+`t_cur > duration - 1e-2`), not on the measured odometry.  The spline's duration is what
+`manager/max_vel` implies, so if the vehicle flies slower than that, the clock expires while the vehicle
+is still en route.  In this harness the kinematic vehicle was capped at 0.8 m/s against a planner
+configured for 1.0 m/s.
+
+THE A/B (3 runs each, everything else identical; --pursuit-v is the harness's vehicle speed cap)
+
+  command:
+    python3 tools/ego-offline-test.py --duration 30 --pursuit-v 0.8 --out /tmp/a.txt
+    python3 tools/ego-offline-test.py --duration 30 --pursuit-v 1.0 --out /tmp/b.txt
+
+  vehicle 0.8 m/s vs planner max_vel 1.0 (the lagging case)
+    run 1  rc=0  republish 4.00 Hz median, 2.01 Hz worst (worst gap 0.50 s)  plan-goal 0.1793 m
+    run 2  rc=0  republish 4.00 Hz median, 2.01 Hz worst (worst gap 0.50 s)  plan-goal 0.1500 m
+    run 3  rc=0  republish 4.00 Hz median, 2.02 Hz worst (worst gap 0.49 s)  plan-goal 0.1376 m
+
+  vehicle 1.0 m/s, matched to the planner's max_vel
+    run 1  rc=0  republish 4.00 Hz median, 3.84 Hz worst (worst gap 0.26 s)  plan-goal 0.1408 m
+    run 2  rc=0  republish 4.00 Hz median, 3.76 Hz worst (worst gap 0.27 s)  plan-goal 0.1844 m
+    run 3  rc=0  republish 4.00 Hz median, 3.66 Hz worst (worst gap 0.27 s)  plan-goal 0.1399 m
+
+READING
+* Matched, the worst republish interval is 3.66-3.84 Hz with no gap over 0.3 s; lagging, it sits at
+  2.01-2.02 Hz -- right on the contract's floor -- and in the 5-run batch it went below it once
+  (0.67 Hz).  The direction is consistent and the mechanism is visible in the failing run's log.
+* This is not (only) a harness artefact.  The FSM of mission A flies the path at 0.25 m/s
+  (params/phase_a_mission.parm) while params/ego_planner_humble.yaml gives the planner
+  `manager/max_vel: 1.0`.  For mission B those two numbers must be brought together -- either raise the
+  flown speed or lower `manager/max_vel`/`bspline/limit_vel` to what the FSM will actually command --
+  otherwise the planner will declare arrival on its own clock before the aircraft gets there.
+* Neither run diverged, no planner crash in any of the 11 runs, and the geometric criteria
+  (clearance, arena, start distance, goal) held in all of them.

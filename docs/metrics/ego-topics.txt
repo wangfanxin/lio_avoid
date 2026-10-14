@@ -1,0 +1,59 @@
+tools/run-planner.sh on the wire -- what it brings up and what it publishes
+generated 2026-10-14 12:27:33
+
+COMMAND
+  bash tools/run-planner.sh --goal 3.0,4.0,2.0
+  (the stand-in LIO below is only because no simulator may be started here; in a real run the
+   LIO publishes /cloud_registered and /lio/robo/odom and nothing else changes)
+
+TOPICS PRESENT AFTER 14 s
+  /cloud_registered
+  /grid_map/depth
+  /grid_map/occupancy
+  /grid_map/occupancy_inflate
+  /lio/robo/odom
+  /move_base_simple/goal
+  /planner/traj
+  /planning/broadcast_bspline_from_planner
+  /planning/broadcast_bspline_to_planner
+  /planning/bspline
+
+WHAT THE CONTRACT NEEDS
+  /planner/traj       Type: nav_msgs/msg/Path Publisher count: 1 Subscription count: 1 
+  planning/bspline    
+
+MEASURED RATES (ros2 topic hz, 12 s windows)
+  /planner/traj
+    average rate: 3.999
+    	min: 0.250s max: 0.251s std dev: 0.00043s window: 5
+    average rate: 4.000
+    	min: 0.250s max: 0.251s std dev: 0.00037s window: 9
+  planning/bspline
+
+THE FRAME AND THE TYPE OF /planner/traj
+  stamp:
+    sec: 1791952073
+    nanosec: 956766167
+  frame_id: lio_world
+  ---
+
+THE ADAPTER'S OWN START-UP BANNER (from its stdout)
+    adapter       /mnt/d/distill_self/lio_avoid/planner/ego_adapter.py
+    calibration   /mnt/d/distill_self/_stage/calib.json
+    goal          3.0,4.0,2.0
+    publishes:
+      /move_base_simple/goal        geometry_msgs/PoseStamped  frame lio_world  (the planner's input)
+    subscribes:
+      /goal_pose                    geometry_msgs/PoseStamped (W)        -> the adapter's goal input
+  wait for goal or trigger.
+  wait for goal or trigger.
+  wait for goal or trigger.
+  wait for goal or trigger.
+  ego_adapter: running
+    calibration   L->W yaw +90.050 deg, t = [-0.0008 -0.0041 +0.1156] m (n=45589, rms 0.0177 m)
+
+NOTE ON WHAT 'ALREADY PUBLISHED' MEANS HERE
+  the stand-in vehicle subscribes to /planner/traj (it flies the published path), which is why
+  'Subscription count' is 1.  With --no-goal instead of --goal the planner has no target, never
+  plans, and /planner/traj stays SILENT -- the publisher exists but no message is sent.  That is
+  correct: the adapter publishes a Path only when there is a plan, and it does not invent one.

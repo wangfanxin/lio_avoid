@@ -1,0 +1,43 @@
+ego-planner on ROS 2 Humble: what was fetched, what was built, what was changed
+generated 2026-10-14 12:23:40
+
+UPSTREAM
+  repo      https://github.com/ZJU-FAST-Lab/ego-planner-swarm
+  branch    ros2_version
+  commit    23a8d5a191711dd65633df689bd00f55d4dea8f9
+  licence   GPL-3.0 (LICENSE at the tree root)
+  why       the same lab as ZJU-FAST-Lab/ego-planner, a native rclcpp/ament port (its own README
+            names ros-humble-rmw-cyclonedds-cpp), so no ros1_bridge and no third-party fork.
+            Rejected: Ego-Planner-2D-ROS2 / ego_planner_ground_ros2 (2-D ground robots, the
+            optimiser is rewritten for x/y), the PX4+Gazebo stacks (this project forbids both).
+
+WHAT IS BUILT (only the planner, not the branch's own simulator)
+  linked   planner/traj_utils planner/plan_env planner/path_searching planner/bspline_opt
+           planner/plan_manage uav_simulator/Utils/quadrotor_msgs
+           (the last one only because plan_manage/CMakeLists.txt does
+            find_package(quadrotor_msgs REQUIRED))
+  skipped  uav_simulator/{fake_drone,local_sensing,map_generator,mockamap,so3_*,Utils/*}
+  ws       /home/fanxin/lio_avoid/planner_ws   (separate from lio_ws, which is untouched)
+  build    colcon build --symlink-install --parallel-workers 6
+           -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+           Summary: 6 packages finished [6min 16s], rc=0
+  check    ldd on install/ego_planner/lib/ego_planner/ego_planner_node: all libraries resolve
+           ros2 interface show traj_utils/msg/Bspline prints the message
+           ros2 pkg prefix ego_planner -> /home/fanxin/lio_avoid/planner_ws/install/ego_planner
+
+PARAMETERS  params/ego_planner_humble.yaml, passed with --ros-args --params-file
+  a params file whose keys contain '/' IS accepted on Humble (checked with ros2 param get):
+    ros2 param get /ego_planner_node fsm/planning_horizon  -> Double value is: 12.0
+    ros2 param get /ego_planner_node grid_map/pose_type    -> Integer value is: 2
+
+PATCH  patches/0002-ego-planner-ros2-humble.patch
+   1 file changed, 33 insertions(+), 6 deletions(-)
+  one file: src/planner/plan_manage/src/ego_replan_fsm.cpp
+  revert + re-apply through tools/ego-apply-patch.sh gives a byte-identical diff, so the patch IS
+  the change.  Three defects, each measured:
+    A  waypointCallback hard-codes the goal's altitude to z = 1.0 m  (path ended at U +1.1615 m
+       for a goal commanded at U +2.000 m)
+    B  rclcpp::spin_some(node_) inside a callback aborts the process ('Node ... has already been
+       added to an executor'), on the 2nd goal ~1 s into the run
+    C  a goal before the first odometry segfaults it (planFromCurrentTraj evaluates a B-spline
+       that was never built)

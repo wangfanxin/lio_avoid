@@ -6,3 +6,21 @@ planner ego-planner-swarm ros2_version 23a8d5a + patches/0002, params/ego_planne
 
 run   goalErr_m   clrMin_m   startMax   repub_hz    traj_hz     arc_hz   passes  verdict
 1        0.1847     0.4520     0.3948       3.74     0.0021     0.0283        -     PASS
+2        0.1591     0.4653     0.3520       2.01     0.0002     0.0283        -     PASS
+3        0.1599     0.4505     0.3717       0.67     0.0000     0.0283        -     FAIL
+4        0.1556     0.4491     0.4056       2.01     0.0048     0.0283        -     PASS
+5        0.1495     0.4497     0.4398       2.01     0.0043     0.0283        -     PASS
+
+completed 4 of 5
+
+criteria (all must hold, from tools/ego-offline-test.py)
+  frame_id == lio_world
+  trajectory-time spacing <= 0.050 s (>= 20 Hz)
+  arc step <= v_max/20 = 0.050 m, i.e. >= 20 Hz of trajectory time at the 1.0 m/s limit
+  republish >= 2.0 Hz (worst interval)
+  min pillar clearance >= 0.35 m footprint, over EVERY point of EVERY published path
+  0 points outside the arena
+  start distance <= 0.50 m from the vehicle state at the time of publication
+  published plan ends <= 0.250 m from the goal
+  the goal the adapter sent maps back to W <= 2.000 mm from the requested goal
+  the vehicle ends <= 0.350 m from the goal
