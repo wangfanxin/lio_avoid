@@ -1146,11 +1146,17 @@ def main() -> int:
     ap.add_argument("--settle-s", type=float, default=GATES["settle_s"],
                     help="and give up waiting after this long")
     ap.add_argument("--yaw", type=float, default=0.0, help="commanded yaw, rad (0 = North)")
-    ap.add_argument("--setpoint-mode", default="posvelacc", choices=["pos", "posvel", "posvelacc"],
+    ap.add_argument("--setpoint-mode", default="posvel", choices=["pos", "posvel", "posvelacc"],
                     help="which fields of SET_POSITION_TARGET_LOCAL_NED carry the plan: position only, "
-                         "position+velocity, or position+velocity+acceleration (the historical default).  The "
-                         "tracking error (0.13-0.19 m at 0.65 m/s) is the open question, and this is the "
-                         "cheapest way to ask whether the feed-forward is being honoured")
+                         "position+velocity, or position+velocity+acceleration.  posvelacc WAS the default and "
+                         "it is the one thing measured to break HOLDING: MEASURED 2026-10-14, with posvelacc "
+                         "the FSM streamed pos=(3.98,0) vel=(0,0) acc=(0,0) at the plan's end and the aircraft "
+                         "kept flying outbound at 2.6 m/s for 2.6 m until the geofence abort (sortie G2), while "
+                         "the same mission with posvel stopped 0.023 m from the commanded point (C1 PASS, "
+                         "sortie H-posvel) and with pos 0.020 m (H-pos).  All three modes track the plan the "
+                         "same way mid-leg (A1 3.16-3.51 mm), so the acceleration field buys nothing and costs "
+                         "the arrival; the historical 'dropping the accel field made it worse' was measured "
+                         "before the airframe and speed fixes, on a different failure mode")
     ap.add_argument("--yaw-mode", default="fixed", choices=["fixed", "velocity"],
                     help="fixed: stream --yaw unchanged (the historical behaviour, and what every mission-A "
                          "number was flown with).  velocity: point the nose along the plan's horizontal "
