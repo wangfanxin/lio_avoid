@@ -116,6 +116,12 @@ kill -0 "$LIO_PID" 2>/dev/null || { echo "the LIO died:"; tail -20 "$OUT/lio.log
 python3 "$REPO/tools/record-odom.py" --topic /lio/robo/odom --csv "$OUT/lio.csv" \
     --seconds 0 > "$OUT/rec.log" 2>&1 &
 REC_PID=$!
+# The map the PLANNER sees is recorded next to the odometry, because the last Mission B link was measured
+# to be the map (offline the same scenario plans at 0.498 m clearance, live at 0.308 m): tools/map-vs-world.py
+# compares this cloud with the world file's cylinders and names the pillars the live map lacks.
+python3 "$REPO/tools/record-cloud.py" --topic /cloud_registered --csv "$OUT/cloud.csv" \
+    --decimate 40 --scans 3 > "$OUT/reccloud.log" 2>&1 &
+RECC_PID=$!
 sleep 3
 
 echo "== flying =="
@@ -153,6 +159,7 @@ FSM_RC=$?
 cat "$OUT/fsm.log"
 
 kill "$REC_PID" 2>/dev/null
+kill "$RECC_PID" 2>/dev/null
 sleep 1
 echo
 echo "== metrics =="
