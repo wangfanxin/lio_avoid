@@ -117,13 +117,13 @@ cd - > /dev/null
 
 cleanup() {
     for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RX_PID:-}" "${REC_PID:-}" \
-             "${SEQ_PID:-}"; do
+             "${RECC_PID:-}" "${RECT_PID:-}" "${RECB_PID:-}" "${SEQ_PID:-}"; do
         [ -n "$p" ] && kill "$p" 2>/dev/null
     done
     kill "$SITL" 2>/dev/null
     sleep 1
     for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RX_PID:-}" "${REC_PID:-}" \
-             "${SEQ_PID:-}"; do
+             "${RECC_PID:-}" "${RECT_PID:-}" "${RECB_PID:-}" "${SEQ_PID:-}"; do
         [ -n "$p" ] && kill -9 "$p" 2>/dev/null
     done
     kill -9 "$SITL" 2>/dev/null
@@ -168,6 +168,24 @@ RECC_PID=$!
 python3 "$REPO/tools/record-traj.py" --topic /planner/traj --csv "$OUT/traj.csv" \
     --world "$WORLD" > "$OUT/rectraj.log" 2>&1 &
 RECT_PID=$!
+# EGO'S OWN OUTPUT, recorded next to the plan that survived the gate -- the difference between the two is
+# where a whole sortie can disappear.  MEASURED 2026-10-14 (sortie F1): the aircraft hovered for the 60 s its
+# first stop was commanded because ego never committed a new trajectory, and nothing in the run dir could
+# show that: the adapter's log had ~600 identical WITHHELD lines quoting the SAME expired plan, and ego's own
+# FSM had logged `from REPLAN_TRAJ to REPLAN_TRAJ` 5031 times (10 ms tick = 50.3 s) with no timestamped
+# failure line.  tools/record-bspline.py writes every planning/bspline with its start_time, duration, control
+# points and traj_id, so "is ego committing anything?" is a column and not an inference.
+#
+# THE PLANNER WORKSPACE IS SOURCED IN A SUBSHELL, and that is not tidiness: `traj_utils` (the package that
+# defines the Bspline message) is built into planner_ws, and the parent script sources only ROS and lio_ws.
+# MEASURED 2026-10-14 (sorties F2/F3): without this the recorder exited with "cannot import
+# traj_utils/Bspline" and bspline.csv was never created -- the instrument was missing exactly when the
+# question it exists for came up.
+python3 "$REPO/tools/record-bspline.py" --help > /dev/null 2>&1 || true
+( set +u; source /opt/ros/humble/setup.bash; source /home/fanxin/lio_avoid/planner_ws/install/setup.bash; \
+  exec python3 "$REPO/tools/record-bspline.py" --topic planning/bspline --csv "$OUT/bspline.csv" ) \
+    > "$OUT/recbspline.log" 2>&1 &
+RECB_PID=$!
 sleep 3
 
 echo "== flying =="

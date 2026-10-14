@@ -728,6 +728,18 @@ class Mission:
 
         def ref_at(pos_p, times, t_rel):
             """(position, velocity, acceleration) of the plan at t_rel seconds from its start."""
+            # WHEN THE PLAN IS EXHAUSTED THE FEEDFORWARD MUST GO TO ZERO.  MEASURED 2026-10-14 (sortie F2,
+            # the diagonal): the position was clamped to the plan's last point -- but `vel` was the LAST
+            # SEGMENT's velocity, so the FSM kept streaming "sit at (-1.79,-1.81) AND fly at 2.43 m/s
+            # north-west".  ArduPilot's GUIDED position+velocity setpoint follows the velocity feedforward,
+            # so the aircraft flew on at 2.43 m/s, passed the stop, left the arena and tripped the geofence
+            # gate: "ABORT: trajectory 1: geofence: truth at [-6.54 -6.64]" -- 8 m of flight on a command
+            # that had stopped 4.18 m behind it.  Sortie F3 did the same at its first circle stop
+            # ("geofence: truth at [+6.60 -0.25]").  The bug was always there; it only became destructive
+            # once the plans got fast, which is what unpinning manager/max_vel did (plans went from a
+            # 1.0 m/s time allocation to the params file's 3.0).
+            if t_rel >= times[-1] - 1e-9:
+                return np.array(pos_p[-1], dtype=float), np.zeros(3), np.zeros(3)
             k = int(np.clip(np.searchsorted(times, t_rel, side="right") - 1, 0, len(times) - 2))
             h = max(times[k + 1] - times[k], 1e-6)
             w = float(np.clip((t_rel - times[k]) / h, 0.0, 1.0))

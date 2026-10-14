@@ -355,6 +355,7 @@ class EgoAdapter:
         from nav_msgs.msg import Path, Odometry
         from geometry_msgs.msg import PoseStamped
         from sensor_msgs.msg import PointCloud2  # noqa: F401  (only for the type check below)
+        from std_msgs.msg import Bool
 
         self.args = args
         self.rclpy = rclpy
@@ -379,6 +380,14 @@ class EgoAdapter:
                             reliability=ReliabilityPolicy.BEST_EFFORT)
         self.traj_pub = self.node.create_publisher(Path, args.traj_topic, latched)
         self.goal_pub = self.node.create_publisher(PoseStamped, args.planner_goal_topic, 1)
+        # IS THE PLANNER STALLED?  A withheld plan is normal -- the gate IS the contract.  THE SAME withheld
+        # plan for seconds on end is not: it means ego is not committing a new trajectory, and then the FSM
+        # is waiting on silence and the sequencer is counting down to "stop MISSED".  MEASURED 2026-10-14
+        # (sortie F1): one plan (start_time 1791981437.203, dur 1.185 s) was refused ~250 times over 50 s
+        # while the aircraft hovered on the pad; the only trace was ~600 identical WITHHELD lines, and the
+        # first stop of the mission was lost to the sequencer's 60 s timeout.  This topic is how the rest of
+        # the stack can tell "the planner is stuck" from "the planner is fine, this plan is not".
+        self.stall_pub = self.node.create_publisher(Bool, args.stall_topic, 10)
 
         self.node.create_subscription(PoseStamped, args.goal_topic, self.on_goal, 1)
         self.node.create_subscription(Odometry, args.odom_topic, self.on_odom, sensor)
@@ -394,6 +403,7 @@ class EgoAdapter:
         self.n_bspline = 0
         self.n_pub = 0
         self.n_blocked = 0
+        self.n_stall = 0
         self.blocked_reasons = {}
         self.last_report = time.time()
         self.last_pub_wall = 0.0
@@ -689,6 +699,32 @@ class EgoAdapter:
             t.nanosec -= 1000000000
         return t
 
+    def _note_stall(self):
+        """The SAME withheld trajectory, second after second, is the signature of a stalled planner."""
+        if self.bspline is None:
+            return
+        t0 = float(self.bspline.start_time.sec) + 1e-9 * float(self.bspline.start_time.nanosec)
+        now = time.time()
+        if getattr(self, "_stall_t0", None) != t0:
+            self._stall_t0, self._stall_since, self._stall_said = t0, now, False
+            return
+        dt = now - self._stall_since
+        if dt >= self.args.stall_s and not self._stall_said:
+            self._stall_said = True
+            self.n_stall += 1
+            print("ego_adapter: PLANNER STALLED: the same trajectory (start_time %.3f) has been withheld for "
+                  "%.1f s after %d refusals -- ego is not committing a new one (see the PLANNER-STALL lines in "
+                  "the planner's own log)" % (t0, dt, self.n_blocked), flush=True)
+        if getattr(self, "_stall_said", False):
+            self.stall_pub.publish(Bool(data=True))
+
+    def _clear_stall(self):
+        if getattr(self, "_stall_said", False):
+            print("ego_adapter: planner recovered: a NEW trajectory was published after %.1f s of stall"
+                  % (time.time() - self._stall_since), flush=True)
+            self.stall_pub.publish(Bool(data=False))
+        self._stall_t0, self._stall_said = None, False
+
     def tick(self):
         if self.bspline is None:
             return
@@ -699,7 +735,9 @@ class EgoAdapter:
             self.blocked_reasons[key] = self.blocked_reasons.get(key, 0) + 1
             if self.n_blocked <= 3 or self.n_blocked % 25 == 0:
                 print("ego_adapter: PATH WITHHELD (%d): %s" % (self.n_blocked, info), flush=True)
+            self._note_stall()
             return
+        self._clear_stall()
         self.traj_pub.publish(path)
         now = time.time()
         if self.last_pub_wall:
@@ -718,9 +756,9 @@ class EgoAdapter:
     def report(self):
         rt = float(np.median(self.pub_dt)) if self.pub_dt else float("nan")
         print("ego_adapter REPORT: goals in %d, published %d, rejected %d, deferred %d | Bsplines %d | "
-              "paths published %d, withheld %d | republish %.2f Hz (median over %d intervals)"
+              "paths published %d, withheld %d | planner stalls %d | republish %.2f Hz (median over %d intervals)"
               % (self.n_goal_in, self.n_goal_out, self.n_goal_rejected, self.n_goal_deferred,
-                 self.n_bspline, self.n_pub, self.n_blocked,
+                 self.n_bspline, self.n_pub, self.n_blocked, self.n_stall,
                  (1.0 / rt if rt == rt and rt > 0 else float("nan")), len(self.pub_dt)), flush=True)
         for k, v in sorted(self.blocked_reasons.items()):
             print("   withheld %4d x  %s" % (v, k), flush=True)
@@ -737,6 +775,12 @@ def main():
     ap.add_argument("--planner-goal-topic", default="/move_base_simple/goal",
                     help="the ego-planner FSM's waypoint topic (frame L after this adapter)")
     ap.add_argument("--bspline-topic", default="planning/bspline")
+    ap.add_argument("--stall-topic", default="/planner/stalled",
+                    help="std_msgs/Bool, true while the SAME trajectory has been withheld for --stall-s "
+                         "seconds.  A withheld plan is normal; the same one for seconds is a stalled planner "
+                         "(MEASURED: F1 withheld one plan ~250 times over 50 s while the aircraft hovered)")
+    ap.add_argument("--stall-s", type=float, default=2.0,
+                    help="how long the same trajectory must be withheld before it counts as a stall, s")
     ap.add_argument("--odom-topic", default="/lio/robo/odom")
     ap.add_argument("--rate", type=float, default=4.0, help="republish rate, Hz (>= 2 required)")
     ap.add_argument("--dt", type=float, default=0.02, help="trajectory-time sample spacing, s")

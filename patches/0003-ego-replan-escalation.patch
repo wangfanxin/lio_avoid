@@ -1,0 +1,134 @@
+diff --git a/src/planner/plan_manage/src/ego_replan_fsm.cpp b/src/planner/plan_manage/src/ego_replan_fsm.cpp
+index f9234bd..9823311 100755
+--- a/src/planner/plan_manage/src/ego_replan_fsm.cpp
++++ b/src/planner/plan_manage/src/ego_replan_fsm.cpp
+@@ -558,15 +558,32 @@ namespace ego_planner
+     case GEN_NEW_TRAJ:
+     {
+ 
++      // PATCH F (patches/0003-ego-replan-escalation.patch) -- counter at case scope (see PATCH E).
++      static int consecutive_global_failures = 0;
++
+       bool success = planFromGlobalTraj(10); // zx-todo
+       if (success)
+       {
++        consecutive_global_failures = 0;
+         changeFSMExecState(EXEC_TRAJ, "FSM");
+         flag_escape_emergency_ = true;
+         publishSwarmTrajs(false);
+       }
+       else
+       {
++        // PATCH F (patches/0003-ego-replan-escalation.patch): this failure path is silent upstream too.  A
++        // global replan that keeps failing is the END OF THE LINE -- no state below it produces a trajectory
++        // -- so it is the one place that must be loud: after 1 s of consecutive failures the log says so every
++        // second, with the target and the odometry position.  The vehicle keeps hovering, which is the safe
++        // behaviour (our FSM flies only plans that passed the 0.20 m clearance gate).
++        consecutive_global_failures++;
++        if ((consecutive_global_failures % 100) == 0)
++        {
++          RCLCPP_ERROR(node_->get_logger(),
++                       "PLANNER-STALL: NO trajectory for %.1f s (global replan failing; target [%.2f %.2f %.2f], odom [%.2f %.2f %.2f])",
++                       0.01 * consecutive_global_failures, end_pt_(0), end_pt_(1), end_pt_(2),
++                       odom_pos_(0), odom_pos_(1), odom_pos_(2));
++        }
+         changeFSMExecState(GEN_NEW_TRAJ, "FSM");
+       }
+       break;
+@@ -575,14 +592,48 @@ namespace ego_planner
+     case REPLAN_TRAJ:
+     {
+ 
++      // PATCH E (patches/0003-ego-replan-escalation.patch) -- the counter lives at CASE scope, not inside
++      // the failure branch, because the success branch resets it (declaring it inside `else` does not
++      // compile: MEASURED 21:03, "error: 'consecutive_replan_failures' was not declared in this scope").
++      static int consecutive_replan_failures = 0;
++
+       if (planFromCurrentTraj(1))
+       {
++        consecutive_replan_failures = 0;
+         changeFSMExecState(EXEC_TRAJ, "FSM");
+         publishSwarmTrajs(false);
+       }
+       else
+       {
+-        changeFSMExecState(REPLAN_TRAJ, "FSM");
++        // PATCH E (patches/0003-ego-replan-escalation.patch).
++        // UPSTREAM RETRIES THIS STATE FOREVER AND SILENTLY: on failure it just calls
++        // changeFSMExecState(REPLAN_TRAJ, ...) again.  MEASURED 2026-10-14 (sortie F1): ego's own log holds
++        // 5031 consecutive "from REPLAN_TRAJ to REPLAN_TRAJ" lines, and this callback runs every 10 ms
++        // (ego_replan_fsm.cpp:62), so the planner spent 50.3 s failing to produce a trajectory while the
++        // aircraft hovered, the adapter refused the one stale plan ~600 times, and the mission lost its first
++        // stop to the sequencer's 60 s timeout.  Nothing in the log said the planner was stuck.
++        // Now: every 20th consecutive failure is an ERROR, and 1 s of consecutive failures escalates to a
++        // GLOBAL replan, which starts from the ODOMETRY state (planGlobalTraj(odom_pos_, odom_vel_, ...))
++        // instead of from the tail of an expired local spline -- the escape hatch this state never took.
++        // `static` because there is exactly one EGOReplanFSM per node; a member would mean patching the header.
++        consecutive_replan_failures++;
++        if ((consecutive_replan_failures % 20) == 0)
++        {
++          RCLCPP_ERROR(node_->get_logger(),
++                       "PLANNER-STALL: local replan failed %d times in a row (%.1f s at the 10 ms FSM tick)",
++                       consecutive_replan_failures, 0.01 * consecutive_replan_failures);
++        }
++        if (consecutive_replan_failures >= 100)
++        {
++          consecutive_replan_failures = 0;
++          RCLCPP_WARN(node_->get_logger(),
++                      "PLANNER-STALL: escalating to a GLOBAL replan (GEN_NEW_TRAJ) after 1 s of local failures");
++          changeFSMExecState(GEN_NEW_TRAJ, "FSM");
++        }
++        else
++        {
++          changeFSMExecState(REPLAN_TRAJ, "FSM");
++        }
+       }
+ 
+       break;
+@@ -696,6 +747,26 @@ namespace ego_planner
+     // double t_cur = (time_now - info->start_time_).toSec();
+     double t_cur = (time_now - info->start_time_).seconds();
+ 
++    // PATCH D (patches/0003-ego-replan-escalation.patch).
++    // EXEC_TRAJ clamps t_cur to the trajectory's duration; THIS function -- the one every REPLAN calls --
++    // did not.  MEASURED 2026-10-14 (sortie F1): the adapter logged the same plan with
++    // "t_cur 1.185 s of dur 1.185 s (start_time 1791981437.203)" from t=16.7 s to t=66.7 s, i.e. it was
++    // offered a trajectory that had finished ~50 s earlier, and with t_cur past the end the start point
++    // below is the END OF AN EXPIRED SPLINE instead of anything near the vehicle.  Clamping cannot invent a
++    // trajectory, but it makes the replan start from the end of the last committed plan -- the honest
++    // "where the plan believes the vehicle is" -- and says so, once per 100 calls, instead of silently.
++    static long replan_from_expired_count = 0;
++    if (t_cur > info->duration_)
++    {
++      if ((replan_from_expired_count++ % 100) == 0)
++      {
++        RCLCPP_WARN(node_->get_logger(),
++                    "PLANNER-STALL: replanning from an EXPIRED trajectory (t_cur %.3f s > duration %.3f s, %ld times)",
++                    t_cur, info->duration_, replan_from_expired_count);
++      }
++      t_cur = info->duration_;
++    }
++
+     start_pt_ = info->position_traj_.evaluateDeBoorT(t_cur);
+     start_vel_ = info->velocity_traj_.evaluateDeBoorT(t_cur);
+     start_acc_ = info->acceleration_traj_.evaluateDeBoorT(t_cur);
+diff --git a/src/planner/plan_manage/src/planner_manager.cpp b/src/planner/plan_manage/src/planner_manager.cpp
+index 2e420d4..a608ed8 100755
+--- a/src/planner/plan_manage/src/planner_manager.cpp
++++ b/src/planner/plan_manage/src/planner_manager.cpp
+@@ -54,7 +54,14 @@ namespace ego_planner
+ 
+     if ((start_pt - local_target_pt).norm() < 0.2)
+     {
+-      cout << "Close to goal" << endl;
++      // PATCH G (patches/0003-ego-replan-escalation.patch): a DELIBERATE refusal to plan when the replan's
++      // start is within 0.2 m of its local target -- i.e. the last metre of every arrival.  Upstream prints
++      // two words; this prints the distance and how often it has happened, because "the planner stopped
++      // producing plans near the goal" is otherwise indistinguishable from a crash.
++      static int close_to_goal_count = 0;
++      close_to_goal_count++;
++      cout << "Close to goal (start is " << (start_pt - local_target_pt).norm() << " m from the local target; "
++           << close_to_goal_count << " times this run)" << endl;
+       continous_failures_count_++;
+       return false;
+     }
