@@ -433,6 +433,17 @@ class Mission:
         the projection of the CURRENT estimate onto the path rather than the nearest sample (otherwise the
         reference jumps by a whole sample interval, which at 2 m/s and 50 mm spacing is a 25 ms step), and
         the phase log gets one `traj` phase so the metrics can window the route.
+
+        `--follow-mode pos` (the first version, kept for the record) streams the look-ahead POINT as a
+        position setpoint.  MEASURED 2026-10-14 on the rectangle: it works but is slow -- 77-134 s for a
+        20.00 m path against WP_SPD 2.0 -- because the FCU plans an S-curve to a point 0.45-1.7 m ahead and
+        therefore decelerates as hard as it accelerates, and it cuts the inside of a turn (C2 clearance
+        0.339 m against the path's own 0.428 m).
+
+        `--follow-mode vel` streams a VELOCITY along the path tangent plus a cross-track correction, which
+        is what makes both numbers better: the speed comes from a brake-to-stop profile at the end of the
+        path, and the correction is proportional to the actual cross-track error, so the aircraft tracks
+        the curve instead of aiming at a point on it.
         """
         if self.path_l is None:
             return "no trajectory on %s" % self.args.traj_topic
@@ -441,8 +452,9 @@ class Mission:
         seg = np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1)
         arc = np.concatenate([[0.0], np.cumsum(seg)])
         total = float(arc[-1])
-        self.log("follow: %d points, %.2f m of trajectory, F box E[%+.2f %+.2f] N[%+.2f %+.2f]"
-                 % (len(p), total, p[:, 0].min(), p[:, 0].max(), p[:, 1].min(), p[:, 1].max()))
+        self.log("follow: %d points, %.2f m of trajectory, mode %s, F box E[%+.2f %+.2f] N[%+.2f %+.2f]"
+                 % (len(p), total, self.args.follow_mode, p[:, 0].min(), p[:, 0].max(),
+                    p[:, 1].min(), p[:, 1].max()))
         self.set_phase("traj")
         t_start = time.monotonic()
         while True:
@@ -450,8 +462,8 @@ class Mission:
                 return self.abort_reason
             st = self.bridge.state()
             here = np.array(st.pos)
+            v_now = float(np.linalg.norm(np.array(st.vel)[:2]))
             # project onto the path: nearest SEGMENT, not nearest sample
-            d = p[:, :2] - here[:2]
             mid = 0.5 * (p[:-1, :2] + p[1:, :2])
             k = int(np.argmin(np.linalg.norm(mid - here[:2], axis=1)))
             a, b = p[k, :2], p[k + 1, :2]
@@ -459,23 +471,39 @@ class Mission:
             L2 = float(ab @ ab)
             u = 0.0 if L2 < 1e-12 else float(np.clip((here[:2] - a) @ ab / L2, 0.0, 1.0))
             s_now = float(arc[k] + u * seg[k])
-            v = float(np.linalg.norm(np.array(st.vel)[:2]))
-            look = float(np.clip(self.args.lookahead_base + self.args.lookahead_gain * v,
+            tangent = (ab / np.sqrt(L2)) if L2 > 1e-12 else np.array([1.0, 0.0])
+            normal = np.array([-tangent[1], tangent[0]])
+            e_ct = float((here[:2] - (a + u * ab)) @ normal)      # signed cross-track error, m
+            s_left = max(total - s_now, 0.0)
+            look = float(np.clip(self.args.lookahead_base + self.args.lookahead_gain * v_now,
                                  0.20, 2.50))
             s_tgt = min(s_now + look, total)
             j = int(np.searchsorted(arc, s_tgt, side="right") - 1)
             j = max(0, min(j, len(p) - 2))
             w = 0.0 if seg[j] < 1e-12 else (s_tgt - arc[j]) / seg[j]
             tgt = p[j] + w * (p[j + 1] - p[j])
-            self.cmd = tgt
-            self.pump(0.05, setpoint=tgt)
+            if self.args.follow_mode == "vel":
+                # brake-to-stop profile: v = sqrt(2 a s) capped by the commanded speed
+                v_ref = min(self.args.follow_speed,
+                            math.sqrt(max(2.0 * self.args.brake_acc * s_left, 0.0)))
+                # keep the lateral correction small enough that it cannot dominate the tangent term
+                v_lat = float(np.clip(self.args.cross_gain * e_ct, -0.6 * v_ref - 0.05,
+                                      0.6 * v_ref + 0.05))
+                v_cmd = np.array([tangent[0] * v_ref + normal[0] * v_lat,
+                                  tangent[1] * v_ref + normal[1] * v_lat, 0.0])
+                self.cmd = tgt
+                self.pump(0.05, velocity=v_cmd)
+            else:
+                self.cmd = tgt
+                self.pump(0.05, setpoint=tgt)
             if time.monotonic() - t_start > self.args.traj_timeout_s:
                 return ("trajectory timed out after %.0f s: %.2f m of %.2f m followed, %.2f m from the "
-                        "end (horizontal)" % (self.args.traj_timeout_s, s_now, total, total - s_now))
-            if total - s_now < self.args.arrive_m and v < self.args.settle_speed:
-                self.log("trajectory complete: %.2f m followed in %.1f s, final speed %.3f m/s, "
-                         "%.3f m from the last point" % (total, time.monotonic() - t_start, v,
-                                                         float(np.linalg.norm(here[:2] - p[-1, :2]))))
+                        "end (horizontal)" % (self.args.traj_timeout_s, s_now, total, s_left))
+            if s_left < self.args.arrive_m and v_now < self.args.settle_speed:
+                self.log("trajectory complete: %.2f m followed in %.1f s (mean %.2f m/s), final speed "
+                         "%.3f m/s, %.3f m from the last point"
+                         % (total, time.monotonic() - t_start, total / max(time.monotonic() - t_start, 1e-9),
+                            v_now, float(np.linalg.norm(here[:2] - p[-1, :2]))))
                 return None
 
     def legs(self):
@@ -730,6 +758,16 @@ def main() -> int:
                     help="path mode: extra look-ahead per m/s of speed")
     ap.add_argument("--traj-timeout-s", type=float, default=180.0,
                     help="path mode: give up if the trajectory is not finished in this long")
+    ap.add_argument("--follow-mode", default="pos", choices=["pos", "vel"],
+                    help="pos: stream the look-ahead point as a position setpoint (the verified first "
+                         "version).  vel: stream a velocity along the path tangent plus a cross-track "
+                         "correction -- faster and it does not cut the inside of a turn")
+    ap.add_argument("--follow-speed", type=float, default=1.5,
+                    help="vel mode: commanded speed along the path, m/s (the brake-to-stop profile caps it)")
+    ap.add_argument("--brake-acc", type=float, default=1.5,
+                    help="vel mode: deceleration used to plan the stop at the end of the path, m/s^2")
+    ap.add_argument("--cross-gain", type=float, default=1.0,
+                    help="vel mode: lateral velocity per metre of cross-track error, 1/s")
     ap.add_argument("--phase-log", default=os.path.join(here, "..", "logs", "phase.csv"))
     args = ap.parse_args()
     # the effective gates go into the run's own log, so a flight's record says what it actually flew

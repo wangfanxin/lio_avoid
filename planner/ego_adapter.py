@@ -490,6 +490,19 @@ class EgoAdapter:
     def on_bspline(self, msg):
         self.bspline = msg
         self.n_bspline += 1
+        # One real message, kept on disk so tools/ego-bspline-ab.py can A/B the Python evaluator
+        # against the C++ one on the data the planner actually publishes.
+        if self.args.dump_bspline and not os.path.exists(self.args.dump_bspline):
+            try:
+                d = {"order": int(msg.order), "traj_id": int(msg.traj_id),
+                     "knots": [float(v) for v in msg.knots],
+                     "pos_pts": [[float(p.x), float(p.y), float(p.z)] for p in msg.pos_pts]}
+                with open(self.args.dump_bspline, "w") as fh:
+                    json.dump(d, fh)
+                print("ego_adapter: dumped a real Bspline (%d ctrl, %d knots) to %s"
+                      % (len(d["pos_pts"]), len(d["knots"]), self.args.dump_bspline), flush=True)
+            except Exception as exc:                                   # noqa: BLE001
+                print("ego_adapter: could not dump the Bspline: %s" % exc, flush=True)
 
     # ---------------------------------------------------------------- the path
     def build_path(self):
@@ -535,6 +548,13 @@ class EgoAdapter:
             info["start_d"] = float(d[i0])
             if d[i0] > self.args.start_max:
                 return None, "starts %.3f m from the vehicle (> %.2f m)" % (d[i0], self.args.start_max)
+        # A path of ONE point is not a path: once the vehicle reaches the end of the spline the
+        # projection lands on the last sample and the published Path degenerated to a single pose
+        # (MEASURED 2026-10-14: "points per path 1" on the final messages, and an arc length of
+        # 0.000 m).  `fsm/mission_fsm.py::follow_path` does np.diff on the points and an argmin over
+        # the SEGMENT midpoints, so a 1-point Path would raise there instead of completing.  Keep the
+        # last two samples.
+        i0 = min(i0, len(pos) - 2)
         pos, ts = pos[i0:], ts[i0:]
         info["n"] = len(pos)
 
@@ -641,6 +661,9 @@ def main():
     ap.add_argument("--footprint", type=float, default=0.35)
     ap.add_argument("--start-max", type=float, default=0.50)
     ap.add_argument("--roundtrip-mm", type=float, default=1.0)
+    ap.add_argument("--dump-bspline", default="",
+                    help="write the first Bspline message (knots + control points) here as JSON, "
+                         "for tools/ego-bspline-ab.py")
     ap.add_argument("--auto-goal", type=float, nargs=3, default=None, metavar=("E", "N", "U"),
                     help="if no goal arrives within --goal-timeout, publish this W goal once")
     ap.add_argument("--goal-timeout", type=float, default=5.0)

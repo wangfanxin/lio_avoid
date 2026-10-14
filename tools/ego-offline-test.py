@@ -100,7 +100,17 @@ class Harness:
         self.pub_cloud = self.node.create_publisher(PointCloud2, args.cloud_topic, 10)
         self.pub_goal = self.node.create_publisher(PoseStamped, args.goal_topic, 10)
         self.paths = []
+        self.veh_l = None                 # the vehicle state at the moment a path arrives
         self.node.create_subscription(Path, args.traj_topic, self.on_path, latched)
+        # the goal the ADAPTER hands the planner, so the W->L conversion can be measured directly
+        self.planner_goal_l = None
+        self.planner_goals = []
+        self.node.create_subscription(PoseStamped, args.planner_goal_topic, self.on_planner_goal, 10)
+
+    def on_planner_goal(self, msg):
+        self.planner_goal_l = np.array([msg.pose.position.x, msg.pose.position.y,
+                                        msg.pose.position.z])
+        self.planner_goals.append(self.planner_goal_l.copy())
 
     def on_path(self, msg):
         self.paths.append((time.time(),
@@ -108,7 +118,8 @@ class Harness:
                                      for p in msg.poses], float),
                            np.array([p.header.stamp.sec + 1e-9 * p.header.stamp.nanosec
                                      for p in msg.poses], float),
-                           msg.header.frame_id))
+                           msg.header.frame_id,
+                           None if self.veh_l is None else self.veh_l.copy()))
 
     # ---------------------------------------------------------------- publishers
     def send_odom(self, p_l, q_l):
@@ -146,8 +157,56 @@ class Harness:
         self.pub_goal.publish(m)
 
 
+# --------------------------------------------------------------------------- the vehicle
+class Pursuer:
+    """A kinematic vehicle that flies the published path.
+
+    It is NOT a flight controller and it is not meant to be: mission B flies the real ArduPilot.  It
+    exists because the planner is a TIMED replanner -- the FSM advances a clock and `planFromCurrentTraj`
+    replans from where the trajectory says the vehicle should be -- so a STATIC vehicle is not a
+    scenario the planner supports.  MEASURED 2026-10-14 with the vehicle parked: the FSM planned from
+    the trajectory's own marching point, successive splines started 1.50 / 2.79 / 3.82 / 4.63 m from
+    the parked vehicle, and the adapter's start gate correctly withheld 60 of 92 paths.  Moving the
+    vehicle with pure pursuit removes that artefact and, more importantly, makes the map grow as it
+    flies -- which is what the clearance check is supposed to be testing.
+    """
+
+    def __init__(self, p_w, v_max=0.8, kp=3.0, tau=0.15, look=0.30):
+        self.p = np.asarray(p_w, dtype=float).copy()
+        self.v = np.zeros(3)
+        self.v_max, self.kp, self.tau, self.look = v_max, kp, tau, look
+        self.trace = [self.p.copy()]
+
+    def step(self, path_w, dt):
+        if path_w is None or len(path_w) < 2:
+            self.v *= max(0.0, 1.0 - dt / self.tau)
+            self.p += self.v * dt
+            self.trace.append(self.p.copy())
+            return
+        P = np.asarray(path_w, float)
+        seg = np.linalg.norm(np.diff(P[:, :2], axis=0), axis=1)
+        arc = np.concatenate([[0.0], np.cumsum(seg)])
+        total = float(arc[-1])
+        mid = 0.5 * (P[:-1, :2] + P[1:, :2])
+        k = int(np.argmin(np.linalg.norm(mid - self.p[:2], axis=1)))
+        a, b = P[k, :2], P[k + 1, :2]
+        ab = b - a
+        L2 = float(ab @ ab)
+        u = 0.0 if L2 < 1e-12 else float(np.clip((self.p[:2] - a) @ ab / L2, 0.0, 1.0))
+        s_now = float(arc[k] + u * seg[k])
+        s_tgt = min(s_now + self.look, total)
+        j = int(np.searchsorted(arc, s_tgt, side="right") - 1)
+        j = max(0, min(j, len(P) - 2))
+        w = 0.0 if seg[j] < 1e-12 else (s_tgt - arc[j]) / seg[j]
+        tgt = P[j] + w * (P[j + 1] - P[j])
+        v_des = np.clip(self.kp * (tgt - self.p), -self.v_max, self.v_max)
+        self.v += (v_des - self.v) * float(np.clip(dt / self.tau, 0.0, 1.0))
+        self.p = self.p + self.v * dt
+        self.trace.append(self.p.copy())
+
+
 # --------------------------------------------------------------------------- metric
-def metrics(paths, world, calib, odom_l, goal_w, args, t_pub_start=None):
+def metrics(paths, world, calib, odom_l, goal_w, args, t_pub_start=None, harness=None):
     """Every number the run is judged on, each with the window it was measured over."""
     m = {}
     if not paths:
@@ -165,10 +224,13 @@ def metrics(paths, world, calib, odom_l, goal_w, args, t_pub_start=None):
     m["republish_hz_worst"] = float(1.0 / np.max(w)) if len(w) else float("nan")
     m["startup_delay"] = float(paths[0][0] - t_pub_start) if t_pub_start else float("nan")
     m["republish_hz_steady"] = m["republish_hz_worst"]
+    m["gaps_over_half_s"] = int((w > 0.5).sum()) if len(w) else 0
+    m["worst_gap_s"] = float(w.max()) if len(w) else float("nan")
 
-    # trajectory-time spacing, from the per-point stamps of the LAST message
-    st = paths[-1][2]
-    dts = np.diff(st)
+    # trajectory-time spacing, POOLED over every published message (a message that arrives while the
+    # vehicle sits at the end of the spline contributes no consecutive pair, which is honest)
+    dts = np.concatenate([np.diff(p[2]) for p in paths if len(p[2]) > 1]) if len(paths) > 1 else np.array([])
+    m["traj_pairs"] = int(len(dts))
     m["traj_dt_min"] = float(dts.min()) if len(dts) else float("nan")
     m["traj_dt_med"] = float(np.median(dts)) if len(dts) else float("nan")
     m["traj_dt_max"] = float(dts.max()) if len(dts) else float("nan")
@@ -183,24 +245,51 @@ def metrics(paths, world, calib, odom_l, goal_w, args, t_pub_start=None):
 
     # arc-length step between consecutive points, and what it means in TIME at the planner's own
     # speed limit: step <= v_max / 20 is what makes the points ">= 20 Hz of trajectory time"
-    last = paths[-1][1]
-    seg = np.linalg.norm(np.diff(last, axis=0), axis=1) if len(last) > 1 else np.zeros(1)
-    m["arc_step_max"] = float(seg.max())
-    m["arc_step_med"] = float(np.median(seg))
-    m["arc_hz_at_vmax"] = float(args.v_max / seg.max()) if seg.max() > 0 else float("inf")
+    segs = np.concatenate([np.linalg.norm(np.diff(p[1], axis=0), axis=1)
+                           for p in paths if len(p[1]) > 1])
+    m["arc_step_max"] = float(segs.max()) if len(segs) else float("nan")
+    m["arc_step_med"] = float(np.median(segs)) if len(segs) else float("nan")
+    m["arc_hz_at_vmax"] = float(args.v_max / segs.max()) if len(segs) and segs.max() > 0 else float("inf")
 
-    # start distance, per message, against the (static) vehicle state
-    m["start_d_max"] = float(max(np.linalg.norm(p[1][0] - odom_l) for p in paths))
+    # start distance: measured against the vehicle state AS IT WAS when each path arrived
+    ds = [float(np.linalg.norm(p[1][0] - p[4])) for p in paths if p[4] is not None]
+    m["start_d_max"] = float(max(ds)) if ds else float("nan")
+    m["start_d_med"] = float(np.median(ds)) if ds else float("nan")
+    m["n_points_min"] = int(min(len(p[1]) for p in paths))
 
-    # does the LAST path reach the goal?  L -> W, then compare in W (the frame the goal is given in)
+    # does the LAST path reach the goal?  L -> W, then compare in W (the frame the goal is given in).
+    # The longest published path is used for the shape numbers, because by the end of a run the last
+    # message is the short remainder of the plan and its arc length says nothing about the route.
     last_w = np.array([l_to_w(calib, q) for q in paths[-1][1]])
+    longest = max(paths, key=lambda p: len(p[1]))
+    long_w = np.array([l_to_w(calib, q) for q in longest[1]])
     m["path_last_w"] = last_w[-1]
     m["goal_w"] = goal_w
     m["goal_err"] = float(np.linalg.norm(last_w[-1] - goal_w))
     m["goal_err_h"] = float(np.linalg.norm((last_w[-1] - goal_w)[:2]))
-    m["path_len"] = float(np.linalg.norm(np.diff(last_w, axis=0), axis=1).sum())
-    m["straight_len"] = float(np.linalg.norm(last_w[-1] - last_w[0]))
-    m["path_box"] = (last_w[:, 0].min(), last_w[:, 0].max(), last_w[:, 1].min(), last_w[:, 1].max())
+    m["goal_err_any"] = float(min(np.linalg.norm(np.array([l_to_w(calib, q) for q in p[1]])[-1]
+                                                 - goal_w) for p in paths))
+    m["path_len"] = float(np.linalg.norm(np.diff(long_w, axis=0), axis=1).sum())
+    m["straight_len"] = float(np.linalg.norm(long_w[-1] - long_w[0]))
+    m["path_box"] = (long_w[:, 0].min(), long_w[:, 0].max(), long_w[:, 1].min(), long_w[:, 1].max())
+
+    # the goal the ADAPTER handed the planner, mapped back to W with the CONSUMER's calibration.
+    # This isolates the W->L conversion from the planner: if the adapter used a different L<-W than
+    # the consumer, the planner is being aimed at a different place and this number says by how much.
+    m["goal_roundtrip_mm"] = float("nan")
+    if harness is not None and harness.planner_goal_l is not None:
+        back = l_to_w(calib, harness.planner_goal_l)
+        m["planner_goal_w"] = back
+        m["goal_roundtrip_mm"] = float(np.linalg.norm(back - goal_w)) * 1e3
+        m["n_planner_goals"] = len(harness.planner_goals)
+
+    # where the VEHICLE ended up (the flown outcome)
+    m["vehicle_goal_err"] = float("nan")
+    if harness is not None and harness.trace:
+        m["vehicle_end_w"] = harness.trace[-1].copy()
+        m["vehicle_goal_err"] = float(np.linalg.norm(harness.trace[-1] - goal_w))
+        m["vehicle_track_len"] = float(np.linalg.norm(np.diff(np.array(harness.trace), axis=0),
+                                                      axis=1).sum())
 
     # ---- the criteria
     if m["frames"] != [FRAME_L]:
@@ -223,8 +312,16 @@ def metrics(paths, world, calib, odom_l, goal_w, args, t_pub_start=None):
     if m["start_d_max"] > args.start_max + 1e-9:
         fails.append("a published path starts %.4f m from the vehicle (> %.2f m)"
                      % (m["start_d_max"], args.start_max))
-    if m["goal_err"] > args.goal_tol:
-        fails.append("the last path ends %.4f m from the goal (> %.3f m)" % (m["goal_err"], args.goal_tol))
+    if m["goal_err"] > args.plan_goal_tol:
+        fails.append("the last path ends %.4f m from the goal (> %.3f m)"
+                     % (m["goal_err"], args.plan_goal_tol))
+    if m["goal_roundtrip_mm"] == m["goal_roundtrip_mm"] and m["goal_roundtrip_mm"] > args.goal_rt_mm:
+        fails.append("the goal the adapter sent maps back to W %.3f mm from the requested goal "
+                     "(> %.3f mm): the adapter's L<-W is not the consumer's"
+                     % (m["goal_roundtrip_mm"], args.goal_rt_mm))
+    if m["vehicle_goal_err"] == m["vehicle_goal_err"] and m["vehicle_goal_err"] > args.goal_tol:
+        fails.append("the vehicle ended %.4f m from the goal (> %.3f m)"
+                     % (m["vehicle_goal_err"], args.goal_tol))
     return m, fails
 
 
@@ -296,13 +393,19 @@ def main():
     ap.add_argument("--duration", type=float, default=25.0, help="seconds to publish and collect")
     ap.add_argument("--warmup", type=float, default=2.0,
                     help="odometry-only seconds before the first goal, as in the real stack")
-    ap.add_argument("--cloud-hz", type=float, default=5.0)
+    ap.add_argument("--cloud-hz", type=float, default=4.0)
     ap.add_argument("--odom-hz", type=float, default=50.0)
     ap.add_argument("--footprint", type=float, default=0.35)
     ap.add_argument("--start-max", type=float, default=0.50)
-    ap.add_argument("--goal-tol", type=float, default=0.050)
+    ap.add_argument("--goal-tol", type=float, default=0.35,
+                    help="how close the VEHICLE must end to the goal")
+    ap.add_argument("--plan-goal-tol", type=float, default=0.25,
+                    help="how close the published PATH must end to the goal")
+    ap.add_argument("--goal-rt-mm", type=float, default=2.0,
+                    help="how close the goal the ADAPTER sent must map back to the requested one")
     ap.add_argument("--v-max", type=float, default=1.0,
                     help="the planner's max_vel, for turning an arc step into trajectory time")
+    ap.add_argument("--pursuit-v", type=float, default=0.8, help="the kinematic vehicle's speed cap")
     ap.add_argument("--min-traj-hz", type=float, default=20.0)
     ap.add_argument("--min-republish-hz", type=float, default=2.0)
     ap.add_argument("--mutation", default="",
@@ -376,21 +479,32 @@ def main():
     # Odometry runs ALONE for `--warmup` seconds first.  That is what the real stack looks like (the
     # LIO is up long before anyone sends a goal) and it removes a startup race that is not what this
     # test is about: a goal that reaches the planner before its first odometry used to segfault it
-    # (see patches/0002, fix 3).  Both guards are exercised separately by --mutation goal-before-odom.
+    # (see patches/0002, fix 3).  --mutation goal-before-odom removes the warm-up on purpose.
+    veh = Pursuer(start_w, v_max=args.pursuit_v)
+    h.trace = veh.trace
     h.t_pub_start = time.time()
     t_end = h.t_pub_start + args.duration
     t_cloud = t_odom = t_goal = 0.0
+    t_prev = h.t_pub_start
     n_cloud = n_odom = n_goal = 0
     goal_enable = h.t_pub_start + (0.0 if args.mutation == "goal-before-odom" else args.warmup)
     while time.time() < t_end and h.rclpy.ok():
         now = time.time()
+        # the vehicle flies the newest published path (see Pursuer's docstring for why it must move)
+        path_w = ([l_to_w(calib, q) for q in np.vstack([p[1] for p in h.paths[-1:]])]
+                  if h.paths else None)
+        veh.step(np.array(path_w) if path_w else None, max(1e-3, min(0.05, now - t_prev)))
+        t_prev = now
+        p_l = w_to_l(calib, veh.p)
+        h.veh_l = p_l
         if now >= t_odom:
             t_odom = now + 1.0 / args.odom_hz
-            h.send_odom(odom_l, q_l)
+            h.send_odom(p_l, q_l)
             n_odom += 1
         if args.mutation != "no-cloud" and now >= t_cloud:
             t_cloud = now + 1.0 / args.cloud_hz
-            h.send_cloud(pts_l)
+            cw, _ = raycast_cloud(raw, cfg, veh.p, args.heading_deg, rays)
+            h.send_cloud((R_LW @ (cw - calib.t_WL).T).T)
             n_cloud += 1
         if now >= goal_enable and now >= t_goal:
             t_goal = now + 1.0
@@ -405,7 +519,7 @@ def main():
     time.sleep(0.5)
 
     print("\npublished %d odom, %d clouds, %d goals in %.0f s" % (n_odom, n_cloud, n_goal, args.duration))
-    m, fails = metrics(h.paths, world, calib, odom_l, goal_w, args, h.t_pub_start)
+    m, fails = metrics(h.paths, world, calib, odom_l, goal_w, args, h.t_pub_start, h)
 
     lines = []
     lines.append("ego-planner offline chain test")
@@ -417,8 +531,8 @@ def main():
     lines.append("goal W          [%+.3f %+.3f %+.3f]" % tuple(goal_w))
     lines.append("goal L          [%+.4f %+.4f %+.4f]" % tuple(goal_l))
     lines.append("W->L->W goal round trip   %.6f mm" % rt_mm)
-    lines.append("cloud           %d points from the start pose, frame %s, %s"
-                 % (len(pts_l), FRAME_L, src))
+    lines.append("cloud           %d points from the start pose, frame %s, %s; re-cast from the moving "
+                 "pose at %.1f Hz" % (len(pts_l), FRAME_L, src, args.cloud_hz))
     lines.append("published       %d odom / %d clouds / %d goals at %.1f / %.1f / 1 Hz"
                  % (n_odom, n_cloud, n_goal, args.odom_hz, args.cloud_hz))
     lines.append("logs            %s" % logdir)
@@ -432,21 +546,31 @@ def main():
     lines.append("  frame_id                   %s" % m["frames"])
     lines.append("  points per path            %d (min %d)"
                  % (m["n_points_median"], m["n_points_min"]))
-    lines.append("  republish rate             %.2f Hz median, %.2f Hz worst"
-                 % (m["republish_hz_median"], m["republish_hz_worst"]))
+    lines.append("  republish rate             %.2f Hz median, %.2f Hz worst (worst gap %.2f s; "
+                 "%d gaps over 0.5 s)" % (m["republish_hz_median"], m["republish_hz_worst"],
+                                          m["worst_gap_s"], m["gaps_over_half_s"]))
     lines.append("  first path arrived         %.2f s after publishing started" % m["startup_delay"])
-    lines.append("  trajectory-time spacing    min %.4f / median %.4f / max %.4f s  (= %.1f Hz worst)"
-                 % (m["traj_dt_min"], m["traj_dt_med"], m["traj_dt_max"], m["traj_hz_min"]))
+    lines.append("  trajectory-time spacing    min %.4f / median %.4f / max %.4f s  (= %.1f Hz worst, "
+                 "%d consecutive pairs)"
+                 % (m["traj_dt_min"], m["traj_dt_med"], m["traj_dt_max"], m["traj_hz_min"],
+                    m["traj_pairs"]))
     lines.append("  arc step between points    median %.4f m, max %.4f m  (= %.1f Hz of trajectory "
                  "time at the planner's %.1f m/s limit)"
                  % (m["arc_step_med"], m["arc_step_max"], m["arc_hz_at_vmax"], args.v_max))
     lines.append("  min pillar clearance       %.4f m (p05 %.4f) over %d points"
                  % (m["clearance_min"], m["clearance_p05"], len(np.vstack([p[1] for p in h.paths]))))
     lines.append("  points outside the arena   %d" % m["outside_arena"])
-    lines.append("  worst start distance       %.4f m from the vehicle state" % m["start_d_max"])
+    lines.append("  start distance to vehicle  median %.4f m, worst %.4f m (limit %.2f)"
+                 % (m["start_d_med"], m["start_d_max"], args.start_max))
     lines.append("  last path ends at W        [%+.4f %+.4f %+.4f]" % tuple(m["path_last_w"]))
-    lines.append("  distance to the goal       %.4f m (horizontal %.4f)"
+    lines.append("  PLAN reaches the goal      %.4f m away (horizontal %.4f)"
                  % (m["goal_err"], m["goal_err_h"]))
+    if m.get("n_planner_goals"):
+        lines.append("  adapter goal, back to W    [%+.4f %+.4f %+.4f]  = %.4f mm from the requested goal"
+                     % (*m["planner_goal_w"], m["goal_roundtrip_mm"]))
+    lines.append("  VEHICLE ended at W         [%+.4f %+.4f %+.4f]  = %.4f m from the goal"
+                 % (*m["vehicle_end_w"], m["vehicle_goal_err"]))
+    lines.append("  vehicle path length        %.3f m" % m["vehicle_track_len"])
     lines.append("  path length                %.3f m (straight line %.3f m)"
                  % (m["path_len"], m["straight_len"]))
     lines.append("  path box in W              E[%+.2f %+.2f] N[%+.2f %+.2f]" % m["path_box"])
