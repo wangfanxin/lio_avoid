@@ -685,6 +685,31 @@ class Mission:
         seg = float(np.sum(np.linalg.norm(np.diff(self.path_l[:, :2], axis=0), axis=1)))
         return seg >= self.args.min_traj_m
 
+    def _plan_in_f(self):
+        """The plan in hand, converted ONCE from L to F -- the frame `bridge.state()` is in.
+
+        F1 OF THE PIPELINE AUDIT (docs/metrics/phaseB-pipeline-audit-20261015.txt).  `self.path_l` is in the
+        LIO's frame L; `bridge.state().pos` is in F (`bridge/base.py:33` -- what the FCU is told, LOCAL_NED);
+        the L->F conversion existed only inside `_spline_once` (`:930`) and inside the geometric follower
+        (`:1155`).  Three consumers compared the two frames DIRECTLY:
+          * `_traj_starts_here()` -- so `--reaccept-m` could never be satisfied: MEASURED (AP5) the FSM logged
+            "DIAG: 66 message(s), arc 0.312 m, 36 points, first point 6.373 m from the vehicle" while the
+            adapter logged "start 0.0251 m from the vehicle" for the SAME plan.  The re-projection fallback --
+            the one that exists so a re-published plan is flown instead of the FSM starving on its freshness
+            test -- therefore never fired, and the sortie aborted blaming the trajectory source;
+          * the WAIT-LOOP HOLD, which streamed `path_l[-1]` as a position SETPOINT: a command that is 90 deg
+            and several metres away from the plan's own endpoint, i.e. the vehicle was pulled sideways
+            through the forest while it waited;
+          * the 1 Hz refusal DIAG, which printed the same wrong distance (the number an operator uses to
+            decide whether the planner is at fault).
+        A 90.05 deg yaw between the two frames (the measured calibration) is what makes the error LARGE rather
+        than subtle: for a plan that starts 0.03 m from the vehicle the wrong comparison reads 6.37 m.
+        """
+        if self.path_l is None:
+            return None
+        R, t = self.calib.R_WL, self.calib.t_WL
+        return (R @ self.path_l.T).T + t
+
     def _traj_starts_here(self):
         """Does the plan in hand start where the vehicle is?
 
@@ -697,12 +722,18 @@ class Mission:
         The FSM therefore threw away 19 of the 20 distinct plans the recorder saw and waited out its 60 s:
         "ABORT: no new trajectory on /planner/traj within 60 s after 1 trajectories (sequencer at stop 2)".
         A re-projected plan IS a usable plan: its first point is at the vehicle.  This is the test for that.
+
+        BOTH SIDES IN F (audit F1): the comparison used to be `st.pos` (F) minus `path_l[0]` (L), which is
+        never small -- it is the bug above, not a tolerance problem.
         """
         if self.path_l is None or len(self.path_l) < 2:
             return False
+        pf = self._plan_in_f()
+        if pf is None:
+            return False
         st = self.bridge.state()
         here = np.array(st.pos)
-        return float(np.linalg.norm(here[:2] - self.path_l[0, :2])) < self.args.reaccept_m
+        return float(np.linalg.norm(here[:2] - pf[0, :2])) < self.args.reaccept_m
 
     def _wait_for_spline(self, last_t0):
         """Wait for a trajectory, optionally one NEWER than `last_t0` (its first point stamp).
@@ -735,7 +766,12 @@ class Mission:
         # of letting it sit wherever a time-expired fragment ended.
         hold_pt = None
         if self.path_l is not None and len(self.path_l) >= 2:
-            hold_pt = np.array(self.path_l[-1], dtype=float)
+            # IN F, BECAUSE THIS NUMBER GOES OUT AS A POSITION SETPOINT (audit F1).  It used to be
+            # `np.array(self.path_l[-1])` -- an L-frame point streamed as an F-frame command.  With the
+            # measured 90.05 deg calibration that is not a rounding error: it aims the aircraft somewhere
+            # else entirely, while it is waiting, at up to `--hold`-loop rates.
+            pf = self._plan_in_f()
+            hold_pt = None if pf is None else np.array(pf[-1], dtype=float)
         t_wait = time.monotonic()
         t_diag = 0.0
         self.log("waiting up to %.0f s on %s for %s"
@@ -767,16 +803,22 @@ class Mission:
                 else:
                     arc = float(np.sum(np.linalg.norm(np.diff(self.path_l[:, :2], axis=0), axis=1)))
                     here = np.array(self.bridge.state().pos)
-                    d0 = float(np.linalg.norm(here[:2] - self.path_l[0, :2]))
+                    # BOTH NUMBERS, SO THE FIX IS CHECKABLE FROM THE LOG (audit F1).  The F distance is the
+                    # decision; the L one is what the DIAG printed before, and it is quoted so a reader can
+                    # see that the refusal was a frame mix and not a planner 6 m away.
+                    pf = self._plan_in_f()
+                    d0 = float(np.linalg.norm(here[:2] - pf[0, :2])) if pf is not None else float("nan")
+                    d0_l = float(np.linalg.norm(here[:2] - self.path_l[0, :2]))
                     same = (last_t0 is not None and self.path_t is not None
                             and float(self.path_t[0]) == float(last_t0))
                     why = ("arc %.3f < %.2f m" % (arc, self.args.min_traj_m) if arc < self.args.min_traj_m
                            else ("stamp unchanged and the first point is %.3f m away (need < %.2f)"
                                  % (d0, self.args.reaccept_m) if same and d0 >= self.args.reaccept_m
                                  else "accepted on the next evaluation"))
-                    self.log("DIAG: %d message(s), arc %.3f m, %d points, first point %.3f m from the vehicle,"
-                             " stamp %s -> refused because: %s"
-                             % (seen, arc, len(self.path_l), d0,
+                    self.log("DIAG: %d message(s), arc %.3f m, %d points, first point %.3f m from the vehicle "
+                             "(F frame, the one the decision uses; %.3f m if the same point is read as L -- the "
+                             "frame mix fixed here), stamp %s -> refused because: %s"
+                             % (seen, arc, len(self.path_l), d0, d0_l,
                                 "same as the last flown" if same else "new", why))
         return False
 
