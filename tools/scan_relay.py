@@ -50,7 +50,9 @@ def main() -> int:
         rclpy.init(args=[])
     node = Node("scan_relay")
     qos = QoSProfile(depth=5, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.BEST_EFFORT)
-    pub = node.create_publisher(PointCloud2, args.dst, qos)
+    # the BEST_EFFORT publisher is NOT created at all: a stray
+# advertisement is what kept the planner complaining
+# (MEASURED 2026-10-14, missionB-16)
     # RELIABLE_FOR_PLANNER: the planner subscribes with RELIABLE and a BEST_EFFORT publisher
     # cannot deliver to it (MEASURED 2026-10-14: "offering incompatible QoS. No messages will be
     # sent to it" -- the planner had NO map for every Mission B attempt until this line).
