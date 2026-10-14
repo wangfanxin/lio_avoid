@@ -60,7 +60,18 @@ import numpy as np
 # ("stamp unchanged and the first point 4.396 m away") until the sortie aborted at t = 81 s.  The diagnostic
 # that exists to make a stall visible was itself fatal at the first stall, and it hid the real question
 # (why ego never planned waypoint 2).  The import belongs at module level.
-from std_msgs.msg import Bool  # noqa: E402  (used by _note_stall/_clear_stall)
+#
+# ... AND IT BELONGS AT MODULE LEVEL *ONLY* IF THIS MODULE NEEDS ROS TO BE IMPORTED.  MEASURED 2026-10-15
+# while adding tools/world-rect.py: the one-line module-level import above made
+# `python3 tools/world-circle.py` die with `ModuleNotFoundError: No module named 'std_msgs'`, because
+# world-circle.py (and through it tools/mission-params.py, the generators that decide WHERE the mission
+# flies) imports THIS file just to reuse `World.clearance` -- the single definition of the 0.20 m contract.
+# That import is the documented design ("`ego_adapter` imports rclpy only inside its Node class, so this
+# stays usable from a plain python3 with no ROS sourced"), and the flight harness only hid the breakage
+# because tools/run-mission.sh sources ROS before calling the generators.  So the import moves to the two
+# functions that PUBLISH, where it is both in scope (the AP1 fix) and out of the import path (the offline
+# property).  A module that cannot be imported without a running ROS graph is not importable by its own
+# geometry tools.
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
@@ -109,6 +120,57 @@ def bspline_duration(knots, n_ctrl, order):
     u = np.asarray(knots, dtype=float)
     m = (n_ctrl - 1) + int(order) + 1
     return float(u[m - int(order)] - u[int(order)])
+
+
+def _bspline_deriv_ctrl(knots, pts, order):
+    """(knots', ctrl') of the EXACT first derivative spline of a B-spline.
+
+    Standard result (The NURBS Book 3.3, eq. 3.8): the derivative of a degree-p B-spline is a
+    degree-(p-1) B-spline on the reduced knot vector u[1:-1] with control points
+        Q_i = p * (P_(i+1) - P_i) / (u_(i+p+1) - u_(i+1)),   i = 0 .. n-1.
+    `UniformBspline::getDerivative()` in ego-planner is exactly this, so the numbers below are the
+    planner's own definition of velocity and acceleration -- not a re-derivation of something else.
+    A zero denominator (a repeated knot) contributes a zero control point, which is the same
+    convention de Boor's algorithm uses for the same case.
+    """
+    u = np.asarray(knots, dtype=float)
+    P = np.asarray(pts, dtype=float)
+    p = int(order)
+    n = P.shape[0] - 1                       # the derivative has n control points
+    num = P[1:] - P[:-1]
+    den = u[p + 1:p + 1 + n] - u[1:1 + n]
+    Q = np.zeros_like(num)
+    ok = np.abs(den) > 1e-12
+    Q[ok] = (float(p) / den[ok])[:, None] * num[ok]
+    return u[1:-1], Q
+
+
+def bspline_derivs(knots, pts, order, t):
+    """(position, velocity, acceleration) of the uniform B-spline at trajectory time t, EXACTLY.
+
+    WHY THIS EXISTS.  The Path interface is positions only, so `fsm/mission_fsm.py` had to recover the
+    velocity by differencing consecutive poses on the ~20 ms sample grid and the acceleration by a
+    second difference (`ref_at`).  Those are SEGMENT averages, not the value at t: at 50 Hz and 1 m/s the
+    discretisation is small, and at 3 m/s -- the owner's demand -- the reference the FCU is streamed has
+    the wrong SHAPE exactly where the plan turns hardest (docs/ARCHITECTURE.md, "exact enough at 1 m/s
+    and the wrong shape at 3 m/s").  The control points and the knot vector are already in the Bspline
+    message, so the exact derivative costs nothing and is what this function returns.
+
+    Timing convention: `t` is the same relative trajectory time `bspline_eval` takes (0 at the start of
+    the domain u_(p_), `bspline_duration()` at its end), because the derivative spline is evaluated on
+    the reduced knot vector, whose own domain starts at u_(p_) as well.
+    """
+    p = int(order)
+    pos = bspline_eval(knots, pts, p, t)
+    vel = np.zeros(3)
+    acc = np.zeros(3)
+    if p >= 1:
+        u1, Q = _bspline_deriv_ctrl(knots, pts, p)
+        vel = bspline_eval(u1, Q, p - 1, t)
+        if p >= 2:
+            u2, R = _bspline_deriv_ctrl(u1, Q, p - 1)
+            acc = bspline_eval(u2, R, p - 2, t)
+    return pos, vel, acc
 
 
 def cox_de_boor(knots, pts, order, t):
@@ -308,6 +370,59 @@ def _selftest():
           bool(np.all(np.diff(along) >= -1e-12)),
           "s = %.4f .. %.4f m, min step %+.2e" % (along[0], along[-1], float(np.diff(along).min())))
 
+    # ---- 1b. the ANALYTIC derivatives against a numerical derivative of the SAME evaluator
+    # This is the check behind the /planner/traj_dyn stream: if the derivative spline were built with the
+    # wrong indices (an off-by-one in the control points or in the reduced knot vector) the velocity would
+    # be shifted by one segment and the error below would be O(the step), not O(h^2).
+    #
+    # THE SAMPLES MUST LIE INSIDE A KNOT SPAN, and that is a property of the reference, not of the
+    # derivative: a degree-3 spline is a CUBIC POLYNOMIAL inside each span and its third derivative JUMPS
+    # at every knot, so a central difference that straddles a knot is differencing two different
+    # polynomials and is not a reference at all.  MEASURED while writing this check: with the samples spread
+    # over the whole domain the acceleration disagreement was 8.4e-3 m/s^2 and every one of the worst points
+    # sat on a knot; with the samples kept > h away from the knots (below) the same check agrees to
+    # roundoff.  Inside a span the check is not merely close but EXACT: the h^2 term of a central second
+    # difference is proportional to the fourth derivative, which is identically zero for a cubic.
+    h = 1e-4
+    dur_p = bspline_duration(u, len(ctrl), p)
+    knots_in = np.asarray(u)[(np.asarray(u) > 0.0) & (np.asarray(u) < dur_p)]
+    cand = np.linspace(0.02, float(dur_p) - 0.02, 401)
+    keep = [float(t) for t in cand if float(np.min(np.abs(knots_in - t))) > 20.0 * h]
+    ev = np.array(keep)
+    derr_v, derr_a = 0.0, 0.0
+    for t in ev:
+        _, v_a, a_a = bspline_derivs(u, ctrl, p, float(t))
+        v_n = (bspline_eval(u, ctrl, p, float(t + h)) - bspline_eval(u, ctrl, p, float(t - h))) / (2 * h)
+        a_n = (bspline_eval(u, ctrl, p, float(t + h)) - 2.0 * bspline_eval(u, ctrl, p, float(t))
+               + bspline_eval(u, ctrl, p, float(t - h))) / (h * h)
+        derr_v = max(derr_v, float(np.linalg.norm(v_a - v_n)))
+        derr_a = max(derr_a, float(np.linalg.norm(a_a - a_n)))
+    check("analytic velocity vs a central difference of bspline_eval (%d in-span points, h=1e-4 s)"
+          % len(ev), derr_v < 1e-6, "max %.3e m/s" % derr_v)
+    check("analytic acceleration vs a 2nd central difference (%d in-span points, h=1e-4 s)"
+          % len(ev), derr_a < 1e-6, "max %.3e m/s^2" % derr_a)
+
+    # MUTATION: the derivative control points shifted by ONE segment.  This is the exact failure the check
+    # above exists to catch -- Q_i paired with P_i instead of P_(i+1) -- and it must make the velocity
+    # disagreement O(the step) rather than O(h^2), i.e. four orders of magnitude larger.
+    u1m, Qm = _bspline_deriv_ctrl(u, ctrl, p)
+    Qbad = np.vstack([Qm[1:], Qm[-1:]])
+    dmut = max(float(np.linalg.norm(bspline_eval(u1m, Qbad, p - 1, float(t)) -
+                                    bspline_eval(u1m, Qm, p - 1, float(t)))) for t in ev)
+    check("MUTATION derivative control points shifted by one segment must break it",
+          dmut > 1e-3, "max %.3e m/s" % dmut)
+
+    # ... and the two properties that make the derivative USEFUL rather than merely smooth: on collinear
+    # control points with uniform spacing the speed is constant, and the acceleration is zero.
+    vconst, amax = [], 0.0
+    for t in np.linspace(0.0, bspline_duration(ul, len(line), p), 101):
+        _, vv, aa = bspline_derivs(ul, line, p, float(t))
+        vconst.append(float(np.linalg.norm(vv)))
+        amax = max(amax, float(np.linalg.norm(aa)))
+    check("a straight uniform spline has constant speed and zero acceleration",
+          (max(vconst) - min(vconst)) < 1e-9 and amax < 1e-9,
+          "speed %.6f..%.6f m/s, |a|max %.2e m/s^2" % (min(vconst), max(vconst), amax))
+
     # ---- 2. the W -> L -> W round trip, on the real world/mission geometry
     calib = load_calib(os.environ.get("EGO_CALIB", "/mnt/d/distill_self/_stage/calib.json"))
     world_path = os.environ.get("EGO_WORLD", os.path.join(HERE, "..", "worlds", "forest_all.yaml"))
@@ -366,7 +481,9 @@ class EgoAdapter:
         from rclpy.qos import (QoSProfile, ReliabilityPolicy, HistoryPolicy,
                                DurabilityPolicy)
         from nav_msgs.msg import Path, Odometry
-        from geometry_msgs.msg import PoseStamped
+        from geometry_msgs.msg import PoseStamped, Transform, Twist
+        from builtin_interfaces.msg import Duration
+        from trajectory_msgs.msg import MultiDOFJointTrajectory, MultiDOFJointTrajectoryPoint
         from sensor_msgs.msg import PointCloud2  # noqa: F401  (only for the type check below)
         from std_msgs.msg import Bool, Int32
 
@@ -385,6 +502,8 @@ class EgoAdapter:
         self.node = Node("ego_adapter")
 
         self.Path, self.PoseStamped, self.Odometry = Path, PoseStamped, Odometry
+        self.Transform, self.Twist, self.Duration = Transform, Twist, Duration
+        self.MDJTraj, self.MDJPoint = MultiDOFJointTrajectory, MultiDOFJointTrajectoryPoint
 
         latched = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
                              reliability=ReliabilityPolicy.RELIABLE,
@@ -392,6 +511,13 @@ class EgoAdapter:
         sensor = QoSProfile(depth=10, history=HistoryPolicy.KEEP_LAST,
                             reliability=ReliabilityPolicy.BEST_EFFORT)
         self.traj_pub = self.node.create_publisher(Path, args.traj_topic, latched)
+        # THE SECOND, PARALLEL STREAM: the same plan with ego's OWN analytic velocity and acceleration.
+        # It is built inside build_path() from the same arrays, after the same projection, the same prefix
+        # truncation and the same withhold gate, so the two streams cannot disagree about what may be flown
+        # -- and a plan that is withheld is withheld on both.  Latched like the Path, because the consumer
+        # must be able to pick up a plan that was published before it subscribed.
+        self.traj_dyn_pub = self.node.create_publisher(MultiDOFJointTrajectory, args.traj_dyn_topic,
+                                                       latched)
         self.goal_pub = self.node.create_publisher(PoseStamped, args.planner_goal_topic, 1)
         # IS THE PLANNER STALLED?  A withheld plan is normal -- the gate IS the contract.  THE SAME withheld
         # plan for seconds on end is not: it means ego is not committing a new trajectory, and then the FSM
@@ -424,6 +550,7 @@ class EgoAdapter:
         self.n_goal_deferred = 0
         self.n_bspline = 0
         self.n_pub = 0
+        self.n_dyn = 0
         self.n_blocked = 0
         self.n_stall = 0
         self.blocked_reasons = {}
@@ -451,6 +578,8 @@ class EgoAdapter:
               % (args.goal_topic, args.bspline_topic, args.odom_topic))
         print("  publishes     %s (nav_msgs/Path, frame %s, %.1f Hz)"
               % (args.traj_topic, FRAME_L, args.rate))
+        print("  publishes     %s (trajectory_msgs/MultiDOFJointTrajectory: ego's EXACT velocity and "
+              "acceleration for the same points, same stamps)" % args.traj_dyn_topic)
         print("  publishes     %s (geometry_msgs/PoseStamped, frame %s)  <- the planner's goal"
               % (args.planner_goal_topic, FRAME_L))
         print("  gates         footprint %.2f m, start %.2f m, arena %s, roundtrip %.2f mm"
@@ -645,29 +774,41 @@ class EgoAdapter:
         return True
 
     def build_path(self):
-        """(Path, info) or (None, reason).  All of PLAN.md 4.1's obligations are decided here."""
+        """(Path, MultiDOFJointTrajectory, info) or (None, None, reason).
+
+        All of PLAN.md 4.1's obligations are decided here, ONCE, and BOTH published streams are built from
+        the same arrays afterwards -- the Path (positions only, the frozen interface) and the parallel
+        MultiDOFJointTrajectory on `--traj-dyn-topic` (the same points with ego's exact velocity and
+        acceleration).  They are one decision with two encodings, which is what keeps them from ever
+        disagreeing about what may be flown.
+        """
         m = self.bspline
         pts = np.array([[p.x, p.y, p.z] for p in m.pos_pts], dtype=float)
         knots = np.array(m.knots, dtype=float)
         if len(pts) < int(m.order) + 1 or len(knots) != len(pts) + int(m.order) + 1:
-            return None, "malformed Bspline (n_ctrl=%d, knots=%d, order=%d)" % (
+            return None, None, "malformed Bspline (n_ctrl=%d, knots=%d, order=%d)" % (
                 len(pts), len(knots), m.order)
 
         dur = bspline_duration(knots, len(pts), m.order)
         if dur <= 1e-6:
-            return None, "zero-length Bspline"
+            return None, None, "zero-length Bspline"
         t0 = float(m.start_time.sec) + 1e-9 * float(m.start_time.nanosec)
         # the planner timestamps with rclcpp::Clock() = RCL_SYSTEM_TIME (planner_manager.cpp:64,553),
         # so the elapsed time must be measured against the wall clock, NOT a possibly-sim node clock.
         t_cur = time.time() - t0
         if not (t_cur > -1.0):
-            return None, "clock mismatch: Bspline start %.3f vs wall %.3f" % (t0, time.time())
+            return None, None, "clock mismatch: Bspline start %.3f vs wall %.3f" % (t0, time.time())
         t_cur = max(0.0, min(t_cur, dur))
 
         ts = np.arange(0.0, dur + 1e-9, self.args.dt)
         if len(ts) == 0 or ts[-1] < dur - 1e-9:
             ts = np.append(ts, dur)
-        pos = np.array([bspline_eval(knots, pts, m.order, float(t)) for t in ts])
+        # POSITION AND ITS TWO EXACT DERIVATIVES, on the same sample grid (see bspline_derivs).  The
+        # derivatives are computed BEFORE the projection so that every slice below can be applied to all
+        # three arrays with one index -- an aligned slice is the only reason the two streams can share the
+        # truncation logic at all.
+        der = np.array([bspline_derivs(knots, pts, m.order, float(t)) for t in ts])   # (N, 3, 3)
+        pos, vel, acc = der[:, 0, :], der[:, 1, :], der[:, 2, :]
 
         info = {"t_cur": t_cur, "duration": dur, "n": len(pos), "t0": t0}
 
@@ -713,6 +854,7 @@ class EgoAdapter:
         # last two samples.
         i0 = min(i0, len(pos) - 2)
         pos, ts = pos[i0:], ts[i0:]
+        vel, acc = vel[i0:], acc[i0:]
         info["n"] = len(pos)
 
         # AN EXPIRED OR DEGENERATE SPLINE IS NOT A PLAN -- SAY SO INSTEAD OF PUBLISHING THE STUB.
@@ -731,15 +873,15 @@ class EgoAdapter:
         info["arc"] = _arc
         if t_cur >= dur - 1e-6:
             self.n_no_plan = getattr(self, "n_no_plan", 0) + 1
-            return None, ("the spline's clock has run out (t_cur %.3f of %.3f s, committed %.1f s ago): "
-                          "nothing of it is left to publish and the planner has committed no newer "
-                          "trajectory" % (t_cur, dur, time.time() - t0))
+            return None, None, ("the spline's clock has run out (t_cur %.3f of %.3f s, committed %.1f s ago): "
+                                "nothing of it is left to publish and the planner has committed no newer "
+                                "trajectory" % (t_cur, dur, time.time() - t0))
         if _arc < 0.10:
             self.n_no_plan = getattr(self, "n_no_plan", 0) + 1
-            return None, ("what is left to fly is %.4f m long (t_cur %.3f of %.3f s, %d points, nearest "
-                          "point %.3f m from the vehicle): too short to be a plan -- the planner has "
-                          "committed no newer trajectory"
-                          % (_arc, t_cur, dur, len(pos), float(info.get("start_d", float("nan")))))
+            return None, None, ("what is left to fly is %.4f m long (t_cur %.3f of %.3f s, %d points, nearest "
+                                "point %.3f m from the vehicle): too short to be a plan -- the planner has "
+                                "committed no newer trajectory"
+                                % (_arc, t_cur, dur, len(pos), float(info.get("start_d", float("nan")))))
 
         cl = self.world.clearance(pos)
         info["clr_min"] = float(cl.min())
@@ -756,12 +898,20 @@ class EgoAdapter:
             zc = np.clip(pos[:, 2], z_goal - self.args.z_band, z_goal + self.args.z_band)
             dz = float(np.max(np.abs(zc - pos[:, 2])))
             if dz > 1e-9:
+                z_mask = np.abs(zc - pos[:, 2]) > 1e-9
                 self.n_zclip = getattr(self, "n_zclip", 0) + 1
                 if self.n_zclip <= 3 or self.n_zclip % 20 == 0:
                     print("ego_adapter: Z CLAMPED (%d): the plan's z was up to %.3f m away from the goal's "
                           "%.3f m; clamped to +-%.2f m" % (self.n_zclip, dz, z_goal, self.args.z_band),
                           flush=True)
                 pos[:, 2] = zc
+                # THE DERIVATIVE STREAM MUST DESCRIBE THE PUBLISHED POINTS, NOT THE SPLINE THEY CAME FROM.
+                # Where the clamp bit, the published z is constant, so its true derivative is zero: an
+                # analytic vz there would describe a vertical motion the Path does not contain and the two
+                # streams would disagree about the same sample.  Zeroing it is the honest encoding of the
+                # clamp, and how often it happens is already counted (n_zclip).
+                vel[z_mask, 2] = 0.0
+                acc[z_mask, 2] = 0.0
                 cl = self.world.clearance(pos)              # re-check: the clamp must not create a collision
                 info["clr_min"] = float(cl.min())
         if info["clr_min"] < self.args.footprint:
@@ -789,13 +939,14 @@ class EgoAdapter:
                           "(contract %.2f m) -- ego planned through a pillar it has not seen yet"
                           % (self.n_prefix, seg, k, float(cl[k]), k, self.args.footprint), flush=True)
                 pos, ts = pos[:k], ts[:k]
+                vel, acc = vel[:k], acc[:k]
             else:
                 # THE OFFENDING PLAN'S OWN IDENTITY, so a refusal can be matched to the recorded B-spline
                 # (tools/record-bspline.py) and the question "is that pillar in ego's map?" can be answered
                 # offline instead of inferred.  MEASURED 2026-10-14: 13 refusals of the form
                 # "pillar clearance -0.172 .. -0.219 m (at point 37)" in sorties L1/N1 could not be matched
                 # to any recorded trajectory because the message carried no start_time.
-                return None, "pillar clearance %.3f m < footprint %.2f m (at point %d, traj %.3f, t_cur %.2f of %.2f)" % (
+                return None, None, "pillar clearance %.3f m < footprint %.2f m (at point %d, traj %.3f, t_cur %.2f of %.2f)" % (
                     info["clr_min"], self.args.footprint, int(np.argmin(cl)),
                     float(self.bspline.start_time.sec) + 1e-9 * float(self.bspline.start_time.nanosec),
                     float(info.get("t_cur", float("nan"))), float(info.get("duration", float("nan"))))
@@ -803,7 +954,7 @@ class EgoAdapter:
         ins = self.world.inside(pos)
         if not bool(ins.all()):
             i = int(np.argmin(ins))
-            return None, "point %d outside the arena at [%+.2f %+.2f %+.2f]" % (
+            return None, None, "point %d outside the arena at [%+.2f %+.2f %+.2f]" % (
                 i, pos[i, 0], pos[i, 1], pos[i, 2])
 
         out = self.Path()
@@ -831,7 +982,49 @@ class EgoAdapter:
         seg = np.linalg.norm(np.diff(pos, axis=0), axis=1) if len(pos) > 1 else np.zeros(1)
         info["arc_max"] = float(seg.max())
         info["arc_med"] = float(np.median(seg))
-        return out, info
+
+        # ---- the SAME plan, with ego's own exact derivatives, on the parallel topic -------------------
+        # ONE DECISION, TWO ENCODINGS.  Every gate above has already been applied to `pos`, `ts`, `vel` and
+        # `acc` together (the projection slice, the verified-prefix slice, the altitude clamp), so the two
+        # messages cannot describe different plans -- which is the property that makes the dyn stream usable
+        # for the flight and not merely adjacent to it.
+        # THE CLOCK IS CARRIED THE SAME WAY: the Path stamps every pose with the instant the planner means it
+        # to be reached (start_time + t_i); here the header carries `start_time` and every point carries its
+        # own `time_from_start = t_i`, so header + time_from_start reproduces exactly the Path's stamps
+        # (to the nanosecond the two roundings allow, which is why the consumer compares with a tolerance).
+        dyn = self.MDJTraj()
+        dyn.header.stamp = self.to_msg(info["t0"])
+        dyn.header.frame_id = FRAME_L
+        for i in range(len(pos)):
+            pt = self.MDJPoint()
+            tr = self.Transform()
+            tr.translation.x, tr.translation.y, tr.translation.z = (float(v) for v in pos[i])
+            # the same yaw the Path's pose carries, so a consumer that wants it does not have to guess
+            j = min(i + 1, len(pos) - 1)
+            dx, dy = pos[j, 0] - pos[i, 0], pos[j, 1] - pos[i, 1]
+            if abs(dx) + abs(dy) < 1e-9:
+                dx, dy = pos[-1, 0] - pos[i, 0], pos[-1, 1] - pos[i, 1]
+            yaw = math.atan2(dy, dx) if (abs(dx) + abs(dy) > 1e-12) else 0.0
+            tr.rotation.w = math.cos(yaw / 2.0)
+            tr.rotation.z = math.sin(yaw / 2.0)
+            pt.transforms = [tr]
+            tv = self.Twist()
+            tv.linear.x, tv.linear.y, tv.linear.z = (float(v) for v in vel[i])
+            pt.velocities = [tv]
+            ta = self.Twist()
+            ta.linear.x, ta.linear.y, ta.linear.z = (float(v) for v in acc[i])
+            pt.accelerations = [ta]
+            d = self.Duration()
+            d.sec = int(math.floor(float(ts[i])))
+            d.nanosec = int(round((float(ts[i]) - d.sec) * 1e9))
+            if d.nanosec >= 1000000000:
+                d.sec += 1
+                d.nanosec -= 1000000000
+            pt.time_from_start = d
+            dyn.points.append(pt)
+        info["dyn_v_max"] = float(np.max(np.linalg.norm(vel, axis=1))) if len(vel) else 0.0
+        info["dyn_a_max"] = float(np.max(np.linalg.norm(acc, axis=1))) if len(acc) else 0.0
+        return out, dyn, info
 
     def to_msg(self, sec_float):
         from builtin_interfaces.msg import Time
@@ -860,12 +1053,16 @@ class EgoAdapter:
                   "%.1f s after %d refusals -- ego is not committing a new one (see the PLANNER-STALL lines in "
                   "the planner's own log)" % (t0, dt, self.n_blocked), flush=True)
         if getattr(self, "_stall_said", False):
+            from std_msgs.msg import Bool    # function-local: see the note at the top of this file -- the
+            # module must stay importable with no ROS sourced (tools/world-circle.py, tools/world-rect.py and
+            # tools/mission-params.py reuse World.clearance), and this line is where Bool is actually used.
             self.stall_pub.publish(Bool(data=True))
 
     def _clear_stall(self):
         if getattr(self, "_stall_said", False):
             print("ego_adapter: planner recovered: a NEW trajectory was published after %.1f s of stall"
                   % (time.time() - self._stall_since), flush=True)
+            from std_msgs.msg import Bool    # function-local, for the same reason as _note_stall
             self.stall_pub.publish(Bool(data=False))
         self._stall_t0, self._stall_said = None, False
 
@@ -901,23 +1098,34 @@ class EgoAdapter:
         if now - getattr(self, "_last_status", 0.0) >= 5.0:
             self._last_status = now
             print("ego_adapter STATUS: goals in %d, forwarded %d, dedup %d, deferred %d, rejected %d | "
-                  "bsplines %d | paths %d, withheld %d, stalls %d"
+                  "bsplines %d | paths %d (traj_dyn %d), withheld %d, stalls %d"
                   % (self.n_goal_in, self.n_goal_out, getattr(self, "n_goal_dedup", 0), self.n_goal_deferred,
-                     self.n_goal_rejected, self.n_bspline, self.n_pub, self.n_blocked, self.n_stall),
+                     self.n_goal_rejected, self.n_bspline, self.n_pub, self.n_dyn, self.n_blocked,
+                     self.n_stall),
                   flush=True)
         if self.bspline is None:
             return
-        path, info = self.build_path()
+        path, dyn, info = self.build_path()
         if path is None:
             self.n_blocked += 1
             key = info.split(" (")[0].split(" at point")[0]
             self.blocked_reasons[key] = self.blocked_reasons.get(key, 0) + 1
+            # THE REASON IS PRINTED ONCE PER STATE CHANGE, not only every 25th refusal.  MEASURED 2026-10-14:
+            # a refusal reason that only appears on a counter is a reason nobody reads at the moment it
+            # changes -- the FSM sees silence and the operator sees 25 identical lines.  The periodic print
+            # below stays, so a long refusal is still visible; this one fires the instant the reason changes.
+            if key != getattr(self, "_blocked_key", None):
+                print("ego_adapter: PATH WITHHELD -- reason changed to: %s" % info, flush=True)
+                self._blocked_key = key
             if self.n_blocked <= 3 or self.n_blocked % 25 == 0:
                 print("ego_adapter: PATH WITHHELD (%d): %s" % (self.n_blocked, info), flush=True)
             self._note_stall()
             return
         self._clear_stall()
+        self._blocked_key = None
         self.traj_pub.publish(path)
+        self.traj_dyn_pub.publish(dyn)
+        self.n_dyn += 1
         now = time.time()
         if self.last_pub_wall:
             self.pub_dt.append(now - self.last_pub_wall)
@@ -925,19 +1133,22 @@ class EgoAdapter:
         self.n_pub += 1
         if self.n_pub == 1 or self.n_pub % 40 == 0:
             dts = np.diff([p.header.stamp.sec + 1e-9 * p.header.stamp.nanosec for p in path.poses])
-            print("ego_adapter: published %d poses on %s  (t_cur %.3f / %.3f s, start %.4f m from "
-                  "the vehicle, min pillar clearance %.3f m, traj dt %.4f s, arc step %.4f m)"
-                  % (len(path.poses), self.args.traj_topic, info["t_cur"], info["duration"],
+            print("ego_adapter: published %d poses on %s + %d on %s  (t_cur %.3f / %.3f s, start %.4f m from "
+                  "the vehicle, min pillar clearance %.3f m, traj dt %.4f s, arc step %.4f m, |v|max %.2f m/s, "
+                  "|a|max %.2f m/s^2)"
+                  % (len(path.poses), self.args.traj_topic, len(dyn.points), self.args.traj_dyn_topic,
+                     info["t_cur"], info["duration"],
                      info.get("start_d", float("nan")), info["clr_min"],
                      float(np.median(dts)) if len(dts) else float("nan"),
-                     info.get("arc_med", float("nan"))), flush=True)
+                     info.get("arc_med", float("nan")), info["dyn_v_max"], info["dyn_a_max"]), flush=True)
 
     def report(self):
         rt = float(np.median(self.pub_dt)) if self.pub_dt else float("nan")
         print("ego_adapter REPORT: goals in %d, published %d, rejected %d, deferred %d | Bsplines %d | "
-              "paths published %d, withheld %d | planner stalls %d | republish %.2f Hz (median over %d intervals)"
+              "paths published %d (traj_dyn %d), withheld %d | planner stalls %d | republish %.2f Hz "
+              "(median over %d intervals)"
               % (self.n_goal_in, self.n_goal_out, self.n_goal_rejected, self.n_goal_deferred,
-                 self.n_bspline, self.n_pub, self.n_blocked, self.n_stall,
+                 self.n_bspline, self.n_pub, self.n_dyn, self.n_blocked, self.n_stall,
                  (1.0 / rt if rt == rt and rt > 0 else float("nan")), len(self.pub_dt)), flush=True)
         for k, v in sorted(self.blocked_reasons.items()):
             print("   withheld %4d x  %s" % (v, k), flush=True)
@@ -950,6 +1161,14 @@ def main():
                     help="the SAME L->W calibration the consumer uses")
     ap.add_argument("--world", default=os.path.join(HERE, "..", "worlds", "forest_all.yaml"))
     ap.add_argument("--traj-topic", default="/planner/traj")
+    ap.add_argument("--traj-dyn-topic", default="/planner/traj_dyn",
+                    help="the PARALLEL stream: trajectory_msgs/MultiDOFJointTrajectory carrying the SAME "
+                         "points, projected and truncated by the SAME gates, with ego's EXACT velocity and "
+                         "acceleration from the B-spline's derivative splines (bspline_derivs).  The Path "
+                         "interface is positions only, so its consumer had to recover the velocity by "
+                         "differencing consecutive poses -- segment averages, which is the wrong SHAPE "
+                         "exactly where a 3 m/s plan turns hardest (docs/ARCHITECTURE.md).  Empty string "
+                         "disables the stream")
     ap.add_argument("--goal-topic", default="/goal_pose", help="goal in W, from the mission")
     ap.add_argument("--planner-goal-topic", default="/move_base_simple/goal",
                     help="the ego-planner FSM's waypoint topic (frame L after this adapter)")

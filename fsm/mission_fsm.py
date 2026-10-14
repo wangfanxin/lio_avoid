@@ -136,6 +136,12 @@ class Mission:
         self.abort_reason = None
         self.node = None
         self.phase_pub = None
+        # THE PLAN'S EXACT DYNAMICS (see _on_traj_dyn/_dynamics_for): None until a message that MATCHES the
+        # Path in hand arrives, so the initial state is the honest one -- "nothing received yet".
+        self.dyn_t = None
+        self.dyn_v = None
+        self.dyn_a = None
+        self.dyn_seen = 0
 
     # ------------------------------------------------------------------ plumbing
     def _make_bridge(self):
@@ -181,12 +187,77 @@ class Mission:
         self.node.create_subscription(Odometry, self.args.truth_topic,
                                       lambda m: self.tap.on_odom(m), best_effort)
         self.node.create_subscription(Path, self.args.traj_topic, self._on_path, latched)
+        # THE PLAN'S OWN VELOCITY AND ACCELERATION, from the parallel `--traj-dyn-topic`.  Same latched QoS:
+        # it is the same plan, published in the same tick by planner/ego_adapter.py, and a consumer that
+        # starts late should still find one.  The Path stays the plan of record -- if this topic is silent,
+        # absent or inconsistent with the Path, the follower keeps differencing the Path (and SAYS so, see
+        # the DYNAMICS line in _spline_once): the dyn stream can only ever make the reference better, never
+        # become a second source of truth for what to fly.
+        if self.args.traj_dyn_topic:
+            try:
+                from trajectory_msgs.msg import MultiDOFJointTrajectory
+                self.node.create_subscription(MultiDOFJointTrajectory, self.args.traj_dyn_topic,
+                                              self._on_traj_dyn, latched)
+            except Exception as exc:                                     # noqa: BLE001
+                self.log("no trajectory_msgs (%s): the plan's exact velocity/acceleration cannot be "
+                         "received and the reference stays a finite difference of the Path" % exc)
         # THE SEQUENCER'S STATE.  The FSM does not count stops any more (see follow_spline_stations): it
         # reads the mission's own stop index, so the two cannot drift apart.  Volatile + reliable: the
         # sequencer publishes at 1 Hz and the value is a state, not an event.
         from std_msgs.msg import Int32
         self.node.create_subscription(Int32, self.args.stop_topic, self._on_stop, 10)
         self.rclpy = rclpy
+
+    def _on_traj_dyn(self, m):
+        """ego's exact velocity/acceleration for the plan, keyed by the SAME per-point stamps as the Path.
+
+        The absolute stamp of point i is `header.stamp + time_from_start[i]` -- by construction the same
+        number the Path's i-th pose carries (the adapter writes start_time + t_i in both encodings), so the
+        check that a dyn message belongs to the Path in hand is a comparison of stamp ARRAYS.  It is a
+        comparison and not an assumption on purpose: the two messages arrive as separate messages, and a
+        dyn from the previous tick must never be paired with the Path of this one.
+        """
+        n = len(m.points)
+        if n == 0:
+            return
+        t0 = float(m.header.stamp.sec) + 1e-9 * float(m.header.stamp.nanosec)
+        ts = np.zeros(n)
+        v = np.zeros((n, 3))
+        a = np.zeros((n, 3))
+        for i, pt in enumerate(m.points):
+            d = pt.time_from_start
+            ts[i] = t0 + float(d.sec) + 1e-9 * float(d.nanosec)
+            if len(pt.transforms) and len(pt.velocities):
+                v[i] = [pt.velocities[0].linear.x, pt.velocities[0].linear.y, pt.velocities[0].linear.z]
+            if len(pt.accelerations):
+                a[i] = [pt.accelerations[0].linear.x, pt.accelerations[0].linear.y,
+                        pt.accelerations[0].linear.z]
+        self.dyn_t = ts
+        self.dyn_v = v
+        self.dyn_a = a
+        self.dyn_seen = getattr(self, "dyn_seen", 0) + 1
+
+    def _dynamics_for(self):
+        """(V, A, why) for the Path in hand: the exact stream if it MATCHES, else None and a named reason.
+
+        NO SILENT FALLBACK is the requirement here: the caller prints exactly one of these reasons at 1 Hz,
+        so a sortie's log says which reference the aircraft was actually flown on.  The three ways the
+        exact stream can fail to apply are all named, because "the acceleration looks wrong" and "the
+        planner's derivative stream never arrived" are different findings.
+        """
+        if not self.args.traj_dyn_topic:
+            return None, None, "disabled (--traj-dyn-topic '')"
+        if getattr(self, "dyn_v", None) is None:
+            return None, None, "no dyn message on %s" % self.args.traj_dyn_topic
+        if self.path_t is None:
+            return None, None, "no Path stamps to match against"
+        if len(self.dyn_t) != len(self.path_t):
+            return None, None, ("dyn %d points vs Path %d" % (len(self.dyn_t), len(self.path_t)))
+        dt = float(np.max(np.abs(self.dyn_t - self.path_t)))
+        if dt > 1e-6:
+            return None, None, ("dyn stamps differ from the Path's by up to %.3f ms (a dyn of another plan)"
+                                % (dt * 1e3))
+        return self.dyn_v, self.dyn_a, "matched to the Path (max stamp diff %.2e s)" % dt
 
     def _on_stop(self, m):
         """The sequencer's current stop index (0-based; -1 = the sequence is complete)."""
@@ -865,9 +936,35 @@ class Mission:
             return "the Path's stamps span %.6f s -- not a trajectory" % dur
         self.log("follow-spline: %d points, %.2f s of trajectory (%.2f m), stamps in the system clock"
                  % (len(p), dur, float(np.sum(np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1)))))
+        # WHICH REFERENCE THIS PLAN WILL BE FLOWN ON, decided once here and re-decided on every plan switch
+        # below.  `V`/`A` are the plan's EXACT velocity and acceleration when a dyn message matched this
+        # Path, None otherwise -- and `dyn_why` carries the reason either way, because the 1 Hz DIAG must be
+        # able to say why the exact stream is not in use.
+        V, A, dyn_why = self._dynamics_for()
+        self._dyn_log = 0.0
+        if V is not None:
+            self.log("plan dynamics: EXACT (dyn stamp match: %s; %d points, |v|max %.2f m/s, |a|max %.2f m/s^2)"
+                     % (dyn_why, len(V), float(np.max(np.linalg.norm(V, axis=1))),
+                        float(np.max(np.linalg.norm(A, axis=1)))))
+        else:
+            self.log("plan dynamics: FINITE DIFFERENCE of the Path's poses (%s)" % dyn_why)
 
         def ref_at(pos_p, times, t_rel):
-            """(position, velocity, acceleration) of the plan at t_rel seconds from its start."""
+            """(position, velocity, acceleration) of the plan at t_rel seconds from its start.
+
+            VELOCITY AND ACCELERATION COME FROM THE PLAN'S OWN DERIVATIVES WHEN THEY ARE IN HAND.  The Path
+            carries positions only, so this used to recover the velocity by differencing consecutive poses
+            (a SEGMENT AVERAGE, i.e. the value half a sample late) and the acceleration by a second
+            difference (zeroed at both ends of the plan).  `planner/ego_adapter.py` now publishes ego's exact
+            velocity and acceleration on `--traj-dyn-topic` for exactly these points, and the measurement
+            that motivated it is in docs/ARCHITECTURE.md: the 20 ms finite difference is "exact enough at
+            1 m/s and the wrong shape at 3 m/s".  MEASURED on the 20 ms grid of a real committed spline
+            (tools/dyn-audit.py, sortie AP5): the finite-difference velocity is the segment average and
+            differs from the exact value at the sample by a median of 0.128 m/s (max 0.276) on a plan whose
+            own speed is 2.29 m/s median, and the second difference's acceleration is off by a median of
+            12.8 m/s^2 -- and is IDENTICALLY ZERO on the last two samples of every plan, which is where the
+            aircraft is braking into the stop.
+            """
             # WHEN THE PLAN IS EXHAUSTED THE FEEDFORWARD MUST GO TO ZERO.  MEASURED 2026-10-14 (sortie F2,
             # the diagonal): the position was clamped to the plan's last point -- but `vel` was the LAST
             # SEGMENT's velocity, so the FSM kept streaming "sit at (-1.79,-1.81) AND fly at 2.43 m/s
@@ -878,12 +975,21 @@ class Mission:
             # ("geofence: truth at [+6.60 -0.25]").  The bug was always there; it only became destructive
             # once the plans got fast, which is what unpinning manager/max_vel did (plans went from a
             # 1.0 m/s time allocation to the params file's 3.0).
+            # THE RULE IS KEPT VERBATIM FOR BOTH SOURCES: past the end, the reference is the last point and
+            # ZERO velocity/acceleration, whatever the spline's own derivative says there.
             if t_rel >= times[-1] - 1e-9:
                 return np.array(pos_p[-1], dtype=float), np.zeros(3), np.zeros(3)
             k = int(np.clip(np.searchsorted(times, t_rel, side="right") - 1, 0, len(times) - 2))
             h = max(times[k + 1] - times[k], 1e-6)
             w = float(np.clip((t_rel - times[k]) / h, 0.0, 1.0))
             pos = pos_p[k] + w * (pos_p[k + 1] - pos_p[k])
+            if V is not None:
+                # the exact values at the samples, interpolated linearly between them at the same weight as
+                # the position: at 50 Hz of trajectory time the interpolation error is O(h^2 * jerk), and a
+                # zero-order hold would be a 20 ms step the FCU would have to filter.
+                vel = V[k] + w * (V[k + 1] - V[k])
+                acc = A[k] + w * (A[k + 1] - A[k])
+                return pos, vel, acc
             vel = (pos_p[k + 1] - pos_p[k]) / h
             if 0 < k < len(times) - 2:
                 acc = ((pos_p[k + 2] - pos_p[k + 1]) / max(times[k + 2] - times[k + 1], 1e-6) - vel) / h
@@ -915,12 +1021,30 @@ class Mission:
                 p, tt, dur = snapshot()
                 t0_cur = float(self.path_t[0])
                 n_switch += 1
+                # A NEW PLAN MEANS A NEW DECISION ABOUT THE DYNAMICS: the dyn message that matched the old
+                # Path must not be used for the new one, so the match is re-made here rather than assumed.
+                V, A, dyn_why = self._dynamics_for()
                 if n_switch <= 3 or n_switch % 20 == 0:
-                    self.log("switched to a newer plan (%d so far): %d points, %.2f s, %.2f m"
+                    self.log("switched to a newer plan (%d so far): %d points, %.2f s, %.2f m, dynamics %s"
                              % (n_switch, len(p), dur,
-                                float(np.sum(np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1)))))
+                                float(np.sum(np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1))),
+                                "EXACT" if V is not None else "finite-difference"))
             t_rel = (time.time() - t0_cur) + self.args.spline_lead
             pos, vel, acc = ref_at(p, tt, t_rel)
+            # WHICH REFERENCE IS IN FORCE, at 1 Hz, for the whole time the plan is flown.  This is the line a
+            # sortie is judged on: "DYNAMICS: analytic" means the FCU was streamed ego's own derivatives;
+            # "DYNAMICS: finite-difference (<reason>)" names why it was not.  A fallback that leaves no line
+            # in the log is indistinguishable from the fix having worked.
+            if time.monotonic() - self._dyn_log >= 1.0:
+                self._dyn_log = time.monotonic()
+                if V is not None:
+                    self.log("DYNAMICS: analytic (%s, %d points, |v|%.2f/%.2f m/s, |a|%.2f/%.2f m/s^2 now)"
+                             % (dyn_why, len(V), float(np.linalg.norm(vel)), float(np.max(np.linalg.norm(V, axis=1))),
+                                float(np.linalg.norm(acc)), float(np.max(np.linalg.norm(A, axis=1)))))
+                else:
+                    self.log("DYNAMICS: finite-difference (no dyn message: %s) -- vel is a segment average, "
+                             "acc a second difference of the Path's poses, zeroed at both ends (%d points)"
+                             % (dyn_why, len(p)))
             # A PLAN WHOSE CLOCK HAS RUN OUT IS NOT A TARGET.  On the spline's own timeline a stale plan
             # evaluates to its LAST point (upstream hovers there, and for their drone that point is the goal
             # it was already heading for).  Here it can be metres away, and commanding it is a straight line
@@ -1310,6 +1434,12 @@ def main() -> int:
                          "If this topic also has none, the FSM differentiates the pose instead and says "
                          "so in the log")
     ap.add_argument("--traj-topic", default="/planner/traj")
+    ap.add_argument("--traj-dyn-topic", default="/planner/traj_dyn",
+                    help="trajectory_msgs/MultiDOFJointTrajectory: the SAME plan as --traj-topic with the "
+                         "planner's EXACT velocity and acceleration per point (planner/ego_adapter.py's "
+                         "bspline_derivs), stamps identical to the Path's.  When a message matches the Path "
+                         "in hand the follower takes vel/acc from it; otherwise it differentiates the Path "
+                         "and says so at 1 Hz (DYNAMICS: ...).  '' disables the topic")
     ap.add_argument("--nav-source", default="lio", choices=["lio", "truth"],
                     help="'lio' = mission A as defined; 'truth' = the calibration flight whose "
                          "recordings identify L->F (and which must never be used for the mission)")
