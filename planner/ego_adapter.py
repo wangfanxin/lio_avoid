@@ -389,7 +389,13 @@ class EgoAdapter:
         # the stack can tell "the planner is stuck" from "the planner is fine, this plan is not".
         self.stall_pub = self.node.create_publisher(Bool, args.stall_topic, 10)
 
-        self.node.create_subscription(PoseStamped, args.goal_topic, self.on_goal, 1)
+        # GOAL QUEUE DEPTH 10, NOT 1.  MEASURED 2026-10-14 (sortie W1, the circle, with a counter added to the
+        # sequencer): the sequencer published the stop-2 goal 42 times and this node received 9 of them -- 33
+        # goals lost in the transport -- while ego's own callback count (9) matched this node's forwards
+        # exactly, so nothing was lost after this point.  This node is busy (200 Hz odometry plus the 4 Hz
+        # clearance check over every published path), and with a depth-1 queue an overflowing subscription
+        # simply drops.  Depth 10 costs nothing and covers ~10 s of a 1 Hz goal.
+        self.node.create_subscription(PoseStamped, args.goal_topic, self.on_goal, 10)
         self.node.create_subscription(Odometry, args.odom_topic, self.on_odom, sensor)
 
         self.bspline = None

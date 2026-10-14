@@ -186,6 +186,12 @@ def main() -> int:
             m.pose.orientation.w = 1.0
             self.pub.publish(m)
             self.t_last_pub = time.monotonic()
+            # COUNT THE PUBLICATIONS, because the goal path has three links whose numbers MUST agree and
+            # MEASURED 2026-10-14 they did not: sortie V1 (the circle) reached ego's waypointCallback only
+            # 8 times in 84 s while this node's repeat branch is supposed to publish the current stop every
+            # --repeat-s (1.0 s) until it is reached, i.e. ~45 times for the 45 s stop-2 timeout.  Without
+            # this counter the loss cannot be attributed to the sequencer, the transport, or the adapter.
+            self.n_pub = getattr(self, "n_pub", 0) + 1
 
         def pub_index(self, i):
             """Publish the mission's stop index: 0-based while running, -1 when the sequence is complete.
@@ -226,6 +232,7 @@ def main() -> int:
             self.pub_index(self.i)
             if self.t_stop is None:
                 self.t_stop = now
+                self.n_pub_at_stop = getattr(self, "n_pub", 0)   # count this stop's publications from here
                 self.pub_goal(p)
                 self.log("stop %d/%d  W[%+.3f %+.3f %+.3f]  (from %s)"
                          % (self.i + 1, len(stops), p[0], p[1], p[2],
@@ -268,8 +275,10 @@ def main() -> int:
                 return
             if now - self.t_stop > args.timeout:
                 self.missed.append((self.i + 1, d))
-                self.log("stop %d/%d MISSED after %.0f s: %.3f m from it -- moving on"
-                         % (self.i + 1, len(stops), args.timeout, d))
+                self.log("stop %d/%d MISSED after %.0f s: %.3f m from it -- moving on "
+                         "(goal published %d time(s) for it)"
+                         % (self.i + 1, len(stops), args.timeout, d,
+                            getattr(self, "n_pub", 0) - getattr(self, "n_pub_at_stop", 0)))
                 self.i += 1
                 self.t_stop = None
                 return
