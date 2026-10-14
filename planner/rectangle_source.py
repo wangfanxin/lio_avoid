@@ -100,8 +100,16 @@ def main() -> int:
     path_w = densify(corners, args.spacing)
     legs_w = None
     if hold_s > 0.0:
-        legs_w = [densify(np.asarray([corners[i], corners[(i + 1) % len(corners)]], dtype=float), args.spacing)
-                  for i in range(len(corners))]
+        # OPEN polylines, one per edge: `densify()` closes the loop it is given (it appends corners[0]), so
+        # reusing it here produced OUT-AND-BACK legs (c1 -> c2 -> c1) and the aircraft never left the first
+        # corner: MEASURED RECT2-hold5 -- "LEG 0 -> corner 1: 4.000 m" for a 2.000 m edge, N extent 0.074 m
+        # over the whole route, and no "HOLD at corner 3" line at all.
+        legs_w = []
+        for i in range(len(corners)):
+            a = np.asarray(corners[i], dtype=float)
+            b = np.asarray(corners[(i + 1) % len(corners)], dtype=float)
+            n = max(2, int(float(np.linalg.norm(b - a)) / max(args.spacing, 1e-3)) + 1)
+            legs_w.append(np.linspace(a, b, n))
     print("rectangle_source: square in W (ENU, origin = pad):")
     for i, c in enumerate(corners):
         print("   corner %d  E %+6.3f  N %+6.3f  U %+6.3f" % (i, c[0], c[1], c[2]))
