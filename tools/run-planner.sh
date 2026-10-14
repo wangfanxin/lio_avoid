@@ -120,8 +120,13 @@ if [ "$CLOUD_SOURCE" = "voxel" ]; then
   python3 "$HERE/tools/cloud_relay.py" --in /lio/cloud_world --out /cloud_registered \
       > "${RELAY_LOG:-/tmp/cloud_relay.log}" 2>&1 &
 else
+  # RELAY_EXTRA passes scan_relay.py's own knobs through (--keep-s / --voxel / --max-points).  MEASURED
+  # 2026-10-14: with only the current scan published, the planner forgets pillars that leave its 45 deg
+  # field of view and plans straight through them (13 refusals at "-0.189 .. -0.230 m" inside a pillar in
+  # sortie L1, while all 51 published plans held the contract) -- RELAY_EXTRA="--keep-s 0" restores that
+  # historical behaviour for the A/B.
   python3 "$HERE/tools/scan_relay.py" --in /livox/lidar --odom /lio/robo/odom --out /cloud_registered \
-      > "${RELAY_LOG:-/tmp/scan_relay.log}" 2>&1 &
+      ${RELAY_EXTRA:-} > "${RELAY_LOG:-/tmp/scan_relay.log}" 2>&1 &
 fi
 RELAY_PID=$!
 PIDS="$PIDS $RELAY_PID"
