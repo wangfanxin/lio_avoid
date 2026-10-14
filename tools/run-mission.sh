@@ -222,6 +222,54 @@ TRAJ_SOURCE="${TRAJ_SOURCE:-rect}"
 # trajectory per stop (`--stations N`).  The stop list comes from the world file through tools/world-circle.py,
 # including the rule that a stop landing inside a pillar moves forward to that pillar's next exit.
 STATIONS="${STATIONS:-0}"
+# STATION_MODE=ego (patch 0008): THE STATION LIST BECOMES EGO'S OWN.  tools/mission-params.py writes
+# fsm/waypoint* -- already converted into the LIO frame with the measured calibration -- into
+# $OUT/stations.yaml, run-planner.sh passes that file to the planner as a second --params-file, and ego
+# plans the tour ITSELF with its advance test on the VEHICLE.  The sequencer then keeps an OBSERVER role
+# only (--observe-wp-index /wp_index): it mirrors ego's own wp_index onto the stop topic and still SCORES
+# every stop from truth, so the numbers this script's metrics come from are unchanged.
+#
+# WHY THE SWITCH.  MEASURED sortie AO2: with the stops driven from OUTSIDE, the adapter had already
+# converted the NEXT goal while ego's own end_pt_ was still the PREVIOUS stop's -- two sources of truth for
+# "where the mission is".  MEASURED sortie AO1: the external sequencer walked stops 2..11 on its own
+# timeout while the vehicle hovered at stop 1.  Both are one defect and it cannot be repaired from outside
+# ego, which is why the sequence moved inside it.
+#
+# UNSET = every earlier sortie's behaviour, unchanged: no stations.yaml is written, the planner gets no
+# station params and keeps its own auto-goal, and the sequencer publishes the goals itself.
+STATION_MODE="${STATION_MODE:-}"
+STATION_PARAMS="${STATION_PARAMS:-}"
+STATION_GOAL=""
+STATION_ARGS_PLANNER=""
+STATION_ARGS_SEQ=""
+if [ "$STATION_MODE" = "ego" ]; then
+    if [ "$TRAJ_SOURCE" != "planner" ]; then
+        echo "STATION_MODE=ego needs TRAJ_SOURCE=planner (the stations are EGO's params, and nothing else" \
+             "reads them): TRAJ_SOURCE=$TRAJ_SOURCE" >&2
+        exit 1
+    fi
+    STATION_PARAMS="$OUT/stations.yaml"
+    # --start-alt 1.28 m = DO NOT PLAN THE FIRST TRAJECTORY FROM THE PAD.  MEASURED earlier: planning from
+    # the ground left ego in GEN_NEW_TRAJ for ever -- 599 replans, 0 plan_success -- and the sortie had to be
+    # killed; the external sequencer's own workaround was `goal_sequencer.py --min-alt`, whose default is
+    # max_stop_z - 0.60 = 1.28 m.  With fsm/flight_type 2 (PRESET_TARGET) ego starts the tour in its
+    # CONSTRUCTOR, so that delay can no longer be imposed from outside: --start-alt writes
+    # fsm/waypoint_start_alt and the gate arms the tour from ego's own FSM loop once odom z >= 1.28 m.
+    echo "== the station list ego will own (patch 0008) =="
+    python3 "$REPO/tools/mission-params.py" --world "$WORLD" --calib-file "$CALIB" \
+        --out "$STATION_PARAMS" --advance-m "${STATION_ADVANCE_M:-0.30}" \
+        --start-alt "${STATION_START_ALT:-1.28}" || {
+        echo "tools/mission-params.py FAILED: ego would fly with NO station list -- refusing to take off" >&2
+        exit 1
+    }
+    # GOAL=none AND --no-goal, because the ENV FORM ALONE IS A SILENT NO-OP: tools/run-planner.sh assigns
+    # `GOAL=""` unconditionally near its top and only its own argument parser can set it to "none".  With
+    # ego owning the tour, an auto-goal published by the planner chain would be a second source of truth
+    # again -- the very defect this mode removes -- so the enforcing form is passed as well.
+    STATION_GOAL="none"
+    STATION_ARGS_PLANNER="--no-goal"
+    STATION_ARGS_SEQ="--observe-wp-index /wp_index"
+fi
 SEQ_PID=""
 if [ "$TRAJ_SOURCE" = "planner" ]; then
     # run-planner.sh's world default is now worlds/forest_b.yaml (mission B's own world), and passing
@@ -231,7 +279,9 @@ if [ "$TRAJ_SOURCE" = "planner" ]; then
     # manager/max_vel govern", which is the only way `PARAMS=...fast3.yaml` can actually reach 3 m/s.
     # MEASURED 2026-10-14: run-planner.sh used to hard-code `-p manager/max_vel:=1.0` on top of
     # `--params-file` (ROS 2 `-p` wins), so every fast3 attempt flew a 1.0 m/s time allocation.
-    WORLD="$WORLD" EGO_MAX_VEL="${EGO_MAX_VEL:-}" bash "$REPO/tools/run-planner.sh" > "$OUT/planner.log" 2>&1 &
+    WORLD="$WORLD" EGO_MAX_VEL="${EGO_MAX_VEL:-}" STATION_PARAMS="$STATION_PARAMS" \
+        GOAL="$STATION_GOAL" bash "$REPO/tools/run-planner.sh" $STATION_ARGS_PLANNER \
+        > "$OUT/planner.log" 2>&1 &
     TRAJ_PID=$!
     sleep 1
     if [ "$STATIONS" -gt 0 ]; then
@@ -242,7 +292,7 @@ if [ "$TRAJ_SOURCE" = "planner" ]; then
         python3 "$REPO/planner/goal_sequencer.py" --world "$WORLD" --calib-file "$CALIB" \
             --arrive "${SEQ_ARRIVE:-0.35}" --timeout "${SEQ_TIMEOUT:-35}" \
             ${SEQ_STOPS:+--stops="$SEQ_STOPS"} ${SEQ_DWELL:+--dwell-s="$SEQ_DWELL"} \
-            --log "$OUT/sequencer.log" > "$OUT/sequencer.out" 2>&1 &
+            --log "$OUT/sequencer.log" $STATION_ARGS_SEQ > "$OUT/sequencer.out" 2>&1 &
         SEQ_PID=$!
         echo "   stations   : $STATIONS, fed by planner/goal_sequencer.py (arrive ${SEQ_ARRIVE:-0.35} m)"
         FSM_ARGS="${FSM_ARGS:-} --stations $STATIONS"
