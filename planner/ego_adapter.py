@@ -505,6 +505,31 @@ class EgoAdapter:
                 print("ego_adapter: could not dump the Bspline: %s" % exc, flush=True)
 
     # ---------------------------------------------------------------- the path
+    def _connection_is_clear(self, a_l, b_l, want_reason=False):
+        """Is the straight segment from `a_l` to `b_l` flyable: inside the arena, clear of every pillar?
+
+        The start-distance obligation is a PROXY for the property that actually matters -- can the vehicle
+        get from where it is to where the path begins without crossing a pillar?  MEASURED 2026-10-14 in
+        the first live Mission B attempts: the planner planned fine, but every path began 3.4-3.6 m away
+        and the 0.50 m gate withheld 150 of them, which from the flight side is indistinguishable from "a
+        planner that never plans".  When this connection is clear the follower can fly it, so the path is
+        published; when it is not, the path is withheld with the clearance that failed.
+        """
+        a = np.asarray(a_l, float)
+        b = np.asarray(b_l, float)
+        step = max(self.args.footprint / 2.0, 0.05)
+        n = max(2, int(np.ceil(float(np.linalg.norm(b[:2] - a[:2])) / step)) + 1)
+        s = np.linspace(0.0, 1.0, n)[:, None]
+        pts = a[None, :] + s * (b - a)[None, :]
+        ins = self.world.inside(pts)
+        if not bool(np.all(ins)):
+            return "outside the arena" if want_reason else False
+        clr = float(np.min(self.world.clearance(pts)))
+        if clr < self.args.footprint:
+            return ("%.3f m from a pillar surface (< %.2f m)" % (clr, self.args.footprint)) \
+                if want_reason else False
+        return True
+
     def build_path(self):
         """(Path, info) or (None, reason).  All of PLAN.md 4.1's obligations are decided here."""
         m = self.bspline
@@ -546,8 +571,17 @@ class EgoAdapter:
             d = np.linalg.norm(pos - self.odom_l, axis=1)
             i0 = int(np.argmin(d))
             info["start_d"] = float(d[i0])
-            if d[i0] > self.args.start_max:
-                return None, "starts %.3f m from the vehicle (> %.2f m)" % (d[i0], self.args.start_max)
+            if d[i0] > self.args.start_max and not self._connection_is_clear(self.odom_l, pos[i0]):
+                # The start distance is a PROXY for the property that matters: can the vehicle get from
+                # where it is to where the path begins without crossing a pillar?  MEASURED 2026-10-14 in
+                # the first live Mission B attempts: the planner planned fine but every path started
+                # 3.4-3.6 m away and this gate withheld 150 of them, which from the flight side looks
+                # exactly like "a planner that never plans".  When the straight connection is inside the
+                # arena and clears every pillar by the footprint, the follower can fly it, so the path is
+                # published; otherwise it is still withheld, now with the clearance that failed.
+                return None, ("starts %.3f m from the vehicle (> %.2f m) and the connecting segment is "
+                              "not clear (%s)" % (d[i0], self.args.start_max,
+                                                  self._connection_is_clear(self.odom_l, pos[i0], True)))
         # A path of ONE point is not a path: once the vehicle reaches the end of the spline the
         # projection lands on the last sample and the published Path degenerated to a single pose
         # (MEASURED 2026-10-14: "points per path 1" on the final messages, and an arc length of
