@@ -92,3 +92,66 @@ REPRODUCIBILITY
 planner_manager.cpp + ego_replan_fsm.cpp byte-identical to the live tree; `--revert` pops all 10 patches and
 leaves 0 dirty files at 23a8d5a.  `colcon build --symlink-install --packages-select ego_planner` rc 0, and
 both new format strings are in the binary (`strings .../ego_planner_node`).
+
+THE FLIGHT: AP8-anchor (logs/missionA-AP8-anchor, 2026-10-15 07:38, one sortie)
+------------------------------------------------------------------------------
+THE FIX'S OWN ACCEPTANCE CRITERION IS MET, DECISIVELY.
+
+  tools/plan-start-audit.py over the committed trajectories:
+      |cp0 - LIO track|  median 0.000 m  max 0.000 m     (AP7: 0.342 / 2.334)
+      |spline(0) - LIO|  median 0.000 m  max 0.000 m     (AP7: 0.847 / 2.361)   acceptance <= 0.10 -> PASS
+      curve extent       median 4.645 m  max 5.046 m     (AP7 steady state: 0.19-0.39 m stubs)
+      control points     median 17, duration median 4.20 s
+  from inside ego: 74 commits logged, `PLAN-START: committed spline starts` median 0.000, p90 0.000,
+      max 0.144 m; the anchor line fired 63 times.
+  the adapter's own independent probe: 72 of 72 `ANCHORED at the vehicle`, `NOT ANCHORED` 0 (AP7: 37).
+  Errors no longer compound: the AP7 series 0.541 -> 1.000 -> 2.366 m does not appear at all.
+
+THE MISSION STILL FAILS, FOR A DIFFERENT REASON -- quoted from the same log.
+  0 plans accepted ('switched to a newer plan' = 0), 0 trajectories, WP-INDEX 0 of 4 the whole sortie,
+  abort at t = 76.65 s ("no new trajectory on /planner/traj within 60 s after 0 trajectories").
+  The aircraft never left the pad: truth position span E 0.279 x N 0.359 m horizontal (U 1.846 m is the
+  take-off), so metrics.txt has no traj phase and C2 CANNOT BE SCORED on this sortie (it is n/a, not a pass).
+
+  The refusal itself is unchanged in KIND but not in CAUSE.  Every refusal in BOTH sorties is the arc gate,
+  and the distance printed beside it was context, not the decision:
+      AP7  59 x "refused because: arc N < N m"   (first point printed 2.408 m away)
+      AP8  59 x "refused because: arc N < N m"   (first point printed 0.010-0.204 m away)
+  The start-distance refusal is GONE -- the first DIAG of the sortie, at 16.80 s, already reads
+      "arc 0.412 m, 37 points, first point 0.010 m from the vehicle"
+  -- but what the adapter can publish is still under the consumer's `--min-traj-m 0.50`, because a 4.4 s /
+  5.04 m / 221-sample committed spline reaches `/planner/traj` as 14-53 poses and 0.205-0.412 m of arc.
+
+  WHY: the adapter withholds almost everything ego commits, and the dominant reason is that the spline goes
+  THROUGH a pillar:
+      ego_adapter STATUS: bsplines 63 | paths 10 (traj_dyn 10), withheld 238
+      PATH WITHHELD -- reason changed to: pillar clearance -0.322 m < footprint 0.20 m (at point 32, t_cur 0.76 of 4.40)
+      ... points 32-63, clearance -0.29 .. -0.40 m
+  and ego's own avoid step says so, at volume, in the same log:
+      10468 x [ERROR] [AstarSearch]: Unable to handle the initial or end point, force return!
+      10167 x [ERROR] [check_collision_and_rebound]: ERROR! the drone is in obstacle. This should not happen.
+       9899 x [ERROR] [check_collision_and_rebound]: a star error
+        569 x [ERROR] [initControlPoints]: a star error, force return!
+        508 x [WARN]  [rebound_optimize]: First 3 control points in obstacles! return false
+         40 x [WARN]  [ego_planner_node]: Suddenly discovered obstacles. emergency stop!
+  with [ERROR] [Coord2Index]: Ran out of pool, index=88 100 25, POOL_SIZE=100 100 100 -- the local map pool
+  is exhausted (y = 100 against a size of 100), which is why A* and the ESDF that are supposed to do the
+  avoiding are returning errors instead.  The FSM cycles EMERGENCY_STOP <-> GEN_NEW_TRAJ throughout.
+
+  THIS IS NOT INTRODUCED BY PATCH 0013, AND AP7 SAYS SO: AP7's own first published path also carried
+  "min pillar clearance -0.315 m" (AP8's first: -0.319 m), and AP7 FLEW that one -- it is where AP7's
+  3.70 % footprint intrusion comes from.  What patch 0013 changes is the exposure: with the anchor firing on
+  63 of 74 replans the guide path is a fresh straight min-jerk line from the vehicle to `local_target_pt`
+  instead of a resample of the previous plan, so a broken ESDF now yields colliding FULL-LENGTH splines
+  where before it yielded short stubs 2.4 m away.  The start-offset defect is closed; the next link in the
+  chain is "ego commits splines that penetrate pillars, and its A*/ESDF is erroring at the pad", which is a
+  separate task and is not fixed here.
+
+  crash strings (Segmentation fault / terminate called / std::bad_alloc / core dumped): 0.
+
+ONE DESIGN NOTE FOR WHOEVER TAKES THE NEXT STEP: `kReboundAnchorTol = 0.10 m` is deliberately tighter than
+the aircraft's own tracking lag, so on a healthy flight most replans now take the polynomial branch.  A
+variant that anchors WITHOUT replacing the route -- e.g. resample the previous trajectory from the time
+whose position is nearest the vehicle, rather than from `t_cur` -- would keep the old plan's obstacle
+avoidance AND start at the vehicle, at the cost of more code in the same branch.  That is a design decision,
+not a defect in this patch: as it stands every commit is anchored.
