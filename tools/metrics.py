@@ -133,6 +133,8 @@ def main() -> int:
     ap.add_argument("--corners", default="",
                     help="mission corners in W, 'E,N,U;E,N,U;...' (from worlds/pillars.yaml)")
     ap.add_argument("--bin", default="", help="the FCU's flight log, for A4 (its own XKF1 estimate)")
+    ap.add_argument("--world", default="", help="the world file: C2's pillar clearance is measured "
+                                                "against the same geometry the planner planned against")
     ap.add_argument("--lio-nominal-hz", type=float, default=200.0,
                     help="the LIO's configured output rate; A3's delivery gate is 80%% of it")
     args = ap.parse_args()
@@ -323,6 +325,22 @@ def main() -> int:
                 print("   datum offsets removed: N %+.4f m  E %+.4f m  D %+.4f m%s"
                       % (*off, parked))
                 print("   [%s] A4" % ("PASS" if a4_h_rms <= 50.0 else "FAIL"))
+                # THE QUESTION THIS ANSWERS: is the FCU's estimate simply the LIO's pose, or has the EKF
+                # moved it?  The LIO's own output is put into W with A1's rigid fit (which reproduces the
+                # calibration to A1's own residual), and the EKF's XKF1 is compared with THAT.  MEASURED
+                # 2026-10-14 at 2 m/s: the LIO tracks the truth to 6.3 mm while the EKF is 75 mm from the
+                # truth AND ~70 mm from the pose it was fed -- so the EKF is where the error is made.
+                ia2, ib2 = match(t_al, t_lio)
+                if len(ia2) > 10:
+                    lio_w = (R @ p_lio[ib2].T).T + t
+                    ekf_up = np.column_stack([p_e[ia2][:, 1], p_e[ia2][:, 0], -p_e[ia2][:, 2]])
+                    d = ekf_up - lio_w
+                    do = d.mean(axis=0)
+                    dr = d - do
+                    print("   vs the LIO pose it was fed (same fit A1 uses): horizontal rms %8.2f mm, "
+                          "vertical rms %8.2f mm   (LIO vs truth is A1 above)"
+                          % (float(np.sqrt(np.mean(np.sum(dr[:, :2] ** 2, axis=1)))) * 1e3,
+                             float(np.sqrt(np.mean(dr[:, 2] ** 2))) * 1e3))
             else:
                 print("A4: no samples after take-off in the FCU's log  [FAIL]")
         else:
@@ -418,6 +436,44 @@ def main() -> int:
     print()
     print("B4 landing: 'land' in the phase log -> %s" % ("yes" if "land" in by_phase else "NO"))
     print("   note: the disarm itself is in the FSM's own output and the FCU's BIN, not in this file")
+
+    # ---- Mission B: the two lines that matter when a PLANNER chooses the route (not a fixed rectangle)
+    #
+    # C2 is the one that has to be a measurement and not an opinion: the closest the aircraft's TRUTH
+    # trajectory came to any cylinder's SURFACE, from the same world file the planner planned against.
+    # C1 is where it stopped relative to the last commanded point.  Both are reported for any mission, so
+    # the rectangle keeps its numbers too.
+    if args.world and os.path.exists(args.world):
+        try:
+            import yaml
+            wcfg = yaml.safe_load(open(args.world)) or {}
+            pillars = wcfg.get("pillars", []) or []
+            foot = 0.35
+            m_all = np.flatnonzero(p_tap[:, 2] > 0.30)      # everything above 30 cm: take-off to landing
+            if pillars and len(m_all):
+                q = p_tap[m_all]
+                clr = np.full(len(q), np.inf)
+                for pl in pillars:
+                    d = np.hypot(q[:, 0] - pl["x"], q[:, 1] - pl["y"]) - pl.get("r", 0.3)
+                    inside_z = (q[:, 2] >= pl.get("z0", 0.0) - 0.05) & (q[:, 2] <= pl.get("z1", 4.2) + 0.05)
+                    clr = np.minimum(clr, np.where(inside_z, d, np.inf))
+                clr = clr[np.isfinite(clr)]
+                cmin = float(clr.min())
+                n_inside = int((clr < foot).sum())
+                print()
+                print("C2 obstacle clearance over the whole flight (%d pillars from %s): minimum "
+                      "pillar-surface distance %.3f m;  %d of %d samples inside the %.2f m footprint  [%s]"
+                      % (len(pillars), os.path.basename(args.world), cmin, n_inside, len(clr), foot,
+                         "PASS" if n_inside == 0 else "FAIL"))
+        except Exception as exc:                              # a metrics tool must not die on a typo
+            print("C2 not measured: %s" % exc)
+    last = phases[-1]
+    if last.get("cmd_x"):
+        goal = np.array([float(last["cmd_x"]), float(last["cmd_y"])])
+        end = np.array([float(last["truth_x"]), float(last["truth_y"])])
+        d_goal = float(np.linalg.norm(end - goal))
+        print("C1 final point: the aircraft stopped %.3f m from the last commanded point (%.3f, %.3f)  [%s]"
+              % (d_goal, goal[0], goal[1], "PASS" if d_goal <= 0.30 else "FAIL"))
     print()
     verdict = (h_rms <= 0.020 and v_rms <= 0.050 and not aborted and ex <= 2.10 and ny <= 1.30)
     print("A1/A2/B1 %s   (A1 %.2f mm <= 20, A2 %.2f mm <= 50, B1 E %.3f <= 2.10, N %.3f <= 1.30, "

@@ -425,6 +425,59 @@ class Mission:
         self.pump(seconds, setpoint=target)
         return None
 
+    def follow_path(self):
+        """Follow the published Path itself: look-ahead along the arc, one setpoint per 50 Hz tick.
+
+        This is the consumer half of the interface frozen in PLAN.md 4.1.  The look-ahead distance grows
+        with speed (a fixed one either cuts corners at speed or crawls at a hover), the reference point is
+        the projection of the CURRENT estimate onto the path rather than the nearest sample (otherwise the
+        reference jumps by a whole sample interval, which at 2 m/s and 50 mm spacing is a 25 ms step), and
+        the phase log gets one `traj` phase so the metrics can window the route.
+        """
+        if self.path_l is None:
+            return "no trajectory on %s" % self.args.traj_topic
+        R, t = self.calib.R_WL, self.calib.t_WL
+        p = (R @ self.path_l.T).T + t                     # the path in F
+        seg = np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1)
+        arc = np.concatenate([[0.0], np.cumsum(seg)])
+        total = float(arc[-1])
+        self.log("follow: %d points, %.2f m of trajectory, F box E[%+.2f %+.2f] N[%+.2f %+.2f]"
+                 % (len(p), total, p[:, 0].min(), p[:, 0].max(), p[:, 1].min(), p[:, 1].max()))
+        self.set_phase("traj")
+        t_start = time.monotonic()
+        while True:
+            if self.abort_reason:
+                return self.abort_reason
+            st = self.bridge.state()
+            here = np.array(st.pos)
+            # project onto the path: nearest SEGMENT, not nearest sample
+            d = p[:, :2] - here[:2]
+            mid = 0.5 * (p[:-1, :2] + p[1:, :2])
+            k = int(np.argmin(np.linalg.norm(mid - here[:2], axis=1)))
+            a, b = p[k, :2], p[k + 1, :2]
+            ab = b - a
+            L2 = float(ab @ ab)
+            u = 0.0 if L2 < 1e-12 else float(np.clip((here[:2] - a) @ ab / L2, 0.0, 1.0))
+            s_now = float(arc[k] + u * seg[k])
+            v = float(np.linalg.norm(np.array(st.vel)[:2]))
+            look = float(np.clip(self.args.lookahead_base + self.args.lookahead_gain * v,
+                                 0.20, 2.50))
+            s_tgt = min(s_now + look, total)
+            j = int(np.searchsorted(arc, s_tgt, side="right") - 1)
+            j = max(0, min(j, len(p) - 2))
+            w = 0.0 if seg[j] < 1e-12 else (s_tgt - arc[j]) / seg[j]
+            tgt = p[j] + w * (p[j + 1] - p[j])
+            self.cmd = tgt
+            self.pump(0.05, setpoint=tgt)
+            if time.monotonic() - t_start > self.args.traj_timeout_s:
+                return ("trajectory timed out after %.0f s: %.2f m of %.2f m followed, %.2f m from the "
+                        "end (horizontal)" % (self.args.traj_timeout_s, s_now, total, total - s_now))
+            if total - s_now < self.args.arrive_m and v < self.args.settle_speed:
+                self.log("trajectory complete: %.2f m followed in %.1f s, final speed %.3f m/s, "
+                         "%.3f m from the last point" % (total, time.monotonic() - t_start, v,
+                                                         float(np.linalg.norm(here[:2] - p[-1, :2]))))
+                return None
+
     def legs(self):
         if self.path_l is None:
             return "no trajectory on %s" % self.args.traj_topic
@@ -534,7 +587,17 @@ class Mission:
                     return self._early_abort(
                         "no --calib-file: with --nav-source lio the L->F rotation must come from a "
                         "measured calibration flight (a parked window cannot identify it)")
-                steps.append(self.legs)
+                # WHICH CONSUMER flies the published Path.  `corner` (the flown default, and what every
+                # table in docs/metrics/ was measured with) visits the path's corners one at a time with
+                # position setpoints -- correct for the rectangle, whose corners ARE its geometry.
+                # `path` follows the trajectory itself with a look-ahead point, which is what PLAN.md 4.1
+                # obliges the FSM to do and what a B-spline from ego-planner needs: a planner path has no
+                # corners to visit, and corner-to-corner flying would cut straight through the pillars it
+                # was planned to avoid.
+                if self.args.follow == "path":
+                    steps.append(self.follow_path)
+                else:
+                    steps.append(self.legs)
             steps.append(self.land)
             for step in steps:
                 err = step()
@@ -657,6 +720,16 @@ def main() -> int:
     ap.add_argument("--settle-s", type=float, default=GATES["settle_s"],
                     help="and give up waiting after this long")
     ap.add_argument("--yaw", type=float, default=0.0, help="commanded yaw, rad (0 = North)")
+    ap.add_argument("--follow", default="corner", choices=["corner", "path"],
+                    help="corner: visit the path's corners (the rectangle; every table in docs/metrics/ "
+                         "was flown this way).  path: follow the trajectory itself with a look-ahead "
+                         "point, which is what a planner's B-spline needs (PLAN.md 4.1)")
+    ap.add_argument("--lookahead-base", type=float, default=0.45,
+                    help="path mode: look-ahead distance at zero speed, m")
+    ap.add_argument("--lookahead-gain", type=float, default=0.60,
+                    help="path mode: extra look-ahead per m/s of speed")
+    ap.add_argument("--traj-timeout-s", type=float, default=180.0,
+                    help="path mode: give up if the trajectory is not finished in this long")
     ap.add_argument("--phase-log", default=os.path.join(here, "..", "logs", "phase.csv"))
     args = ap.parse_args()
     # the effective gates go into the run's own log, so a flight's record says what it actually flew

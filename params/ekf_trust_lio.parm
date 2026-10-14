@@ -1,0 +1,48 @@
+# Trust the LIO: every measurement and process noise set to what has actually been MEASURED.
+#
+# User's instruction (2026-10-14): "位置噪声缩小！！类似的噪声统一都调小！！"  The reason it matters is
+# measured, not stylistic: A4 (the FCU's own XKF1 estimate against the truth) is 70-78 mm at 2 m/s while
+# the LIO it is fed is 6.3 mm from the truth and the EKF's output is 77 mm from the very pose it received.
+# With EK3_POSNE_M_NSE = 0.5 m the filter believes each external position is +-0.5 m, i.e. 80x worse than
+# the 6 mm measured, so its Kalman gain for position is ~0.02: it mostly integrates its own IMU and the
+# 10 Hz velocity, and corrects slowly.  Lowering the assumed noise to the measured level is the direct fix.
+#
+# BEFORE -> AFTER, with the measurement each value comes from:
+#   EK3_POSNE_M_NSE  0.50 -> 0.03   LIO horizontal error 6.3 mm at 2 m/s, 4.7 mm at 0.25 m/s (A1)
+#   EK3_VELNE_M_NSE  0.30 -> 0.03   LIO velocity error 8.9 mm/s vs truth (tools/bin-lag.py)
+#   EK3_VELD_M_NSE   0.50 -> 0.05   same source, vertical
+#   EK3_ALT_M_NSE    2.00 -> 0.10   LIO vertical error 4.9-5.1 mm (A2, mean removed)
+#   EK3_YAW_M_NSE    0.50 -> 0.02   LIO yaw error 0.10-0.12 deg rms = 0.002 rad (tools/lio-attitude.py)
+#   VISO_POS_M_NSE   0.20 -> 0.03   the same measured position error, on the visual-odometry path
+#   VISO_VEL_M_NSE   0.10 -> 0.03   the same measured velocity error
+#   VISO_YAW_M_NSE   0.20 -> 0.02   the same measured yaw error
+#   EK3_ACC_P_NSE    0.35 -> 0.10   the simulated IMU's accel noise density is 0.002 m/s^2/sqrt(Hz)
+#   EK3_GYRO_P_NSE  0.015 -> 0.003  its gyro density is 0.005 rad/s/sqrt(Hz)
+#   EK3_ABIAS_P_NSE  0.02 -> 0.002  the simulated accel bias is CONSTANT 0.01 m/s^2 (no random walk)
+#   EK3_GBIAS_P_NSE 0.001 -> 0.0002 the simulated gyro bias is CONSTANT 0.001 rad/s
+#
+# NOT touched, deliberately: EK3_ERR_THRESH (read the source: it is only the lane-switch sensitivity,
+# `libraries/AP_NavEKF3/AP_NavEKF3.cpp:636`, so it does not scale with the noise), the innovation gates
+# (`EK3_POS_I_GATE 500`, `EK3_VEL_I_GATE 500` are absolute: 5 m and 5 m/s), `EK3_VIS_VERR_MAX 0.9` (an
+# absolute 0.9 m/s velocity-innovation reject) and `VISO_DELAY_MS 10` (a DELAY, not a noise -- our chain's
+# measured lag is 22-30 ms at 2 m/s, so 10 ms is not obviously wrong and changing two things at once would
+# make the result unreadable).
+EK3_POSNE_M_NSE 0.03
+EK3_VELNE_M_NSE 0.03
+EK3_VELD_M_NSE 0.05
+EK3_ALT_M_NSE 0.10
+EK3_YAW_M_NSE 0.02
+VISO_POS_M_NSE 0.03
+VISO_VEL_M_NSE 0.03
+VISO_YAW_M_NSE 0.02
+EK3_ACC_P_NSE 0.10
+EK3_GYRO_P_NSE 0.003
+EK3_ABIAS_P_NSE 0.002
+EK3_GBIAS_P_NSE 0.0002
+# THE RATIO THRESHOLDS HAVE TO MOVE WITH THE NOISE, and missing this cost two aborted flights
+# (MEASURED 2026-10-14, arm `followpath`: "the FCU left the mission mode (LAND)").  The EKF's innovation
+# test ratio is innovation / assumed-noise, and the failsafe compares THAT against FS_EKF_THRESH (1.0) --
+# so shrinking the assumed noise 10x makes an honest 50 mm innovation look like a 1.67 ratio and the
+# vehicle lands itself.  Raising the threshold by the same factor keeps the ABSOLUTE tolerance where it
+# was: a 0.5 m innovation still trips it, exactly as before.
+FS_EKF_THRESH 3.0

@@ -36,6 +36,17 @@ MISSION_PARM="${MISSION_PARM:-$REPO/params/phase_a_mission.parm}"
 [ -f "$WORLD" ] || { echo "no world file at $WORLD" >&2; exit 1; }
 eval "$(python3 "$REPO/tools/world-info.py" --world "$WORLD" --shell)"
 MISSION_NAME="$(basename "$MISSION_PARM" .parm)"
+# EKF_PARM selects HOW MUCH THE EKF TRUSTS THE LIO: `params/ekf_trust_lio.parm` sets every measurement and
+# process noise to the value that has been measured, instead of the firmware's aircraft-scale defaults.
+# Empty (the default) keeps the historical configuration, so old arms stay reproducible.
+EKF_PARM="${EKF_PARM:-}"
+EKF_ARG=""
+EKF_NAME="firmware defaults"
+if [ -n "$EKF_PARM" ]; then
+    [ -f "$EKF_PARM" ] || { echo "no EKF parameter file at $EKF_PARM" >&2; exit 1; }
+    EKF_ARG=",$EKF_PARM"
+    EKF_NAME="$(basename "$EKF_PARM" .parm)"
+fi
 
 set +u
 source /opt/ros/humble/setup.bash
@@ -53,7 +64,7 @@ sleep 1
 echo "== revisions under test =="
 echo "   ardupilot : $(git -C "$AP" describe --tags --always) $(git -C "$AP" rev-parse --short HEAD) (tap applied: $(git -C "$AP" --no-pager diff --stat | tail -1 | tr -s ' '))"
 echo "   super_lio : $(git -C /home/fanxin/lio_avoid/src/Super-LIO rev-parse --short HEAD)  liblio $(md5sum "$WS/install/super_lio/lib/liblio.so" | cut -c1-16)"
-echo "   config    : lio/config/livox_360.yaml + apm_lio_only,sitl_basics,${ALT_MODE}_posz,$MISSION_NAME"
+echo "   config    : lio/config/livox_360.yaml + apm_lio_only,sitl_basics,${ALT_MODE}_posz,$MISSION_NAME,$EKF_NAME"
 echo "   world     : $WORLD  ($CORNERS)"
 echo "   geofence  : $GEOFENCE_M m, take-off altitude $TAKEOFF_ALT m"
 echo "   run dir   : $OUT"
@@ -62,7 +73,7 @@ echo
 cd "$OUT" || exit 1
 setsid nohup env LIO_TRUTH_TAP=$TAP "$BIN" --model quad --speedup 1 -I0 \
     --home -35.363261,149.165230,584,0 --serial0 tcp:5760 \
-    --defaults "$REPO/params/apm_lio_only.parm,$REPO/params/sitl_basics.parm,$ALT_PARM,$MISSION_PARM" \
+    --defaults "$REPO/params/apm_lio_only.parm,$REPO/params/sitl_basics.parm,$ALT_PARM,$MISSION_PARM$EKF_ARG" \
     -w > sitl.log 2>&1 &
 SITL=$!
 cd - > /dev/null
@@ -140,7 +151,7 @@ BINFILE=$(ls "$OUT"/logs/*.BIN 2>/dev/null | tail -1)
 # the `=` is not style: a mission whose corners start at a negative coordinate (the 6 x 4 m square is
 # centred on the pad, so they do) made argparse read "-3.0000,..." as another option and refuse to run.
 python3 "$REPO/tools/metrics.py" --tap "$OUT/tap.csv" --odom "$OUT/lio.csv" \
-    --phase "$OUT/phase.csv" --bin "${BINFILE:-}" --corners="$CORNERS" \
+    --phase "$OUT/phase.csv" --bin "${BINFILE:-}" --corners="$CORNERS" --world "$WORLD" \
     | tee "$OUT/metrics.txt"
 MET_RC=${PIPESTATUS[0]}
 
