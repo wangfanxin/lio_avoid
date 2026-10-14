@@ -176,7 +176,7 @@ the FCU's reported pitch must be ~0, never ~45 deg.**
 | 1 | `world ENU <-> FCU local NED` | fixed permutation (+ the FCU frame's yaw = the LIO's) | +East/+North/+Up move tests |
 | 2 | `body FLU <-> FRD` | fixed 180 deg roll | parked attitude test |
 | 3 | `body <-> housing` | fixed 45 deg mount + (0.05, 0, 0.10) | parked scan: 23.5 % floor / 16.6 % ceiling at 0.5 m |
-| 4 | `LIO world <-> world` | known constant (fix the spawn heading) | assert the heading at LIO init from the truth tap |
+| 4 | `LIO world <-> world` | known constant (fix the spawn heading) | assert the heading at LIO init from the truth tap; and since 2026-10-15 the mission's STATION LIST is converted **once, at launch** by `tools/mission-params.py` with the run's measured calibration (round trip printed) instead of per goal at flight time |
 
 ## 1. The frames that exist
 
@@ -314,7 +314,7 @@ crosses frames at all.**
   written in world ENU, `W`) is transformed into `F` **once, at flight start**.  Not per setpoint.
   Fewer crossings, fewer chances to be wrong.
 
-### 7.2 The two places that call it
+### 7.2 The places that call it
 
 ```
 frames.py
@@ -326,10 +326,20 @@ frames.py
       Calib.check_against_construction()                          # <- predicted from the spawn heading
 ```
 
-1. **FSM at start-up**: `mission_f = [w_to_f(c, calib) for c in mission_w]`, then the whole arrival /
+1. **Launch, ONCE, for the whole station list** (`tools/mission-params.py`, added 2026-10-15): the
+   mission's stops are read from the world file and converted `W -> L` **once**, then written into ego's
+   own `fsm/waypoint*` parameters.  This is where the `world_w -> lio_world` conversion happens for
+   everything the planner is told about, so the flight path carries **no per-goal conversion** any more.
+   It uses the SAME `--calib-file` (`_stage/calib.json`) as the FSM and the adapter -- a missing
+   calibration is a hard error, never a guessed one -- and it prints the `W -> L -> W` round trip
+   (measured **0.000000 mm**) and every stop's L coordinates, so a frame error is visible before take-off.
+   The adapter's legacy per-goal conversion (`/goal_pose` in W -> `/move_base_simple/goal` in L) still
+   exists and is **dead code under `fsm/flight_type=2`**; where it is used it prints the round trip and
+   refuses a goal worse than `--roundtrip-mm`.
+2. **FSM at start-up**: `mission_f = [w_to_f(c, calib) for c in mission_w]`, then the whole arrival /
    guidance loop compares the FCU's own `LOCAL_POSITION_NED` (via `ned_to_f`) against `mission_f`.
    The planner, if it is running, works in the LIO's frame, which *is* `F`.
-2. **External-nav publisher** (`LIO -> FCU`): the numbers need **three** fixed conversions and **one**
+3. **External-nav publisher** (`LIO -> FCU`): the numbers need **three** fixed conversions and **one**
    constant -- but **no yaw rotation**.  Spelled out, because "no yaw" was once misread as "no
    conversion at all" (the user asked exactly this, correctly):
 
@@ -356,9 +366,18 @@ frames.py
    roll -- a silent 180-degree-class error.  Hence: one conversion, one owner, and the same move and
    rotation tests run for **both** bridge settings.
 
-3. **What the FSM does at steady state**: nothing that crosses a frame.  The mission is transformed once
-   (item 1) and the loop compares the FCU's own `LOCAL_POSITION_NED`, converted with `ned_to_f`, against
+4. **What the FSM does at steady state**: nothing that crosses a frame.  The mission is transformed once
+   (item 2) and the loop compares the FCU's own `LOCAL_POSITION_NED`, converted with `ned_to_f`, against
    `mission_f`.
+
+**One rule, three appliers -- stated because the constant must be the same one.**  `frames.py` owns the
+conversions and the constants, but the affine step itself (`p_L = R_WL.T @ (p_W - t_WL)` and its inverse)
+is applied by three files: `tools/mission-params.py` (the station list, at launch), `planner/ego_adapter.py`
+(a legacy goal, and the world model its clearance gate uses is in W) and `fsm/mission_fsm.py` (L -> F for
+the setpoints).  MEASURED 2026-10-13 (`STATUS.md` row 44): when two of them used *different* calibrations --
+the PREDICTED one and the MEASURED one, 56.3 mm apart in `t` -- every commanded corner sat 51 mm South of
+the intended one and the aircraft flew faithfully to the wrong place.  All three now take the same
+`--calib-file`, and `mission-params.py` refuses to run without it.
 
 ### 7.3 The calibration, and its self-check
 
@@ -371,6 +390,15 @@ world x-axis is the body's forward axis at initialisation, the vehicle was parke
 heading) and compare.  If measurement and prediction disagree by more than a few degrees, **something
 is wrong with a convention, and the flight does not start.**  This is the cheapest possible detector for
 the whole class of errors discussed in this file, and it costs nothing.
+
+**The measured calibration is a FILE, and it is the one shared artifact of the run.**  It is written for
+each flight as `_stage/calib.json` (`R_WL`, `t_WL`, the sample count and the residual) and read by all
+three appliers in §7.2 -- the launch-time station conversion, the adapter (goal conversion plus the world
+model behind its clearance gate) and the FSM (L -> F).  The rule is therefore not "each node measures its
+own" but "one measurement per flight, one file, and every node that crosses frames must be given it":
+`tools/mission-params.py` and `tools/run-mission.sh` treat a missing file as a hard error rather than
+falling back to the construction prediction, because the prediction and the measurement differ by tens of
+millimetres (56.3 mm measured 2026-10-13) and that difference flew a whole mission 51 mm off.
 
 ### 7.4 The EKF origin, and the lever arm
 

@@ -1,0 +1,245 @@
+================================================================================
+PHASE B ECOSYSTEM REVIEW -- our stack vs the ego-planner / PX4 ecosystem
+================================================================================
+REVIEWED : lio_avoid HEAD 49f8d81 (2026-10-15 00:36:16 +0800, "stations into ego,
+           sequencer into observer mode (the architecture change, wired)")
+EGO      : src/ego-planner-swarm @ 23a8d5a, DIRTY (working-tree diff = our change)
+DATE     : 2026-10-15   SCOPE: one file; no code modified, nothing committed.
+           Another agent edits concurrently -- line numbers are of 49f8d81.
+EVIDENCE : upstream traj_server.cpp + ego_replan_fsm.cpp read verbatim here; our
+           planner/ fsm/ patches/ tools/; scored sorties in logs/.  A row not
+           established says so instead of guessing.
+--------------------------------------------------------------------------------
+ LAYER | ECOSYSTEM (source) | OURS (file:line) | VERDICT | CHANGE
+--------------------------------------------------------------------------------
+
+[L1] TRAJECTORY CONSUMER -- who reads the planner, on what clock
+ECOSYSTEM  ego-planner-swarm ships its own consumer, UNUSED here (traj_server.cpp):
+  :61-68   newest spline REPLACES the old (`traj_.clear()`), then `traj_duration_ =
+           traj_[0].getTimeSum(); receive_traj_ = true;`
+  :166-167 `if (!receive_traj_) return;` -> publishes NOTHING until a plan exists
+  :172     `double t_cur = (time_now - start_time_).seconds();`
+  :178     `if (t_cur < traj_duration_ && t_cur >= 0.0)`
+  :191-202 PAST THE END: `pos = traj_[0].evaluateDeBoorT(traj_duration_);
+           vel.setZero(); acc.setZero(); ... yaw = last_yaw_; pos_f = pos;`
+  :188-189 `double tf = min(traj_duration_, t_cur + 2.0);` (pos_f look-ahead)
+  :244-250 publisher `/position_cmd` depth 50; wall timer 10 ms = 100 Hz
+OURS  ego_adapter.py:646-652,670-694,719-729,807 (B-spline -> nav_msgs/Path at 4 Hz,
+  per-point stamps t0+t_i) -> mission_fsm.py:905 `t0_cur = path_t[0]`, :922
+  `t_rel = (time.time() - t0_cur) + spline_lead`, :869-892 `ref_at()` returns
+  pos/vel/acc by differencing the stamps.
+VERDICT  SAME clock rule (the plan's own start, no rebasing) -- mission_fsm.py:896-904
+  cites traj_server.cpp:172 by hand.  JUSTIFIED DIVERGENCE on one point: we WITHHOLD
+  an expired plan where upstream HOVERS at its last point (:191-202).  Justified only
+  because our last point is often metres away and is not the goal: MEASURED AO2 --
+  last spline committed 75 s into an 82 s flight, re-projected ~250x as a 2-pose
+  0.006 m stub, FSM refused each ("arc 0.006 < 0.10 m"), aborted t=82.48 "no new
+  trajectory ... within 60 s after 1 trajectories (sequencer at stop 2)".
+CHANGE  none.  Keep the withhold.
+
+[L2] YAW
+ECOSYSTEM  traj_server.cpp owns yaw and puts it on the wire (:226-227 cmd.yaw /
+  cmd.yaw_dot), consumed by px4ctrl.  Slew limit is `YAW_DOT_MAX_PER_SEC = PI` =
+  3.14 rad/s (:73-74) -- NOT the 1 rad/s this brief assumed; the code is the
+  authority.  Direction comes from the LOOK-AHEAD point: `dir = evaluateDeBoorT(
+  t_cur + time_forward_) - pos`, `yaw_temp = dir.norm() > 0.1 ? atan2(dir(1),
+  dir(0)) : last_yaw_` (:80-81); launch sets `traj_server/time_forward: 1.0`
+  (launch/single_run_in_sim.launch.py:152); then a 0.5/0.5 LPF on yaw AND yaw_dot
+  (:151-153).
+OURS  mission_fsm.py:254-294 `yaw_command()`.  `--yaw-mode` DEFAULT IS `fixed`
+  (:1349) -> streams `--yaw` unchanged.  `velocity` uses the PLAN's feed-forward
+  velocity azimuth (`atan2(v_e, v_n)`, :289), holds heading below `--yaw-v-min`
+  0.40 m/s (:1356), slews at `--yaw-rate-max` 120 deg/s (:1354) = 2.09 rad/s, and
+  freezes heading near a station (:977-978).
+VERDICT  JUSTIFIED DIVERGENCE -- ours is a superset (velocity azimuth + arrival
+  freeze, no LPF); 2.09 vs 3.14 rad/s is the safe direction.  The DEFAULT is the
+  defect: MEASURED with the heading pinned North the aircraft flew the circle's
+  entry leg 90.4 deg sideways and spent 83 % of the circle >30 deg off its velocity
+  vector (docs/metrics/phaseB-yaw-vs-velocity.txt).
+CHANGE  default `--yaw-mode velocity` (mission_fsm.py:1349; run-mission.sh).  ACCEPT:
+  re-fly the 12-stop circle, p90 of |heading - velocity azimuth| <= 30 deg (today
+  83 % of samples exceed 30 deg).
+
+[L3] WHO OWNS CONTROL, ARMING, LAND, FAILSAFE
+ECOSYSTEM  The planner never talks to the FCU.  traj_server emits
+  `quadrotor_msgs::PositionCommand` with `trajectory_flag = TRAJECTORY_STATUS_READY`
+  and `trajectory_id = traj_id_` (:211-212) plus kx/kv (:253-259, all ZERO here); a
+  separate controller (px4ctrl in ZJU-FAST-Lab/Fast-Drone-250 and its ports) sits
+  between planner and FCU, owns the offboard/arming machine, converts
+  position+velocity to attitude+thrust, and uses trajectory_id to detect a NEW plan.
+  NOT ESTABLISHED: px4ctrl's own file:line -- delegated git research had not
+  returned; treat this paragraph as architecture, not quotation.
+OURS  No controller node.  mission_fsm.py streams ArduPilot GUIDED setpoints itself at
+  50 Hz (:296-368; `--setpoint-mode` pos/posvel/posvelacc :1338; velocity+accel
+  feed-forward :881-892), owns yaw, LAND (land() :1176-1185), the abort path
+  (finish() :1229-1249 -> LAND + 6 s) and the geofence (:424-426, `--geofence-m`,
+  on the TRUTH tap).
+VERDICT  JUSTIFIED DIVERGENCE, forced by the airframe: ArduPilot Copter GUIDED accepts
+  position+velocity local-NED setpoints and runs its own PSC controller, so px4ctrl
+  has no counterpart to port.  Cost: nothing sits between a bad plan and the motors,
+  and there is no `trajectory_id`.  The geofence being TRUTH-fed is SIM-ONLY -- not a
+  real-world safety net.
+CHANGE  (1) Our Path has no trajectory_id; freshness is `path_t[0] != t0_cur`
+  (mission_fsm.py:913-914).  ACCEPT: offline, publish two DIFFERENT plans with the
+  same first-point stamp; show the FSM does not silently keep the old one.
+  (2) Replace the truth geofence with a gate on LIO/FCU state alone.  ACCEPT: one
+  sortie with the tap disconnected where the gate still fires on a runaway.
+
+[L4] GOAL PATH AND STATION SEQUENCE
+ECOSYSTEM  The sequence is BUILT IN: `fsm/flight_type=2` (PRESET_TARGET) +
+  `fsm/waypoint_num` + `fsm/waypointN_x/y/z` (ego_replan_fsm.cpp:37-49) ->
+  readGivenWps() `wp_id_ = 0; planNextWaypoint(wps_[wp_id_])` (:205-206) ->
+  `planGlobalTraj(odom_pos_, odom_vel_, 0, next_wp, 0, 0)` (:224).  Advance is a test
+  ON THE VEHICLE: `(wp_id_ < waypoint_num_ - 1) && (end_pt_ - pos).norm() <
+  no_replan_thresh_` -> `wp_id_++; planNextWaypoint(wps_[wp_id_]);` (pristine
+  :574-580).  At the last waypoint upstream LOOPS FOREVER (`wp_id_ = 0;
+  planNextWaypoint(wps_[wp_id_]);`) then WAIT_TARGET.  MANUAL_TARGET hard-codes the
+  goal altitude -- `Eigen::Vector3d end_wp(msg->pose.position.x,
+  msg->pose.position.y, 1.0);` -- discarding the goal's z; and PRESET_TARGET listens
+  on /traj_start_trigger, not /move_base_simple/goal (:138-147).
+OURS  goal_sequencer.py: stop list from tools/world-circle.py::commanded_points
+  (worlds/forest_b.yaml), latched goal publisher (:169-172), REACHED/MISSED/dwell/
+  timeout (:310-341), `--observe-wp-index` (:106-113, :219-232) mirrors ego's
+  wp_index instead of publishing goals.  mission-params.py:106-115 writes flight_type
+  2 + waypoint_num + waypointN_x/y/z + waypoint_advance_m + dwell, so the sequence
+  now LIVES IN EGO; patches/0008 adds advance/dwell/loop=false/wp_index/start-alt.
+VERDICT  JUSTIFIED DIVERGENCE, right direction: moving the sequence into ego is what
+  upstream already does (mission-params.py:6-14 says so), and `--observe-wp-index` is
+  the correct fix for AO1 below.  Two of our changes beat upstream:
+  `waypoint_loop=false` (upstream can never observe "tour over") and publishing
+  wp_index (upstream's index is invisible outside).  HAZARD: under PRESET_TARGET the
+  adapter's whole goal path (ego_adapter.py:492-584, `--goal-min-alt`,
+  `--roundtrip-mm`, the 1 Hz re-forward) is DEAD -- the patched FSM subscribes
+  /traj_start_trigger in that mode (ego_replan_fsm.cpp:148-156).
+CHANGE  one warning line naming the mode.  ACCEPT: a sortie log with an explicit
+  "observer/PresetTarget: goals are ego's" line and no per-goal line.
+
+[L5] SAFETY GATES, METRICS, THE 0.20 m FOOTPRINT
+ECOSYSTEM  Safety is the planner's own: `fsm/emergency_time` 1.0 s, `fsm/fail_safe`
+  true (:22-24), callEmergencyStop() on collision (:840, :1163).  No independent
+  world-file clearance check, no gate between plan and FCU -- the trust boundary is
+  inside the planner.
+OURS  ego_adapter.py World.clearance() against the world file's ANALYTIC cylinders
+  (:194-209), gates :731-733 and :754-788, contract `--footprint` 0.20 m (:995,
+  user-decided per PLAN.md:85); its docstring obliges three checks (:25-30).
+  mission_fsm.py adds `--min-traj-m` 0.50 (:1401, tested :601-615),
+  `--late-plan-abort-s` 20 (:1423, used :960), the world-clearance hold gate
+  `_hold_is_legal` (:752-772) and the station hold (:830-846).  sortie-score.py:80,102
+  scores C2 as "N of M samples inside the 0.20 m footprint" -- the right denominator,
+  and why the failures below are visible.
+VERDICT  JUSTIFIED DIVERGENCE (an independent gate is what upstream lacks) and it
+  WORKS on the producer: no published plan ever went below 0.20 m.  The CONSUMER is
+  where the contract is lost.  MEASURED missionA-AF1-verifiedhold: 8 of 12 stops
+  REACHED, sequence complete, landed -- and C2 min clearance -0.376 m with 142220 of
+  305081 samples (46.62 %) INSIDE the 0.20 m footprint, 14.03 % inside a pillar,
+  because the FSM held straight at another stop's endpoint (mission_fsm.py:665-687).
+  A gate on the PRODUCER cannot bound a consumer that leaves the plan.  Same code,
+  different hold rule: AG1 -- 1 of 12 stops, C2 min +0.340 m, 0 of 87032 inside
+  (legal, starved, aborted); AE1 -- 1 of 12 stops, C2 min +0.013 m, 79.92 % inside.
+  So "hold always" is unsafe AND "hold never" is unsafe.  `_hold_is_legal` has the
+  right shape, but its threshold IS the contract (0.20 m, no margin).
+CHANGE  hold only when the straight segment clears 0.20 m PLUS the measured tracking
+  error.  ACCEPT: one 12-stop sortie with "0 of N inside the 0.20 m footprint" AND
+  >= 10 of 12 stops REACHED -- no sortie has done both (AF1 gives the stops and fails
+  C2; AG1/AO2 give C2 and fail the stops).
+
+[L6] REPRODUCIBILITY OF THE PLANNER THAT FLEW   *** DEFECT ***
+ECOSYSTEM  N/A -- upstream is a pinned revision, unmodified.
+OURS  The project's rule: "the third-party checkout stays PRISTINE in git, and the
+  whole of our change to it is one file to read and one command to reproduce"
+  (tools/ego-apply-patch.sh:3-7), i.e. patches/0002..0008.
+VERDICT  *** DEFECT: the claim is false as of 49f8d81. ***  Checked by extracting the
+  pinned commit (`git archive 23a8d5a`) and applying the series: patches 0002..0007
+  `git apply` OK; patch 0008 fails `git apply --check` with "patch failed:
+  ego_replan_fsm.cpp:55 / patch does not apply".  Patch 0008 fails ALONE against
+  pristine too, so it is STALE, not mis-ordered: its hunk 1 context
+  (`@@ -55,6 +55,10 @@`, around the waypoint_advance_m/waypoint_loop block) contains
+  lines that exist only AFTER 0008 -- it was regenerated against an
+  already-0008-patched tree.  `patch -p1 --fuzz=3` applies it (hunks 1-4 at
+  55/184/574/603), the signature of stale context.  Consequence: ego-apply-patch.sh
+  is `set -eu` (:12) and ABORTS at 0008, so the documented one-command reproduction
+  cannot rebuild the planner that flew.  The live tree also carries edits the series
+  does not describe: 154 differing lines in ego_replan_fsm.cpp and 323 in
+  ego_replan_fsm.h beyond patches-applied, including the `fsm/waypoint_start_alt` /
+  `waypoint_armed_` gate (ego_replan_fsm.cpp:59-61, :214-244, :618-619, :642-646;
+  header :83-89).
+CHANGE  regenerate 0008 against pristine (or against 0002..0007); add a
+  `git apply --check` of the whole series to a test.  ACCEPT:
+  `tools/ego-apply-patch.sh` exits 0 into a clean /tmp checkout and its
+  `git diff --stat` reproduces 3 files, 536 insertions(+), 155 deletions(-).
+
+[L7] CONTRADICTS A PINNED CONTRACT (docs/PLAN.md section 4)
+ 1. PLAN.md:83 "never publish a path that starts further than 0.5 m from the current
+    state" -- VIOLATED BY DESIGN.  ego_adapter.py:675-694 removed the gate and only
+    prints "NOTE %d: the plan's nearest point is %.3f m from the vehicle (> %.2f) --
+    published anyway"; `--start-max` (:1004) is decorative.  The docstring still
+    promises the opposite (:25-30: "3. starts no further than --start-max ... A path
+    that breaks any of them is NOT published").  CONTRACT BREACH, not a choice --
+    PLAN.md is the register (§6).  The counter-argument on record (:682-688) is real:
+    the FSM no longer joins the path from its first point, so the connector is
+    meaningless.  Then the OBLIGATION should be deleted, not silently unmet.
+ 2. PLAN.md:81 "the planner itself is untouched" -- CONTRADICTED: 361 lines added to
+    ego_replan_fsm.cpp, 321 to ego_replan_fsm.h, 9 to planner_manager.cpp (536
+    insertions / 155 deletions).  §4 step 8's "a ~30-line adapter" is stale.
+ 3. PLAN.md:78 "points at >= 20 Hz; republished at >= 2 Hz" -- SATISFIED: `--dt`
+    0.02 s = 50 Hz (ego_adapter.py:983), `--rate` 4.0 Hz (:982).
+ 4. PLAN.md:77 "nav_msgs/Path (poses with stamps), frame L" -- SATISFIED, and
+    stricter: stamps carry `start_time + t_i` (:807), so clause 3 is checkable from
+    the message alone.
+ 5. PLAN.md:83 "leave >= 0.20 m to any pillar's TRUE surface" -- enforced on the
+    producer (:731-733, :754-788), MEASURED FAILING on the aircraft (AF1 46.62 %
+    inside).  The artifact meets the contract and the flight breaks it; neither
+    PLAN.md nor the gate says which one the promise is about.
+ 6. traj_server.cpp:211-212 `trajectory_flag` / `trajectory_id` -- absent from our
+    interface.  PLAN.md §4.1 chose nav_msgs/Path deliberately (:95-99), so it is a
+    recorded choice, but trajectory_id went with it and nothing replaced it except
+    "the first stamp changed".
+
+--------------------------------------------------------------------------------
+CHANGES I WOULD MAKE FIRST (by risk; max 5)
+--------------------------------------------------------------------------------
+1. Regenerate patches/0008 and gate the series with `git apply --check`.  ACCEPT:
+   `tools/ego-apply-patch.sh` exits 0 into a clean /tmp checkout reproducing 536
+   insertions / 155 deletions over 3 files.
+2. Raise the FSM's hold threshold above the 0.20 m contract (mission_fsm.py:752-772
+   currently passes at exactly 0.20 m).  ACCEPT: one 12-stop sortie with "0 of N
+   inside the 0.20 m footprint" AND >= 10 of 12 stops REACHED simultaneously.
+3. Default `--yaw-mode velocity` (mission_fsm.py:1349; tools/run-mission.sh).  ACCEPT:
+   p90 of |heading - velocity azimuth| <= 30 deg on the circle (today 83 % of samples
+   exceed 30 deg with the nose pinned North).
+4. Reconcile PLAN.md §4.1 obligation 3 with ego_adapter.py:675-694 -- restore the
+   0.50 m gate or delete the clause and the stale docstring at :25-30.  ACCEPT:
+   `grep -n "starts no further" docs/PLAN.md planner/ego_adapter.py` returns a
+   statement that matches the code path.
+5. Make the adapter's goal path announce it is INACTIVE under PRESET_TARGET
+   (ego_adapter.py:492-584 is dead once mission-params.py:106 sets flight_type 2).
+   ACCEPT: a sortie log with one explicit "observer/PresetTarget" line and no
+   per-goal line.
+
+--------------------------------------------------------------------------------
+NOT ESTABLISHED IN THIS REVIEW
+--------------------------------------------------------------------------------
+* px4ctrl (ZJU-FAST-Lab/Fast-Drone-250) + its ROS 2 ports: the controller's own
+  file:line for topic names, yaw ownership, no-plan and trajectory-end behaviour --
+  delegated git research had not returned, so [L3] is architecture, not quotation.
+* Whether "ego-planner + ArduPilot" has prior art: NOT ESTABLISHED, stated as an open
+  question -- an unverified "no prior art" is the most expensive kind of wrong.
+* The cloud wiring in tools/run-planner.sh:147-154 -- opened, not pursued.
+================================================================================
+STATUS UPDATE (appended 2026-10-15 by the documentation pass; the body above is unchanged)
+================================================================================
+[L6] REPRODUCIBILITY -- *** THE DEFECT STANDS, AND IT WAS RE-CHECKED, NOT ASSUMED ***.  patch 0008 was
+regenerated in e8f14c6 (436 lines -> 123) and that regeneration was only reverse-checked against the LIVE
+tree (`git apply --check --reverse`), which says nothing about a pristine one.  Re-run on this tree
+(HEAD 5693d8b) as the acceptance test: a clean clone of 23a8d5a plus `bash tools/ego-apply-patch.sh`
+applies 0002..0007 and then FAILS at 0008 with exactly the errors quoted above
+(`ego_replan_fsm.cpp:55`, `ego_replan_fsm.h:75`), leaving 210 insertions / 8 deletions over 2 files where
+the live tree has 536 insertions / 155 deletions over 3 files.  (Re-run at HEAD 5693d8b; the tree has since
+moved to 7a00430, and `79b4bec` / `7a00430` touch `tools/mission-params.py` and `planner/ego_adapter.py`
+only, so nothing under patches/ changed and the defect stands.)  Cause, read from the committed patch: it
+was generated from a before/after pair taken from a tree that ALREADY had the waypoint-sequence change
+applied, so it now carries only the start-altitude gate (6 hunks; `waypoint_start_alt` 14 hits,
+`wp_index_pub` 0) while its hunk CONTEXT names lines that exist only after the sequence code.  The "ego
+owns the waypoint sequence" half survives only in the live tree and in 8684687's version of the patch.
+ACCEPTANCE unchanged: `tools/ego-apply-patch.sh <clean clone>` exits 0 and `git diff --stat` reproduces
+536 insertions / 155 deletions over 3 files.  See docs/STATUS.md row 59.

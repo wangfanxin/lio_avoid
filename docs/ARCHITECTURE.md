@@ -24,7 +24,7 @@ orphans -- a parameter file that nothing loads is a bug (verifiable by grep).
 ║   │ (its physics)│    │ GPS/baro/comp │    │ GUIDED (position/velocity setpoints)     │ ║
 ║   └──────┬───────┘    └───────────────┘    └────────────────┬─────────────────────────┘ ║
 ║          │ true state                                       │                             ║
-║          └──────────────► TRUTH TAP (sim-only, env-gated) ──┼──► UDP 400 Hz              ║
+║          └──────────────► TRUTH TAP (sim-only, env-gated) ──┼──► UDP 1200 Hz             ║
 ╚═════════════════════════════════════════════════════════════╪═════════════════════════════╝
         ▲ MAVLink 5760/udp:  setpoints 84 @20-50 Hz, commands 76        │ truth: p/v NED,
         │                    telemetry 31/32 @20-50 Hz, 0/253 @1-2 Hz   │ q FRD, gyro, accel
@@ -55,29 +55,35 @@ orphans -- a parameter file that nothing loads is a bug (verifiable by grep).
                 ├──────────────────────────────┬───────────────────────────────┘
                 │                              ▼
                 │            ┌═════════════════════════════════════════════════════════════┐
-║ BOX 4   planner/  = ego-planner (planner_ws) + planner/ego_adapter.py                    ║
+║ BOX 4   planner/  = ego-planner (planner_ws, patches 0002..0008) + ego_adapter.py        ║
 ║   in : /lio/robo/odom 200 Hz (L)    <- state + map centre                                ║
-║        /cloud_registered 10 Hz (L)  <- RELAYED by tools/scan_relay.py from /livox/lidar   ║
-║              + /lio/robo/odom: RAW registered points, publisher QoS RELIABLE              ║
-║        /goal_pose (W) -> the adapter converts to L (same calib as the FSM) and forwards   ║
-║   out: planning/bspline (L) -> the adapter -> /planner/traj (nav_msgs/Path, L, >= 2 Hz)   ║
-║        the adapter REFUSES a path that breaks PLAN 4.1 (arena / 0.20 m footprint / start   ║
-║        distance) and prints which check failed with its number                            ║
+║        /cloud_registered 10 Hz (L)  <- RELAYED by tools/scan_relay.py from /livox/lidar  ║
+║              + /lio/robo/odom: RAW registered points, publisher QoS RELIABLE             ║
+║        $OUT/stations.yaml (L)       <- fsm/waypoint* written ONCE at launch by           ║
+║              tools/mission-params.py: the stations are EGO's, advanced on the VEHICLE    ║
+║        /goal_pose (W) -> L          <- legacy goal path; DEAD under fsm/flight_type=2    ║
+║   out: planning/bspline (L) -> the adapter re-projects it onto the vehicle, gates the    ║
+║              arena and the 0.20 m footprint, WITHHOLDS an expired spline WITH A REASON   ║
+║        /planner/traj (nav_msgs/Path, L)  +  wp_index (Int32, change + 1 Hz keep-alive)   ║
                 │            ╚═══════════════════════════════════╪═════════════════════════╝
-                │                                             │ /planner/traj (L)
+                │                                             │ /planner/traj (L) + wp_index
                 ▼                                             ▼
 ┌══════════════════════════════════════════════════════════════════════════════════════════┐
 ║ BOX 5   fsm/  +  bridge/        scheduling, frames, arrival, FCU communication            ║
 ║   in : local_pose (msg 31/32 -> F, ENU labels, z up) @20-50 Hz      [bridge]              ║
 ║        state (HEARTBEAT/STATUSTEXT or /mavros/state) @1-2 Hz        [bridge]              ║
 ║        /odom 200 Hz (L)            <- for logging and the sanity gate                     ║
-║        /planner/traj 10-50 Hz (L)  <- sampled into setpoints                              ║
+║        /planner/traj 4 Hz (L)      <- run ON THE SPLINE'S OWN CLOCK (per-point stamps)    ║
+║        /mission/stop (Int32)       <- WHERE THE MISSION IS: the observer sequencer        ║
+║                                       mirrors ego's wp_index here (-1 = tour over)        ║
 ║        /lio/status 1 Hz            <- gate: rate, jump, degeneracy                        ║
 ║        worlds/*.yaml mission (W)   <- the mission it schedules                            ║
 ║   out: setpoints (setpoint 84) @20-50 Hz   [bridge: normalised F -> NED on the wire]      ║
 ║        external nav (msg 102/331) @20-100 Hz  [bridge: LIO -> FCU]                        ║
-║        /planner/goal (L) on demand, /fsm/phase (String) on change + 1 Hz                  ║
+║        /fsm/phase (String) on change + 1 Hz                                               ║
 ║        tf: world_w -> odom  (static, from Calib, measured once per flight)                ║
+║   owns: the world-contract hold (the straight segment must clear 0.20 m), the truth-fed   ║
+║         geofence, and a BOUNDED abort that NAMES the mechanism instead of going silent    ║
 ╚═══════════════════════════════════════════════════════════════════════════════════════════╝
 
 ┌───────────────────────────────┐        ┌──────────────────────────────────────────────────┐
@@ -106,7 +112,7 @@ BOX 1 SITL: built-in quad model
         true state at each model step: p, v, q (body->NED), body rates w, specific force a
                  │
                  │ truth tap (sim-only, env-gated, ~30 lines in libraries/SITL/)
-                 │ UDP 400 Hz, ASCII, frame declared in the header: NED / FRD
+                 │ UDP 1200 Hz (the model rate), ASCII, frame declared in the header: NED / FRD
                  ▼
 BOX 2 sim/truth_rx ──► the true pose at the instant a scan starts (interpolated)
                  │
@@ -148,11 +154,11 @@ so `sim/` can fly a scripted square and publish exactly the same topics.  That i
 
 | box | subscribes (rate, frame) | publishes (rate, frame) | owns |
 |---|---|---|---|
-| 1 SITL | MAVLink: setpoints 84, commands 76, external nav 102/331 | MAVLink: 31, 32, 0, 253; truth tap UDP 400 Hz | the true state, the EKF, the modes, the FCU local frame |
-| 2 `sim/` | truth UDP 400 Hz; `/clicked_point` (W); `worlds/*.yaml` | `/livox/lidar` 10 Hz (S), `/livox/imu` 200 Hz (S), `/clock` 100 Hz, `/sim/rtf` 1 Hz, `/sim/truth/odom` 100 Hz (W), `/sim/world/markers` 1 Hz (W) | the world, the sensor models, the clock authority |
-| 3 `lio/` | `/livox/lidar`, `/livox/imu` | `/lio/odom` 10 Hz, `/odom` 200 Hz, `/cloud_registered` 10 Hz (all L), `/lio/map`, `/lio/status`, `/tf` | the LIO world frame L and its odometry |
-| 4 `planner/` | `/odom`, `/cloud_registered`, `/planner/goal` | `/planner/traj` (`nav_msgs/Path`, L) | the trajectory.  **Today that is `rectangle_source` (the square); ego-planner is deferred and arrives as an adapter that publishes the same Path** -- so the FSM cannot tell the difference (`PLAN.md` §4.1) |
-| 5 `fsm/`+`bridge/` | FCU pose/state, `/odom`, `/planner/traj`, `/lio/status`, the mission file | setpoints, external nav, `/planner/goal`, `/fsm/phase` | scheduling, arrival, the gates, every conversion |
+| 1 SITL | MAVLink: setpoints 84, commands 76, external nav 102/331 | MAVLink: 31, 32, 0, 253; truth tap UDP **1200 Hz measured** (one line per model step) | the true state, the EKF, the modes, the FCU local frame |
+| 2 `sim/` | truth UDP 1200 Hz; `/clicked_point` (W); `worlds/*.yaml` | `/livox/lidar` 10 Hz (S), `/livox/imu` 200 Hz (S), `/clock` 100 Hz, `/sim/rtf` 1 Hz, `/sim/truth/odom` 100 Hz (W), `/sim/world/markers` 1 Hz (W) | the world, the sensor models, the clock authority |
+| 3 `lio/` | `/livox/lidar`, `/livox/imu` | `/lio/odom` 10 Hz, `/odom` 200 Hz, `/lio/cloud_world` (the VOXEL map) 10 Hz (all L), `/lio/map`, `/lio/status`, `/tf` | the LIO world frame L and its odometry.  `/cloud_registered` is NOT its output -- `tools/scan_relay.py` builds that from the raw scan |
+| 4 `planner/` | `/lio/robo/odom`, `/cloud_registered` (relayed from the raw scan), `$OUT/stations.yaml` (`fsm/waypoint*`), `/goal_pose` (legacy, dead under `flight_type=2`) | `/planner/traj` (`nav_msgs/Path`, L), `wp_index` (`std_msgs/Int32`), `/planner/stalled` (`std_msgs/Bool`) | the trajectory **and, since patch 0008, the station sequence itself** -- ego advances on a test on the VEHICLE, so nothing outside can run ahead of it |
+| 5 `fsm/`+`bridge/` | FCU pose/state, `/odom`, `/planner/traj`, `/mission/stop` (the observer sequencer's mirror of `wp_index`), `/lio/status`, the mission file | setpoints, external nav, `/fsm/phase` | scheduling, arrival, the gates (world-contract hold, geofence, bounded abort), every conversion |
 | 6 RViz | everything visual | tool topics | nothing (display and world editing only) |
 | 7 `tools/` | everything | logs, tables, figures | the evidence |
 
@@ -168,9 +174,12 @@ Every row is a measured number from a run directory, and the row says where.
 | FCU feed | the FSM re-samples the newest LIO pose in its own 50 Hz loop and streams ODOMETRY (331) in NED/FRD | the FCU's own log: **VISP/VISV at 48.2 Hz**, `tools/bin-extnav-rate.py` |
 | EKF | `EK3_SRC1_POSXY/POSZ/VELXY/VELZ/YAW = 6` (external nav), no GPS, no compass; every measurement and process noise set to the MEASURED value in `params/ekf_trust_lio.parm`, with `FS_EKF_THRESH` raised in proportion (it is a RATIO) | `tools/bin-params.py` on the flight BIN |
 | Mission A | `planner/rectangle_source.py` publishes the rectangle on `/planner/traj`; the FSM visits its **corners** (`--follow corner`, the default and what every table in `docs/metrics/` was measured with) | A1 4.65-4.90 mm, A4 18.6-21.1 mm, 10 of 10 flights, `docs/metrics/stepB-rectangle-20261013.txt` |
-| Mission B | ego-planner (`ZJU-FAST-Lab/ego-planner-swarm`, `ros2_version`, `23a8d5a`, GPL-3.0, + `patches/0002`) plans in L, publishes `planning/bspline`; **`planner/ego_adapter.py`** samples it into `/planner/traj` (Path, frame `lio_world`, ≥2 Hz) and enforces PLAN 4.1's three obligations | offline: 0.4538-0.4978 m clearance, 1 withheld of 68, goal round trip 0.000000 mm, `docs/metrics/ego-offline-*.txt` |
-| the planner's map | the planner declares `/cloud_registered`; **the LIO publishes `/lio/cloud_world`** -- so both the NAME and the QoS needed bridging: `tools/scan_relay.py` registers the RAW scan into L (`/livox/lidar` + `/lio/robo/odom`, no voxels) and publishes it **RELIABLE** | the planner's own log: `offering incompatible QoS. No messages will be sent to it`; `ros2 topic list` never had that name |
-| Mission B flying | the FSM follows the trajectory itself (`--follow path`, look-ahead `1.2 + 0.8 v`), one `traj` phase | 20.00 m in 10.1 s (mean 1.98 m/s), C1 0.075 m, C2 0.574 m, `logs/missionA-followlook-*` |
+| Mission B | ego-planner (`ZJU-FAST-Lab/ego-planner-swarm`, `ros2_version`, `23a8d5a`, GPL-3.0, + `patches/0002..0008`) plans in L and publishes `planning/bspline`; **`planner/ego_adapter.py`** turns it into `/planner/traj` (Path, frame `lio_world`, >= 2 Hz, per-point stamps), RE-PROJECTS it to start at the vehicle, gates the arena and the 0.20 m footprint against the world file, and WITHHOLDS an expired or degenerate spline WITH A REASON | offline: 0.4538-0.4978 m clearance, 1 withheld of 68, goal round trip 0.000000 mm, `docs/metrics/ego-offline-*.txt`; the withhold, from AO2: ONE expired spline re-projected ~250 times as a 2-pose 0.006 m stub that the consumer refused every time, `docs/metrics/phaseB-ao2-arrival-is-the-vehicle-20261014.txt` |
+| the planner's map | the planner declares `/cloud_registered`; **the LIO publishes `/lio/cloud_world`** -- so both the NAME and the QoS needed bridging: `tools/scan_relay.py` registers the RAW scan into L (`/livox/lidar` + `/lio/robo/odom`, no voxels) and publishes it **RELIABLE** | the planner's own log: `offering incompatible QoS. No messages will be sent to it`; the voxel map's own closest point to a pillar was **-0.244 m** (a voxel centre sits up to half a voxel inside), which is why raw points are relayed instead |
+| Mission B flying | the FSM follows each plan ON THE PLAN'S OWN CLOCK (`--follow path` / station loop, no rebasing) and owns the world-contract hold and the bounded abort | AF1: **8 of 12 stops REACHED** and landed, but C2 min **-0.376 m** with **142220 of 305081 samples (46.62 %)** inside the 0.20 m footprint; AO2: **1 of 12 stops**, C2 min **0.259 m** with **0 of 84620** inside, A1 3.16 / A2 3.90 / A4 24.71 mm, C1 0.010 m, ABORT at t = 82.5 s WITH a reason |
+| the station sequence (2026-10-15) | **ego owns it now**: `tools/mission-params.py` writes `fsm/flight_type=2` (PRESET_TARGET) + `fsm/waypoint_num` + `fsm/waypointN_{x,y,z}` + `fsm/waypoint_advance_m` (0.300 m) + `fsm/waypointN_dwell_s` + `fsm/waypoint_loop=false` + `fsm/waypoint_start_alt` (1.28 m) into `$OUT/stations.yaml`, which `tools/run-planner.sh` passes as a second `--params-file`; the stops are the mission's own (`tools/world-circle.py::commanded_points`), converted ONCE into L with the run's measured calibration.  The keys must be FLAT and quoted (`"fsm/waypoint_num": 12`): ROS 2 flattens a nested map to `fsm.waypoint_num`, which the C++ name `fsm/waypoint_num` never matches -- measured once, the file was on disk and ego armed with every key at its default (`sequence armed: -1 waypoints, advance 0.150 m`, `flight_type` still 1) and published nothing (`79b4bec`) | round trip W->L->W **0.000000 mm** and **0.1 mm** agreement with conversions logged IN FLIGHT by the independent implementation (stops 0/1/2 against AO1/AO2's GOAL-TRACE and adapter lines); `fsm/waypoint_advance_m` 0.300 m against AO2's measured **0.273 m** settling distance, because upstream's 0.15 m rule would never advance; **FLOWN** (AP1/AP3) -- `WP-INDEX: sequence armed: 12 waypoints, advance 0.300 m, loop 0` and `starting the tour at z=1.28 m (gate 1.28 m, 12 waypoints)` in ego's own log, with the aircraft settling **0.330 / 0.343 m** from stop 1, i.e. just past the 0.300 m tolerance |
+| the sequencer, demoted to an observer (2026-10-15) | `planner/goal_sequencer.py --observe-wp-index /wp_index` publishes NO goals and no index of its own: it mirrors ego's `wp_index` onto `/mission/stop` (Int32, -1 = tour over) and still SCORES the stops from truth | AO1, driven from outside: the sequencer walked stops 2..11 on its own 45.2 s timeout while the vehicle hovered at stop 1 -- **1 of 12** stops reached.  **FLOWN as an observer** (AP1/AP3): `goal published 0 time(s) for it`, and it still scored `stop 1/12 REACHED in 4.3 s (0.330 / 0.343 m off)` and `stop 2/12 MISSED after 45 s: 2.704 / 2.707 m from it` |
+| the AP series: what the new arrangement produced (2026-10-15) | `STATION_MODE=ego`, the 12-stop circle, `logs/missionA-AP1-stations`, `-AP2-stations`, `-AP3-stations` | AP1/AP3: **1 of 12** stops REACHED (stop 1, 0.330 / 0.343 m off, 5 s dwell), stop 2 MISSED after 45 s at **2.704 / 2.707 m**; **C2 min clearance 0.342 / 0.345 m with 0 of 82934 / 83036 samples inside the 0.20 m footprint**; A1 3.97 / 4.10 mm, A2 3.98 / 3.93 mm, A4 29.75 mm (AP3), C1 0.015 / 0.014 m; B4 landed NO; ABORT at t = 81.14 / 81.22 s.  **The blocker is measured**: ego committed exactly ONE spline (`bspline.csv` = 1 row) and never planned waypoint 2, so the adapter had nothing but an expired plan to withhold and the FSM waited out its 60 s.  AP2 armed the same tour and committed no spline at all |
 | scoring | `tools/metrics.py`: A1/A2 (LIO vs truth), A3 (delivered-stream continuity, bounds anchored to the acceptance table), A4 (the FCU's own `XKF1` vs truth, clock-aligned, best-fit lag reported), B1-B4 (truth vs the commanded geometry), **C1** final point, **C2** minimum truth-to-pillar-surface distance from the world file | every line prints its denominator; `tools/batch-summary.py` aggregates them |
 
 **THREE RULES THIS STACK PAID FOR**, each a class rather than an incident:
@@ -187,6 +196,106 @@ Every row is a measured number from a run directory, and the row says where.
    written "per sample at 200 Hz" for a stream arriving at 33.3 Hz; A4 grows with speed because the velocity
    is ~80 ms old, and its gate now scores the residual at the best-fit lag rather than at zero.
 
+## 4.0b The Mission-B chain, node by node (2026-10-15, rev `7a00430`)
+
+The boxes above are the design intent; this is the chain as it is wired for mission B, in the order the
+data flows, with the file that owns each hop.  A hop that has not been in the air says so.
+
+1. **LIO -> scan relay.**  `sim/lidar_imu.py` -> `/livox/lidar` (10 Hz, S) + `/livox/imu` (200 Hz, S) ->
+   Super-LIO -> `/lio/robo/odom` (200 Hz, L, body pose) and `/lio/odom` (10 Hz, L, WITH velocity).
+   `tools/scan_relay.py` takes the sensor's RAW scan plus the LIO's own body pose and publishes
+   `/cloud_registered` (L, RELIABLE).  The LIO's own `/lio/cloud_world` is its VOXEL map (0.25 m) and is
+   NOT what the planner eats: measured, its closest point to a pillar surface was **-0.244 m**, i.e. a
+   voxel centre sits inside the pillar, and the planner's plans then landed 0.306-0.311 m from the TRUE
+   surface while keeping a comfortable margin in their own thin map.
+2. **ego-planner** (`planner_ws`, `23a8d5a` + `patches/0002..0008`) consumes `/cloud_registered` +
+   `/lio/robo/odom` and -- since patch 0008 -- **its own station list**: `$OUT/stations.yaml` is a second
+   `--params-file` carrying `fsm/flight_type=2` (PRESET_TARGET), `fsm/waypoint_num`,
+   `fsm/waypointN_{x,y,z}`, `fsm/waypoint_advance_m`, `fsm/waypointN_dwell_s`, `fsm/waypoint_loop=false`
+   and `fsm/waypoint_start_alt`.  It plans `odom -> waypoint` per stop and advances on a test ON THE
+   VEHICLE, so nothing outside can run ahead of the aircraft.
+3. **`planning/bspline` -> `planner/ego_adapter.py`.**  The adapter is the only file that includes
+   `traj_utils`.  It (a) samples the spline into a `nav_msgs/Path` in L with per-point stamps
+   `start_time + t_i`, (b) RE-PROJECTS the path to start at the point nearest the vehicle, (c) clamps z to
+   the goal's own altitude, (d) gates the ARENA and the **0.20 m footprint** against the world file's
+   analytic cylinders -- publishing a verified prefix when the violation is in the far half, because
+   withholding the whole path deadlocks the mission -- and (e) WITHHOLDS an expired (`t_cur >= dur`) or
+   degenerate (< 0.10 m of arc left) spline WITH A REASON: counted, printed, and after `--stall-s` of the
+   same trajectory raised on `/planner/stalled`.  Both halves have now been seen: the WITHHOLD fired in
+   AP1/AP3 (`PATH WITHHELD (1): the spline's clock has run out (t_cur 3.900 of 3.900 s, committed 3.9 s
+   ago)`), where the old code published a stub instead -- but the ESCALATION killed the adapter
+   (`NameError: name 'Bool' is not defined`, an import local to the setup function) until `7a00430`, so
+   `/planner/stalled` has never actually reached the wire in flight.
+4. **`/planner/traj` -> `fsm/mission_fsm.py`.**  The consumer runs the plan ON THE PLAN'S OWN CLOCK
+   (`t_rel = now - t0 + spline_lead`, no rebasing), streams ArduPilot GUIDED setpoints at 50 Hz, and owns
+   the decisions: the geofence (TRUTH-fed -- sim only, not a real-world safety net), the world-contract
+   hold (`_hold_is_legal`: the straight segment from the vehicle to the target must clear the 0.20 m
+   contract -- and that threshold IS the contract, with no margin above the tracking error, which is the
+   review's [L5]) and a BOUNDED, ATTRIBUTED abort: a plan whose clock ran out, with the pull illegal, is
+   named at 1 Hz and aborted after `--late-plan-abort-s` = 20 s, instead of the ~490 s silence of AO1.
+5. **the station bookkeeping is an OBSERVER.**  `planner/goal_sequencer.py --observe-wp-index /wp_index`
+   publishes NO goals and no index of its own: it mirrors ego's `wp_index` (`std_msgs/Int32`, published on
+   every change plus a 1 Hz keep-alive, `WP-INDEX: k of N`, -1 = the tour is over) onto `/mission/stop`,
+   and still SCORES the stops from truth.  FLOWN (AP1/AP3): the sequencer's log says `goal published 0
+   time(s) for it` while it scored `stop 1/12 REACHED in 4.3 s (0.330 / 0.343 m off) -- holding 5.0 s`
+   and `stop 2/12 MISSED after 45 s: 2.704 / 2.707 m from it -- moving on`, i.e. it can neither fabricate
+   a goal nor walk the stop list on its own any more.  Under PRESET_TARGET the adapter's whole goal path is
+   DEAD CODE (`ego_adapter.py:492-584`; the station list is the only goal source) -- left in place, unused.
+6. **FCU.**  `bridge/mavlink_impl.py` (the flown path; `BRIDGE=mavros` exists but is unflown) turns the
+   FSM's F-frame numbers into `SET_POSITION_TARGET_LOCAL_NED` and the LIO pose into
+   `ODOMETRY`/`VISION_POSITION_ESTIMATE`; ArduPilot Copter GUIDED runs its own PSC controller and flies
+   it.  No Gazebo anywhere.
+7. **the truth tap is the metric layer, never the control layer.**  `/sim/truth/odom` and the tap CSV
+   feed the metrics (A1-A4, B1-B4, C1, C2), the window segmentation and the geofence; nothing in the
+   control path reads them except that geofence, which is why it is labelled sim-only.
+
+### 4.0c The `traj_server` borrowing boundary (what we took, what we did not, what is still worth taking)
+
+`src/planner/plan_manage/src/traj_server.cpp` is upstream's own consumer, and it is UNUSED here (no PX4,
+no `quadrotor_msgs` controller).  It is the reference for one thing only -- HOW A SPLINE IS CONSUMED --
+and the boundary was drawn deliberately.
+
+**TAKEN, because it is what the spline deserves:**
+* **A new B-spline REPLACES the current one** (`traj_.clear()`), and `receive_traj_` gates all output, so
+  nothing is published until a plan exists.
+* **`t_cur = (now - start_time_).seconds()`** -- the spline is evaluated ON ITS OWN CLOCK, never rebased to
+  the moment the consumer noticed it (`traj_server.cpp:172`; `mission_fsm.py:896-904` cites it by hand).
+  MEASURED BEFORE, sortie AI1: rebasing treated the Path as a GEOMETRIC path to be joined from its first
+  point, which created the "connector" the adapter then had to gate, and starved the mission whenever that
+  straight line crossed a pillar.
+* **Past the end: zero the feed-forward.**  Upstream hovers at the spline's last point with vel/acc zero.
+  The zeroing is essential here too: MEASURED sortie F2, keeping the last segment's velocity meant the
+  aircraft flew on at 2.43 m/s past a stop that had been commanded 4.18 m behind it -- 8 m of flight, out
+  of the arena, until the geofence stopped it.  What we do NOT take is the unconditional hover -- our last
+  point is often metres away and is not the goal -- so a clock that is out AND a pull that is illegal means
+  "hold here", per hop 4 above.
+* **Yaw as a slew-limited direction of travel.**  Upstream takes yaw from the look-ahead point and slews at
+  `YAW_DOT_MAX_PER_SEC = PI` = **3.14 rad/s** (`traj_server.cpp:73-74`; an earlier note in this project
+  said 1 rad/s -- the code is the authority).  Ours uses the plan's own velocity azimuth, freezes the
+  heading near a station and slews at `--yaw-rate-max` 120 deg/s = **2.09 rad/s** (the safe direction).
+  OPEN MEASURED DEFECT: the DEFAULT is still `--yaw-mode fixed`, and with the nose pinned North on the
+  circle **83.4 %** of the moving flight was more than 30 deg off its velocity vector (19878
+  airborne-and-moving samples, `docs/metrics/phaseB-yaw-vs-velocity.txt`).
+
+**NOT TAKEN, and why:**
+* `quadrotor_msgs::PositionCommand` and the separate controller (`px4ctrl` in the Fast-Drone-250 family):
+  ArduPilot Copter GUIDED accepts position/velocity local-NED setpoints and runs its own PSC controller, so
+  there is no counterpart to port.  The cost is recorded rather than hidden: nothing sits between a bad
+  plan and the motors, and the FSM owns arming, the mode, LAND, the abort and (truth-fed) the geofence.
+* The 100 Hz wall timer, the 2 s look-ahead horizon and the `kx/kv` gains: those are properties of that
+  controller, not of the interface.
+
+**STILL WORTH TAKING -- the two this project has not done:**
+1. **Analytic velocity and acceleration from the spline's own derivative splines.**  Upstream asks the
+   B-spline for position, velocity AND acceleration; we sample position only and the FSM differences the
+   per-point stamps (`ref_at`, ~20 ms grid), which is exact enough at 1 m/s and the wrong shape at 3 m/s.
+2. **A `trajectory_flag` / `trajectory_id`-style signal** -- "this is a new plan" and "I have no plan".
+   Freshness here is still "the first point's stamp changed" (`mission_fsm.py:913-914`), so two different
+   plans with the same first stamp are indistinguishable, and a withheld plan is a drop rather than a
+   statement.  Upstream carries `TRAJECTORY_STATUS_READY` plus `traj_id_` and its controller uses
+   `trajectory_id` to detect a new plan; the adapter's `/planner/stalled` is a partial answer to the other
+   half, and only after `--stall-s`.
+
 ## 4. Topics — rate, content, frame
 
 | topic | type | rate | content | frame | producer -> consumer |
@@ -198,19 +307,22 @@ Every row is a measured number from a run directory, and the row says where.
 | `/livox/lidar` | `sensor_msgs/PointCloud2` | **10 Hz requested, 10.004 measured** | 20 000 points; x,y,z,intensity,time; `time` = per-point offset 0..0.099995 s in SECONDS (what `LID_TYPE::VELO16` reads); stamp = scan start | **S** (`mid360_link`) | box 2 -> box 3 |
 | `/livox/imu` | `sensor_msgs/Imu` | **200 Hz requested; 201.8 measured on a full-rate tap, 199.4-200.1 measured in the mission** (the mission's fan-out is decimated to 200 Hz, and the decimation is derived from the rate that arrives, not assumed -- see `STATUS.md` row 37) | gyro rad/s, accel m/s^2, no orientation, in S | **S** | box 2 -> box 3 |
 | `/sim/truth/odom` | `nav_msgs/Odometry` | 100 Hz requested, **92.7 measured** (the node also parses 1200 lines/s; the lossless truth channel is the tap CSV) | true body pose/velocity (never used for control) | **W** | box 2 -> box 7 |
-| `/sim/world/markers` | `visualization_msgs/MarkerArray` | 1 Hz, transient-local | 46 pillars + arena + the mission square (49 markers measured) | **W** | box 2 -> RViz |
+| `/sim/world/markers` | `visualization_msgs/MarkerArray` | 1 Hz, transient-local | the loaded world's pillars + arena + the mission geometry (mission A: 46 pillars, 49 markers measured; mission B's `forest_b.yaml` has 64) | **W** | box 2 -> RViz |
 | `/clicked_point` | `geometry_msgs/PointStamped` | on click | operator adds or moves a pillar | **W** | RViz -> box 2 |
-| `/goal_pose` | `geometry_msgs/PoseStamped` | on click | operator sets the mission-B goal | **W** | RViz -> box 5 |
+| `/goal_pose` | `geometry_msgs/PoseStamped` | on change | the mission's next stop, in W -- published by `planner/goal_sequencer.py` ONLY when it is not in observer mode; under `STATION_MODE=ego` NOTHING publishes it (the stations are inside ego) | **W** | box 4 (sequencer) -> box 4 (adapter) |
 | `/lio/odom` | `nav_msgs/Odometry` | **10 Hz** | ESKF state at scan rate, with the velocity the FSM needs (its twin `/lio/robo/odom` carries only the pose) | **L** | box 3 -> box 7 |
-| `/lio/robo/odom` | `nav_msgs/Odometry` | **200 Hz** (= the IMU rate: published from the IMU callback with the IMU's stamp) | body pose, zero twist | **L** | box 3 -> box 5, recorder |
-| `/odom` | `nav_msgs/Odometry` | **200 Hz** | fitted body pose + velocity, child `base_link` | **L** | box 3 -> box 4, box 5, RViz |
-| `/cloud_registered` | `sensor_msgs/PointCloud2` | **10 Hz** | the scan registered into the map | **L** | box 3 -> box 4, RViz |
+| `/lio/robo/odom` | `nav_msgs/Odometry` | **200 Hz** (= the IMU rate: published from the IMU callback with the IMU's stamp) | body pose, zero twist | **L** | box 3 -> box 4 (the planner's state and map centre), box 5, recorder |
+| `/odom` | `nav_msgs/Odometry` | **200 Hz** | fitted body pose + velocity, child `base_link` | **L** | box 3 -> box 5, RViz |
+| `/cloud_registered` | `sensor_msgs/PointCloud2` | **10 Hz** | the sensor's RAW scan registered into L by `tools/scan_relay.py` (the LIO's own `/lio/cloud_world` is a 0.25 m VOXEL map and is NOT used here), publisher QoS **RELIABLE** to match the planner's subscription | **L** | box 3 + box 7 (relay) -> box 4, RViz |
 | `/lio/map` | `sensor_msgs/PointCloud2` | 0.2-1 Hz | accumulated map (optional) | **L** | box 3 -> RViz |
 | `/lio/status` | `diagnostic_msgs/DiagnosticArray` | 1 Hz | measured scan rate, effective points, degeneracy lambda2/lambda1, map size | -- | box 3 -> box 5 gate, box 7 |
 | `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | 200 Hz / static | `world_w -> odom -> base_link -> mid360_link` | -- | box 5 (static pair), box 3 (odom edge) |
-| `/planner/goal` | `geometry_msgs/PoseStamped` | on demand | next goal, converted W -> L by box 5 | **L** | box 5 -> box 4 |
-| `/planner/traj` | **`nav_msgs/Path`** | points at >= 20 Hz of trajectory time, republished >= 2 Hz | pose + yaw per point (dense enough to difference for velocity/acceleration) | **L** | box 4 (`rectangle_source` today, `ego_adapter` later) -> box 5 |
+| ~~`/planner/goal`~~ | -- | -- | **RETIRED, no publisher**: the goal path is `/goal_pose` (W) -> the adapter -> `/move_base_simple/goal` (L), and under `fsm/flight_type=2` even that path is dead code | -- | -- |
+| `/planner/traj` | **`nav_msgs/Path`** | points at >= 20 Hz of trajectory time, republished >= 2 Hz (4.00 Hz median measured), latched (TRANSIENT_LOCAL, depth 1) | pose + yaw per point, each point stamped with the instant the planner means it to be reached (`start_time + t_i`), dense enough to difference for velocity/acceleration | **L** | box 4 (`rectangle_source` for mission A, `ego_adapter` for mission B) -> box 5 |
 | `/planner/status` | `std_msgs/String` | 1-10 Hz | replan ok/fail + reason | -- | box 4 -> box 5 |
+| `/wp_index` | `std_msgs/Int32` | on change + 1 Hz keep-alive | **ego's own station index** (patch 0008), with a `WP-INDEX: k of N` log line; `-1` = the tour is over | -- | box 4 (ego) -> box 4 (the observer sequencer) |
+| `/mission/stop` | `std_msgs/Int32` | on change | the stop the mission is ON: the observer sequencer mirrors `wp_index` here unchanged, so the FSM's interface is the same but the number comes from the planner that is flying; `-1` = sequence complete | -- | box 4 (sequencer, observer) -> box 5 |
+| `/planner/stalled` | `std_msgs/Bool` | after the SAME trajectory has been withheld for `--stall-s` | "the planner has no plan" -- the adapter's withhold-with-a-reason, escalated | -- | box 4 -> box 5 / the orchestrator |
 | `/fsm/phase` | `std_msgs/String` | on change + 1 Hz | preflight / takeoff / hold / leg1..4 / land / abort | -- | box 5 -> box 7 (window segmentation) |
 | setpoint 84 | MAVLink | **20-50 Hz** | sampled position (+ optional velocity/accel/yaw/yaw_rate), `LOCAL_NED` | F, NED on the wire | box 5 -> box 1 |
 | command 76 | MAVLink | on demand | arm / takeoff / land / mode | -- | box 5 -> box 1 |
@@ -276,7 +388,9 @@ mid360_link (S)
 
 `map` is deliberately not used: the LIO has no loop closure or jumps, so one continuous frame suffices.
 RViz shows pillars (in `world_w`) and the cloud (in `odom`) together because of that static edge.  The FSM
-and the planner never touch W except when the mission is set up.
+and the planner never touch W except when the mission is set up -- and that set-up now includes the
+**station list**, which `tools/mission-params.py` converts W -> L ONCE at launch (`FRAMES.md` §7.2), so no
+goal is converted per goal any more.
 
 ### Displaying it in RViz (asked: does anything need to be unified, will the cloud look tilted?)
 
@@ -334,7 +448,7 @@ bridges report `+2.5`.
 
 | stage | rate | cost | note |
 |---|---|---|---|
-| truth tap | 400 Hz | negligible | one UDP line per model step |
+| truth tap | **1200 Hz measured** (the model rate, `SIM_RATE_HZ`) | negligible | one UDP line per model step |
 | lidar sim | 10 Hz x 20 000 rays | **9.8 ms/scan** (46 pillars) | 103 Hz capable; CPU is enough, GPU not needed |
 | IMU sim | 200 Hz | negligible | generated from the tap |
 | LIO | 10 Hz in, 200 Hz out | ~1 core | dominant cost |
@@ -366,6 +480,16 @@ bridges report `+2.5`.
    velocity, acceleration, angle and rate control -- which is what the planner path uses, so there the rule
    is a hard requirement, not a preference.
 4. **Planner failure**: if `/planner/status` reports failure for > 1 s while moving, hold; if it
-   persists, fly straight to the goal slowly.
-5. **No GPS, no compass**: arming depends on a healthy EKF (origin set, vision healthy).  A transiently
+   persists, fly straight to the goal slowly.  The adapter's own withhold (an expired or degenerate
+   spline) raises `/planner/stalled` once the SAME trajectory has been withheld for `--stall-s` (2 s), so
+   "the planner has no plan" is a signal rather than an absence.  MEASURED AP1/AP3: that escalation was
+   fatal the first time it was reached (`NameError: name 'Bool' is not defined` -- the class was imported
+   inside the setup function, so the adapter DIED while withholding and `/planner/stalled` never reached
+   the wire); fixed in `7a00430` and not yet re-flown.
+5. **The plan's clock is not a target** (added 2026-10-15).  When the plan's clock has run out and the
+   straight segment to its last point does not clear the 0.20 m contract, the consumer HOLDS where it is,
+   names the mechanism at 1 Hz with the clearance number, and ABORTS after `--late-plan-abort-s` (20 s).
+   MEASURED AO1: without the diagnostic and the bound, the FSM sat in exactly this branch for ~490 s
+   printing nothing while the sequencer walked the stop list on its own timeout.
+6. **No GPS, no compass**: arming depends on a healthy EKF (origin set, vision healthy).  A transiently
    invalid FCU state is tolerated for 3 s -- the old project lost 4 of 8 flights to one bad sample.

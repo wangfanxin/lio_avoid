@@ -26,7 +26,7 @@ Every result reports **how many of how many** flights completed and diverged.
 | 8 | **LIO input is a standard `PointCloud2`** with fields x,y,z,intensity,time and `lidar_type: 3` | the Livox `CustomMsg` path in this fork **drops the per-point time**, i.e. no motion compensation; the standard path keeps it |
 | 9 | **Real MID-360 scan pattern** (`scan_mode/mid360.csv`, 200 kHz, non-repetitive) | measured: azimuth 0-360 deg, elevation -7.16..+52.16 deg, 5 us per point |
 | 10 | **GPU ray casting parked**, CPU only | the GPU port failed its own correctness check (2.98 m disagreement); CPU does 20 000 rays in 9.8 ms |
-| 11 | **Rectangle first; ego-planner deferred, its interface built now** (`/planner/traj`, `nav_msgs/Path`, frame L, §4.1) | user's call: prove the whole chain on the square before adding a planner.  Because the rectangle source publishes the *same* interface, mission A also validates the integration point, and adding the planner later cannot change the FSM |
+| 11 | **Rectangle first; ego-planner deferred, its interface built now** (`/planner/traj`, `nav_msgs/Path`, frame L, §4.1) | user's call: prove the whole chain on the square before adding a planner.  Because the rectangle source publishes the *same* interface, mission A also validates the integration point, and adding the planner later cannot change the FSM.  **Carried out 2026-10-14/15**: the planner was added behind that interface and mission B has flown; the obligation that did NOT survive is the 0.50 m start clause (§4.1) |
 | 12 | **Setpoints and telemetry at 50 Hz** (`SR1_POSITION = 50`, `SR1_EXTRA1 = 50`; vision 50 Hz) | 50 Hz is the firmware's own declared ceiling for the stream-rate parameters, and the bridge verifies the achieved rates with its own counters (`ARCHITECTURE.md` §4b) |
 | 13 | **The truth tap speaks SITL-native NED/FRD** | user's call on my recommendation (2026-10-13): the wire format is the simulator's own, and every conversion then lives in one place (`common/frames.py`) |
 | 14 | **The vehicle spawns facing North** | user's call (2026-10-13), `FRAMES.md` §0.3 option 1: FCU local NED is the textbook `(N, E, -U)` permutation with no yaw anywhere, L = W rotated -90 deg.  The spawn condition is **asserted from the truth tap before every take-off**, never assumed |
@@ -52,7 +52,7 @@ Prior evidence that these are achievable: with GPS as the source the accepted co
 11 flights to completion, 0 diverged, A1 4.4-5.9 mm, A2 31-37 mm (a 2.5 deg frame tilt; 1.7-2.2 mm once
 one rotation is allowed), B2 <= 30 mm, B3 <= 68 mm (`docs/figures/round7/`).
 
-## 4. Work order (reordered 2026-10-13: rectangle first, the planner DEFERRED but its interface built now)
+## 4. Work order (reordered 2026-10-13: rectangle first, the planner DEFERRED but its interface built now -- the planner itself has since been built and flown; see §4.1's clause status and step 8)
 
 1. (done) inventory, keep-list, delete the old trees, fresh skeleton
 2. (done) analytic ray casting + world generator + real MID-360 pattern + the 0.5 m scan check
@@ -66,10 +66,15 @@ one rotation is allowed), B2 <= 30 mm, B3 <= 68 mm (`docs/figures/round7/`).
 7. **MISSION A -- the rectangle.**  `planner/rectangle_source` publishes the trajectory interface of
    §4.1; `bridge/` + `fsm/` consume it.  This is the milestone: the square is flown with the LIO as the
    EKF's only source, and A1-A4 / B1-B4 are measured with their counts.
-8. **DEFERRED -- ego-planner.**  Nothing in the FSM changes: a ~30-line adapter turns the planner's
-   B-spline into the same `/planner/traj`, and then mission B is flown through the identical path.
+8. **ego-planner: built, integrated and FLYING -- no longer deferred, and not "a ~30-line adapter".**
+   The adapter (`planner/ego_adapter.py`, ~1000 lines) turns the planner's B-spline into the same
+   `/planner/traj`, and the FSM did not change for it -- but **the planner is not untouched**: it carries
+   `patches/0002..0008` (3 files, **536 insertions / 155 deletions** in the live tree), and the patch
+   series does not reproduce that tree (OPEN DEFECT, `STATUS.md` row 59).  Mission B has flown
+   (2026-10-14/15); what is new and unflown is WHERE THE STATION SEQUENCE LIVES -- the §4.1 clause
+   status block and `STATUS.md` rows 54-58.
 
-### 4.1 The trajectory interface (built now, used by the rectangle, filled by the planner later)
+### 4.1 The trajectory interface (frozen; the rectangle publishes it, and since 2026-10-14 so does ego-planner)
 
 | item | value |
 |---|---|
@@ -77,10 +82,10 @@ one rotation is allowed), B2 <= 30 mm, B3 <= 68 mm (`docs/figures/round7/`).
 | type | **`nav_msgs/Path`** (poses with stamps), frame **L** |
 | rate | points at >= 20 Hz of trajectory time; republished at >= 2 Hz so a consumer that joins late still has a fresh horizon |
 | content | position + yaw per point; dense enough that the FSM can difference it for velocity and acceleration |
-| producer today | `planner/rectangle_source` -- the square from `worlds/pillars.yaml`, corner holds included |
-| producer later | `planner/ego_adapter` -- samples the planner's B-spline into the same Path; the planner itself is untouched |
-| FSM's obligations | sample it at 50 Hz, convert L -> F, stream the setpoints, enforce the safety gates, publish `/fsm/phase` |
-| source's obligations | keep the path inside the arena, leave >= **0.20 m** (`--footprint`) to any pillar's TRUE surface in the world file, and never publish a path that starts further than 0.5 m from the current state |
+| producer today | `planner/rectangle_source` -- the square from `worlds/pillars.yaml`, corner holds included (mission A) |
+| producer later | `planner/ego_adapter` -- samples the planner's B-spline into the same Path (mission B; flying since 2026-10-14).  **The planner itself is NOT untouched**: `patches/0002..0008` change 3 files, **536 insertions / 155 deletions** in the live tree, and the patch SERIES no longer reproduces that tree at all -- OPEN DEFECT, `STATUS.md` row 59 |
+| FSM's obligations | run it on the spline's own clock, sample it at 50 Hz, convert L -> F, stream the setpoints, enforce the safety gates (world-contract hold, truth-fed geofence, bounded abort with the mechanism named), publish `/fsm/phase` |
+| source's obligations | keep the path inside the arena, leave >= **0.20 m** (`--footprint`) to any pillar's TRUE surface in the world file, and **not publish a plan that is finished or too short to fly** (less than the consumer's `--min-traj-m` 0.10 m of arc left, or `t_cur >= duration`): such a spline is WITHHELD, counted, and -- after `--stall-s` of the same trajectory -- raised on `/planner/stalled`, with the numbers in the reason (`9d0e744`) |
 
 **The clearance contract is 0.20 m** (decided by the user 2026-10-14: *"我希望这个值是0.2m"*; it was 0.35 m).
 It is measured by `planner/ego_adapter.World.clearance()` against the world file's analytic cylinders --
@@ -97,6 +102,55 @@ package, and it keeps the *planner's* message types out of the flight-critical c
 only file that will ever include `traj_utils`.  If the planner turns out to need acceleration feed-forward
 that a Path cannot express, the interface can be extended then, with the rectangle source proving the old
 form still works.
+
+**§4.1 clause status, 2026-10-15 (rev `7a00430`; the wiring is `8684687`..`5693d8b`, then two fixes,
+`79b4bec` and `7a00430`)** -- which clauses are in the code, which of them have flown, and which are still
+deferred.  Where a clause above and this block disagree, this block is what the code does.  Every item here
+names its evidence, and anything unflown says so.
+
+* **INTEGRATED AND FLOWN (AP1/AP3, 2026-10-15)**: the **station sequence inside ego** --
+  `fsm/flight_type=2` (PRESET_TARGET) + `fsm/waypoint_num` + `fsm/waypointN_{x,y,z}` +
+  `planNextWaypoint() -> planGlobalTraj(odom -> wp)`, with the three things upstream's version lacks
+  (`fsm/waypoint_advance_m` because AO2 measured the aircraft settling **0.273 m** from a commanded stop
+  against upstream's 0.15 m rule; `fsm/waypointN_dwell_s`; `fsm/waypoint_loop=false`) -- written by
+  `tools/mission-params.py` as FLAT quoted `"fsm/..."` keys and passed by `tools/run-planner.sh` as a
+  second `--params-file`; the **`wp_index` readout** (`std_msgs/Int32`, published on every change plus a
+  1 Hz keep-alive, `WP-INDEX: k of N`, -1 = the tour is over); and the **observer sequencer**
+  (`planner/goal_sequencer.py --observe-wp-index`, which publishes no goals and mirrors ego's index onto
+  `/mission/stop`, while still scoring the stops from truth).  The two flights show all three in their own
+  logs (`WP-INDEX: sequence armed: 12 waypoints, advance 0.300 m, loop 0`; `sequence armed, starting the
+  tour at z=1.28 m (gate 1.28 m, 12 waypoints)`; `goal published 0 time(s) for it`), with **1 of 12** stops
+  REACHED, **C2 0.342-0.345 m and 0 of ~83 000 samples inside the 0.20 m footprint**, and both flights
+  ABORTED at t ~ 81 s.  The blocker is measured and it is NOT this interface: ego committed exactly ONE
+  spline and never planned waypoint 2 (`STATUS.md` rows 54-58).
+* **FLYING** (the interface every scored mission-B sortie used): `/planner/traj` as `nav_msgs/Path` in
+  frame L at >= 2 Hz with per-point stamps carrying the trajectory's own clock; the FSM's 50 Hz
+  consumption ON THE SPLINE'S OWN CLOCK (`t_rel = now - t0 + lead`, no rebasing -- `traj_server.cpp:172`
+  is the reference); the arena and 0.20 m footprint gates on the producer; the WITHHOLD of an expired or
+  degenerate spline with its reason (AP1/AP3 logged it); the world-contract hold and the bounded,
+  attributed abort on the consumer.  Evidence: `docs/metrics/phaseB-*.txt`, the AP run directories,
+  `STATUS.md` rows 46-58.
+* **DEFERRED, and named as such**: (a) a `trajectory_flag` / `trajectory_id`-style "this is a new plan /
+  I have no plan" signal -- freshness is still "the first point's stamp changed", so two different plans
+  with the same first stamp are indistinguishable; (b) analytic velocity and acceleration from the
+  spline's own derivative splines -- the consumer still differences the per-point stamps; (c) the
+  consumer-side hold threshold, which is still the contract itself (0.20 m, no margin above the measured
+  tracking error -- the ecosystem review's [L5]; the AP1/AP3 flights held the contract but advanced only
+  **1 of 12** stops, so the sortie that would close this is the same one as `STATUS.md` item 3's
+  acceptance, not a separate measurement).
+* **DEAD CODE, deliberately left in place**: under `fsm/flight_type=2` nothing reads the adapter's goal
+  path (`planner/ego_adapter.py:492-584` -- the W->L conversion, the latch, the 1 Hz re-forward, the
+  index derivation).  The station list is the only goal source in that mode.
+* **CLAUSE DELETED, CODE AND DOC STILL DISAGREE**: the old third obligation, "never publish a path that
+  starts more than 0.50 m from the vehicle", is gone from `planner/ego_adapter.py` (deleted
+  deliberately on 2026-10-14, `19766bc`) because the zero-velocity setpoints the consumer produced past a
+  finished plan were the actual hazard, and the refusal starved AG1/AH1/AI1 (AI1: ONE stale 0.163 m
+  fragment held 5.97 m away while every fresh plan was refused -- 41 messages, then abort).  What the
+  code does now: it **re-projects** the plan to start at the point nearest the vehicle, and when that
+  point is further than `--start-max` it prints a `NOTE ... published anyway` and publishes --
+  `--start-max` is therefore decorative, and the docstring at `planner/ego_adapter.py:25-30` still
+  promises the deleted rule.  Reconciling the clause and the code is a **pending CODE decision**: either
+  restore the gate, or delete the clause and the docstring.  This documentation pass changed neither.
 
 ### 4.2 PHASE A in detail — truth tap to a flown rectangle (for review, 2026-10-13)
 
@@ -148,8 +202,12 @@ is exactly what T2 measures — it gets fixed in the simulator, never papered ov
 unconditionally), clean upstream Super-LIO built with colcon, and `lio/config/livox_360.yaml` carrying the
 **measured** values from the old tree, adapted to our input: `lidar_type: 3`, `blind 0.3`, `maxrange 40`,
 `ds_size 0.15`, `voxel_fliter_size 0.2`, `filter_rate 1`, `imu_ng 0.005`, `imu_na 0.1`,
-`gravity_norm 9.7946`, `lidar_imu` identity, `odom_robo` = 45° mount + (0.05, 0, 0.10); outputs `/odom`
-(fitted, 200 Hz), `/cloud_registered`, `/lio/status`.
+`gravity_norm 9.80665`, `lidar_imu` identity, `odom_robo` = 45° mount + (0.05, 0, 0.10); outputs `/odom`
+(fitted, 200 Hz), `/cloud_registered`, `/lio/status`.  **The two values that changed from the old tree's
+copy are in the shipped file and marked there**: `lidar_type 1 -> 3` (the standard `PointCloud2` layout the
+clean upstream parses) and `gravity_norm 9.7946 -> 9.80665` (the parameter describes the SENSOR's gravity,
+and SITL measures 9.80665) -- this list said `9.7946` until 2026-10-15 and the code has said `9.80665` since
+S6; `STATUS.md` row 25 is the measurement (`lio/config/livox_360.yaml:10-14,42,48`).
 *Result*: the clean upstream (`f89f48d`, `liblio.so` md5 `e4b82a73cbfb70a7a538514f74936b09`) built with
 the vendored driver and fed by our sensor publishes `/lio/odom` at **10.02 Hz** and `/lio/robo/odom` at
 **199.26 Hz**; parked 40 s the drift is **26.60 mm max / 9.43 mm rms**.  The one thing that made those
@@ -226,9 +284,12 @@ budget is about prose that has to be kept true).
 
 ## 7. Open questions
 
-1. Truth tap frame: SITL-native NED/FRD (my preference -- one conversion, in one module) or ENU/FLU?
-2. Does the planner chain (ego-planner, RViz configs) assume a particular fixed frame or TF shape?  That
-   decides whether the LIO's world is published as `odom` (current plan) or as `map`.
+1. **DECIDED 2026-10-13 -- truth tap frame: SITL-native NED/FRD** (§2 #13; one conversion, in one module).
+2. **ANSWERED by the stack as built -- the LIO's world is published as `lio_world`**: `planner/ego_adapter.py`
+   stamps every Path with that frame, `tools/run-planner.sh` gives the planner the same name
+   (`grid_map/frame_id`) and remaps `odom_world` / `grid_map/odom` to `/lio/robo/odom`, and `map` is
+   deliberately unused (`ARCHITECTURE.md` §5).  What is still not exercised is the TF shape on the
+   planner's side -- the planner consumes topics, not TF.
 3. Should the simulator still carry a compass (never an EKF source) so heading can be cross-checked?
 4. The old `gazebo_apm` tree holds ~40 historical documents (the evidence chain for every number
    reported in rounds 1-7).  It is a frozen archive rather than a living document set: fold it into the
