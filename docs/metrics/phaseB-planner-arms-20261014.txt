@@ -1,0 +1,59 @@
+MISSION B, THE CIRCLE: EVERY PLANNER/MAP ARM FLOWN 2026-10-14, AND WHAT EACH ONE ESTABLISHED
+=========================================================================================
+All arms: same world (worlds/forest_b.yaml, frozen), same contract (our gate 0.20 m, ego inflation 0.10 m
+unless the arm says otherwise), same aircraft (SITL_MODEL=x against FRAME_TYPE 1), same LIO, same FSM
+settings, same 12-stop r = 4 m circle.  Only the column named in "what changed" differs.
+
+arm  what changed                                    stops   refusals  worst plan cut   aircraft-side gates
+---  ----------------------------------------------  ------  --------  ---------------  --------------------------
+B9   (reference, before this round of fixes)         12/12   0         0.200 m          C2 min -0.342 m, 27.8 % under
+K1   inflation 0.10, grid 0.10                       5/12    12        -0.304 m         C2 4.13 % under, A1 6.01 mm
+K3   inflation 0.15, grid 0.10                       2/12    3         +0.191 m         C2 0.69 % under, never inside a pillar
+K2   inflation 0.20, grid 0.10                       2/12    4         -0.270 m         C2 2.38 % under, 51 commits
+L1   grid 0.05, inflation 0.10                       1/12    13        -0.219 m         C2 0 of 90316, min +0.341 m, A1 3.01 mm
+M1   + accumulating map (scan_relay --keep-s 15)     1/12    3         --               C2 74.87 % under, aircraft stuck 70 s
+N1   grid 0.05 + p_hit 0.90                          1/12    13        -0.188 m         C2 0 of 88139, min +0.280 m
+O1   L1 again, with the new instruments              1/12    13        -0.307 m         C2 0 of 88923, min +0.318 m, A1 2.95 mm
+P1   grid 0.05 + lambda_collision 2.0                4/12    4         -0.144 m         C2 3.34 % under (aircraft clipped)
+P2   grid 0.05 + dist0 0.25                          1/12    13        -0.232 m         C2 0 of 91808, min +0.314 m
+Q1   P1 + adapter --min-prefix-m 0.30 -> 0.15        1/12    4         --               C2 0 of 89235, min +0.325 m, 14 truncations
+
+WHAT THE AIRCRAFT SIDE HAS ESTABLISHED (it is no longer the problem)
+  * C1 (final point) 0.007-0.029 m in every grid-0.05 arm; A1 2.8-4.7 mm; A2 3.4-4.6 mm; A3 PASS;
+    A4 11.1-24.9 mm.  The estimate, the follower and the airframe all pass.
+  * The adapter's gate is what keeps C2 clean: in the grid-0.05 arms 0 of ~90 000 airborne samples ever
+    entered the 0.20 m footprint (min clearance +0.28 .. +0.34 m) because every illegal plan was refused.
+    In the two arms where an illegal plan DID get through (K1, P1) the aircraft itself went inside.
+
+WHAT THE PLAN SIDE HAS ESTABLISHED (this is the whole remaining problem)
+  1. The refusals are DEEP penetrations, not near misses: -0.14 .. -0.34 m inside a 0.40 m pillar, while every
+     PUBLISHED plan held the contract (L1: min 0.278 m, median 0.350 m over 51 plans).
+  2. The pillar is NOT unseen and NOT forgotten.  tools/ego-map-audit.py (round 9): all ten O1 refusals cut
+     the SAME pillar (#52 at W 3.76, 0.81 -- the one 0.85 m from stop 1), and ego's own
+     grid_map/occupancy_inflate holds 18363 cells within 0.15 m of its shell in 368 of 368 scans, 7919 of
+     them in the plan's own altitude band z 1.70-2.05, in 367 of 368 scans.
+  3. ego's own checks say the plan is fine: refine_success 121 vs 4, plan_success 121 vs 4,
+     "First 3 control points in obstacles" 0, "the drone is in obstacle" 0.
+  4. The shape is a DIVE AND RETURN (round 10, the clearance profile of refused traj 12): control points 0-3
+     sit at the vehicle with 0.27-0.45 m of clearance, 5-8 dive to -0.307 m inside pillar #52 at 0.6-1.2 m
+     from the plan's own start, 9-14 come back out and continue legally to stop 2.
+  5. The vehicle itself had 0.467 m of room on that side.  So the plan had room to stay legal and did not.
+  6. dist0 = 0.60 m is a SOFT cost and is violated by 0.31 m; the hard margin in ego's map is the 0.10 m
+     inflation, which is SMALLER than our 0.20 m contract.  A soft cost cannot enforce a hard contract.
+  7. lambda_collision 2.0 halves the penetration (-0.307 -> -0.144 m) and cuts refusals 13 -> 4, but the
+     optimizer destabilises ("First 3 control points in obstacles" 136, refine_success=0 274) and the
+     aircraft then clips a pillar itself (C2 3.34 % under).
+  8. dist0 0.25 changes nothing (13 refusals, -0.232 m).  p_hit 0.90 changes nothing.  A 15 s accumulated map
+     makes everything worse (M1).  A finer grid (0.05) makes the aircraft side cleaner but not the plans.
+
+THE DEADLOCK'S LAST LINK (round 11, Q1): the legal prefix of a refused plan is 0.20-0.39 m, and the adapter
+refused prefixes shorter than --min-prefix-m 0.30 m, so the vehicle could not move AT ALL.  Allowing 0.15 m
+produced 14 truncations -- the aircraft moved (C1 0.012 m) and the refusals fell 13 -> 4 -- but the plan
+stream then starved on ego's own start gate instead ("starts 0.853 / 0.865 / 3.450 m from the vehicle
+(> 0.50 m)"), i.e. ego kept offering plans anchored where the vehicle no longer was.
+
+NEXT, in order:
+  (a) the start gate: make the adapter treat a stale republish of the trajectory it already refused as a
+      duplicate (not a new refusal), and check why ego's committed trajectory stays anchored behind the
+      vehicle while it inches forward on truncated prefixes;
+  (b) only then re-run the arm table's best combination (grid 0.05 + lambda_collision 2.0 + short prefix).
