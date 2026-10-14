@@ -1,0 +1,8 @@
+ego-planner -> /planner/traj offline chain test, 5 nominal repetitions
+generated 2026-10-14 12:15:01 by tools/ego-offline-test.py --duration 30
+world worlds/forest_all.yaml (28 pillars r=0.30 m), start W(0,0,2.0) heading N, goal W(3,4,2.0)
+calib /mnt/d/distill_self/_stage/calib.json (MEASURED, the file the consumer uses)
+planner ego-planner-swarm ros2_version 23a8d5a + patches/0002, params/ego_planner_humble.yaml
+
+run   goalErr_m   clrMin_m   startMax   repub_hz    traj_hz     arc_hz   passes  verdict
+1        0.1847     0.4520     0.3948       3.74     0.0021     0.0283        -     PASS

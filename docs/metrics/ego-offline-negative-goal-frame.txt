@@ -1,0 +1,37 @@
+ego-planner offline chain test
+when            2026-10-14 12:11:02
+world           /mnt/d/distill_self/lio_avoid/worlds/forest_all.yaml (28 pillars)
+calib           L->W yaw +90.050 deg, t = [-0.0008 -0.0041 +0.1156] m (n=45589, rms 0.0177 m)
+mutation        goal-frame
+start W         [+0.000 +0.000 +2.000] heading 0.0 deg
+goal W          [+3.000 +4.000 +2.000]
+goal L          [+4.0015 -3.0043 +1.8844]
+W->L->W goal round trip   0.000000 mm
+cloud           20000 points from the start pose, frame lio_world, mid360_pattern.csv (real MID-360, rows 1..20000); re-cast from the moving pose at 4.0 Hz
+published       984 odom / 99 clouds / 23 goals at 50.0 / 4.0 / 1 Hz
+logs            /tmp/ego-offline-1791951023
+
+MEASURED
+  paths published            83
+  frame_id                   ['lio_world']
+  points per path            2 (min 2)
+  republish rate             4.00 Hz median, 1.34 Hz worst (worst gap 0.75 s; 2 gaps over 0.5 s)
+  first path arrived         3.09 s after publishing started
+  trajectory-time spacing    min 0.0131 / median 0.0200 / max 0.0200 s  (= 50.0 Hz worst, 2849 consecutive pairs)
+  arc step between points    median 0.0179 m, max 0.0262 m  (= 38.2 Hz of trajectory time at the planner's 1.0 m/s limit)
+  min pillar clearance       0.3911 m (p05 0.4088) over 2932 points
+  points outside the arena   0
+  start distance to vehicle  median 0.0093 m, worst 0.4739 m (limit 0.50)
+  last path ends at W        [+3.8551 -2.9340 +1.8844]
+  PLAN reaches the goal      6.9875 m away (horizontal 6.9866)
+  adapter goal, back to W    [+4.0015 -3.0043 +1.8844]  = 7076.4526 mm from the requested goal
+  VEHICLE ended at W         [+3.8551 -2.9340 +1.8844]  = 6.9875 m from the goal
+  vehicle path length        4.914 m
+  path length                4.862 m (straight line 4.827 m)
+  path box in W              E[+0.14 +4.00] N[-3.01 -0.11]
+
+VERDICT  FAIL
+   republish rate 1.34 Hz is below the 2.0 Hz the contract requires
+   the last path ends 6.9875 m from the goal (> 0.250 m)
+   the goal the adapter sent maps back to W 7076.453 mm from the requested goal (> 2.000 mm): the adapter's L<-W is not the consumer's
+   the vehicle ended 6.9875 m from the goal (> 0.350 m)

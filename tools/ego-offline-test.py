@@ -325,6 +325,40 @@ def metrics(paths, world, calib, odom_l, goal_w, args, t_pub_start=None, harness
     return m, fails
 
 
+def digest_logs(logdir):
+    """Summarise what the two child nodes said, so one file is the whole evidence.
+
+    The adapter's WITHHOLD counter is the interesting part: the geometric obligations of PLAN.md 4.1
+    are enforced THERE, so a run in which the planner produced a bad path and the adapter refused it
+    looks identical, from `/planner/traj` alone, to a run in which the planner never produced one.
+    """
+    out = []
+    for name in ("planner", "adapter"):
+        p = os.path.join(logdir, "%s.log" % name)
+        if not os.path.exists(p):
+            continue
+        txt = open(p, errors="replace").read()
+        if name == "planner":
+            out.append("  planner  plan_success=%d  replans=%d  segfault=%s"
+                       % (txt.count("plan_success=1"), txt.count("replan "),
+                          "YES" if "Segmentation fault" in txt else "no"))
+        else:
+            reasons = {}
+            for line in txt.splitlines():
+                if "PATH WITHHELD" in line and "): " in line:
+                    k = line.split("): ", 1)[1]
+                    k = k.split(" (at point")[0]
+                    import re
+                    k = re.sub(r"[-+]?\d+\.\d+", "N", k)
+                    reasons[k] = reasons.get(k, 0) + 1
+            rep = [l for l in txt.splitlines() if "REPORT" in l]
+            if rep:
+                out.append("  adapter  %s" % rep[-1].split("REPORT: ")[-1])
+            for k, v in sorted(reasons.items(), key=lambda kv: -kv[1]):
+                out.append("           withheld %3d x  %s" % (v, k))
+    return out
+
+
 # --------------------------------------------------------------------------- driver
 def planner_cmd(args):
     return ["ros2", "run", "ego_planner", "ego_planner_node", "--ros-args",
@@ -346,6 +380,9 @@ def adapter_cmd(args):
          "--rate", str(args.adapter_rate)]
     if args.mutation == "predicted-calib":
         c += ["--mutation", "predicted-calib"]
+    if args.adapter_extra:
+        import shlex
+        c += shlex.split(args.adapter_extra)
     return c
 
 
@@ -413,6 +450,8 @@ def main():
     ap.add_argument("--out", default="")
     ap.add_argument("--no-spawn", action="store_true",
                     help="use nodes that are already running instead of starting them")
+    ap.add_argument("--adapter-extra", default="",
+                    help="extra arguments for planner/ego_adapter.py, e.g. \"--dump-bspline /tmp/b.json\"")
     args = ap.parse_args()
 
     import yaml
@@ -575,6 +614,11 @@ def main():
                  % (m["path_len"], m["straight_len"]))
     lines.append("  path box in W              E[%+.2f %+.2f] N[%+.2f %+.2f]" % m["path_box"])
     lines.append("")
+    dig = digest_logs(logdir)
+    if dig:
+        lines.append("WHAT THE NODES SAID (from their own logs in %s)" % logdir)
+        lines.extend(dig)
+        lines.append("")
     if fails:
         lines.append("VERDICT  FAIL")
         for f in fails:

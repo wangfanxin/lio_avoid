@@ -1,0 +1,16 @@
+ego_adapter's Python B-spline evaluator vs the planner's own C++
+C++ source: /home/fanxin/lio_avoid/src/ego-planner-swarm/src/planner/bspline_opt/src/uniform_bspline.cpp
+revision  : 23a8d5a191711dd65633df689bd00f55d4dea8f9
+
+case                                           order n_ctrl      T [s]    max err [m]
+random order 2, ts=0.20                            2      6      0.800      0.000e+00
+random order 2, ts=0.15                            2     11      1.350      0.000e+00
+random order 3, ts=0.20                            3      7      0.800      0.000e+00
+random order 3, ts=0.15                            3     12      1.350      0.000e+00
+random order 4, ts=0.20                            4      8      0.800      0.000e+00
+random order 4, ts=0.15                            4     13      1.350      0.000e+00
+parameterizeToBspline output                       3     11      1.600      0.000e+00
+a REAL Bspline from the planner                    3     25      6.268      0.000e+00
+
+worst 0.000e+00 m over 8 cases
+VERDICT PASS

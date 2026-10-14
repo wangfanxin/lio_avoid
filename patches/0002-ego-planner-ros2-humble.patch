@@ -1,5 +1,5 @@
 diff --git a/src/planner/plan_manage/src/ego_replan_fsm.cpp b/src/planner/plan_manage/src/ego_replan_fsm.cpp
-index 78d5eee..320c14c 100755
+index 78d5eee..f9234bd 100755
 --- a/src/planner/plan_manage/src/ego_replan_fsm.cpp
 +++ b/src/planner/plan_manage/src/ego_replan_fsm.cpp
 @@ -209,11 +209,17 @@ namespace ego_planner
@@ -11,7 +11,7 @@ index 78d5eee..320c14c 100755
 -          rclcpp::spin_some(node_);
 -          std::this_thread::sleep_for(std::chrono::milliseconds(1));
 -        }
-+        // PATCH 2/2 (patches/0002-ego-planner-ros2-humble.patch).
++        // PATCH B/3 (patches/0002-ego-planner-ros2-humble.patch).
 +        // Upstream busy-waits here with
 +        //     while (exec_state_ != EXEC_TRAJ) { rclcpp::spin_some(node_); sleep(1 ms); }
 +        // which has two independent defects:
@@ -29,7 +29,7 @@ index 78d5eee..320c14c 100755
      if (msg->pose.position.z < -0.1)
        return;
  
-+    // PATCH 3/3 (patches/0002-ego-planner-ros2-humble.patch).
++    // PATCH C/3 (patches/0002-ego-planner-ros2-humble.patch).
 +    // A waypoint that arrives before the first odometry drives the FSM from INIT straight to
 +    // REPLAN_TRAJ, whose planFromCurrentTraj() evaluates `local_data_.position_traj_` -- a B-spline
 +    // that has never been built, i.e. an empty control_points_ -- and SEGFAULTS.
@@ -49,7 +49,7 @@ index 78d5eee..320c14c 100755
      init_pt_ = odom_pos_;
  
 -    Eigen::Vector3d end_wp(msg->pose.position.x, msg->pose.position.y, 1.0);
-+    // PATCH 1/2 (patches/0002-ego-planner-ros2-humble.patch).
++    // PATCH A/3 (patches/0002-ego-planner-ros2-humble.patch).
 +    // Upstream DISCARDS the goal's altitude here and hard-codes z = 1.0 m, so a goal commanded at
 +    // 2.0 m is planned to 1.0 m.  MEASURED 2026-10-14 with the unpatched node: the published path
 +    // ended at W U = +1.1615 m for a goal commanded at U = +2.000 m.  A message with z <= 0 keeps
