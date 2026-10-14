@@ -18,6 +18,27 @@ FAN=14561
 TAG="${1:-$(date +%Y%m%d_%H%M%S)}"
 OUT="/home/fanxin/lio_avoid/logs/missionA-$TAG"
 mkdir -p "$OUT"
+# THE SIMULATED AIRFRAME MUST MATCH THE FIRMWARE'S MIXER.  MEASURED 2026-10-14 (the user's question
+# "等会，你用的不是quad x吗？"): this script passed `--model quad`, and in the simulator's own table
+# (libraries/SITL/SIM_Frame.cpp:414) `quad` is `quad_plus_motors` -- motors at 90/-90/0/180 degrees --
+# while params/sitl_basics.parm:12 sets FRAME_TYPE 1, whose mixer is X (motors at 45/-135/-45/135; the
+# firmware build default, ArduCopter/config.h:630 HAL_FRAME_TYPE_DEFAULT = MOTOR_FRAME_TYPE_X).
+#
+# Upstream never makes that pair: sim_vehicle.py takes the model FROM the frame (`--frame X` -> model X ->
+# default_params/copter-X.parm, which sets FRAME_TYPE 1; `--frame +` -> model +), and
+# AutoTestCopter.default_frame() is "+" for exactly that reason.  With an X mixer driving a plus airframe,
+# a roll demand also produces pitch of the same magnitude, so the attitude loop fights a 1:1 cross-coupling
+# -- what "the aircraft is too heavy, its attitudes answer too late" looks like in the tap.
+# `--model x` is quad_x_motors: motor 1 front-right, 2 rear-left, 3 front-left, 4 rear-right.
+SITL_MODEL="${SITL_MODEL:-x}"
+if grep -q "^FRAME_TYPE[[:space:]]*1" "$REPO/params/sitl_basics.parm" 2>/dev/null; then
+    case "$SITL_MODEL" in
+        x|X) : ;;
+        *) echo "SITL_MODEL=$SITL_MODEL while sitl_basics.parm sets FRAME_TYPE 1 (X): the mixer and the" \
+                "simulated motor geometry would disagree.  Use SITL_MODEL=x or change FRAME_TYPE." >&2
+           exit 1 ;;
+    esac
+fi
 # ALT_MODE selects the altitude source and therefore WHICH PHASE this flight is evidence for:
 #   baro = step (a), the stepping stone (EK3_SRC1_POSZ = 1 / VELZ = 0)
 #   lio  = step (b), the configuration mission A is defined by (POSZ = 6 / VELZ = 6)
@@ -34,14 +55,17 @@ esac
 WORLD="${WORLD:-$REPO/worlds/pillars.yaml}"
 MISSION_PARM="${MISSION_PARM:-$REPO/params/phase_a_mission.parm}"
 [ -f "$WORLD" ] || { echo "no world file at $WORLD" >&2; exit 1; }
-eval "$(python3 "$REPO/tools/world-info.py" --world "$WORLD" --shell)"
 # GEOFENCE_M may be overridden for a mission whose goal is ON the arena wall: the gate exists to catch a
 # runner, and the arena itself is already enforced by the planner's own arena check.
-# THE BUG THIS FIXES: the first version wrote `GEOFENCE_M="${GEOFENCE_M:-$GEOFENCE_M}"` AFTER the eval, which
-# is a no-op -- the eval had already overwritten the caller's value with the world's.  MEASURED 2026-10-14
-# (sortie E1): that flight aborted with "geofence: truth at [+6.00 +5.39]" although GEOFENCE_M=6.25 had been
-# exported, because the gate in force was still the world's 6.00 m.
+#
+# THE CALLER'S VALUE IS CAPTURED *BEFORE* THE EVAL, AND THAT ORDER IS THE WHOLE FIX.  `world-info.py
+# --shell` exports GEOFENCE_M, so anything read after the eval is the world's value, not the caller's.
+# MEASURED 2026-10-14: sortie E1 aborted with "geofence: truth at [+6.00 +5.39]" although GEOFENCE_M=6.25
+# had been exported (its own goal was the corner (6,6), ON the world's 6.00 m wall).  The first repair kept
+# the bug -- it assigned GEOFENCE_M from $GEOFENCE_M *after* the eval -- and sortie F1 (20:36) printed
+# "geofence : 6.00 m" with GEOFENCE_M=6.35 in its environment, which is how the wrong order was caught.
 GEOFENCE_ENV="${GEOFENCE_M:-}"
+eval "$(python3 "$REPO/tools/world-info.py" --world "$WORLD" --shell)"
 if [ -n "$GEOFENCE_ENV" ]; then GEOFENCE_M="$GEOFENCE_ENV"; fi
 MISSION_NAME="$(basename "$MISSION_PARM" .parm)"
 # EKF_PARM selects HOW MUCH THE EKF TRUSTS THE LIO: `params/ekf_trust_lio.parm` sets every measurement and
@@ -74,13 +98,17 @@ echo "   ardupilot : $(git -C "$AP" describe --tags --always) $(git -C "$AP" rev
 echo "   super_lio : $(git -C /home/fanxin/lio_avoid/src/Super-LIO rev-parse --short HEAD)  liblio $(md5sum "$WS/install/super_lio/lib/liblio.so" | cut -c1-16)"
 echo "   config    : lio/config/livox_360.yaml + apm_lio_only,sitl_basics,${ALT_MODE}_posz,$MISSION_NAME,$EKF_NAME"
 echo "   world     : $WORLD  ($CORNERS)"
+echo "   airframe  : sim model '$SITL_MODEL' against FRAME_TYPE 1 (X) -- the two must agree (see SITL_MODEL above)"
+echo "   plan speed: manager/max_vel ${EGO_MAX_VEL:-<from the params file>}"
+printf 'model=%s\nfirmware=FRAME_CLASS 1 / FRAME_TYPE 1 (X mixer)\nrule=the SITL model names the motor geometry; it must match FRAME_TYPE\n' \
+    "$SITL_MODEL" > "$OUT/airframe.txt"
 echo "   sensor    : the SAME world file ($REPO/sim/lidar_imu.py --world \"$WORLD\")"
 echo "   geofence  : $GEOFENCE_M m, take-off altitude $TAKEOFF_ALT m"
 echo "   run dir   : $OUT"
 echo
 
 cd "$OUT" || exit 1
-setsid nohup env LIO_TRUTH_TAP=$TAP "$BIN" --model quad --speedup 1 -I0 \
+setsid nohup env LIO_TRUTH_TAP=$TAP "$BIN" --model "$SITL_MODEL" --speedup 1 -I0 \
     --home -35.363261,149.165230,584,0 --serial0 tcp:5760 \
     --defaults "$REPO/params/apm_lio_only.parm,$REPO/params/sitl_basics.parm,$ALT_PARM,$MISSION_PARM$EKF_ARG" \
     -w > sitl.log 2>&1 &
@@ -172,7 +200,11 @@ if [ "$TRAJ_SOURCE" = "planner" ]; then
     # run-planner.sh's world default is now worlds/forest_b.yaml (mission B's own world), and passing
     # WORLD here keeps the PLANNER's map, its goal and its clearance gate on the SAME file the simulator
     # renders and the metrics judge -- the "two worlds" bug of STATUS.md row 50.
-    WORLD="$WORLD" bash "$REPO/tools/run-planner.sh" > "$OUT/planner.log" 2>&1 &
+    # EGO_MAX_VEL is passed through rather than defaulted here: empty means "let the params file's own
+    # manager/max_vel govern", which is the only way `PARAMS=...fast3.yaml` can actually reach 3 m/s.
+    # MEASURED 2026-10-14: run-planner.sh used to hard-code `-p manager/max_vel:=1.0` on top of
+    # `--params-file` (ROS 2 `-p` wins), so every fast3 attempt flew a 1.0 m/s time allocation.
+    WORLD="$WORLD" EGO_MAX_VEL="${EGO_MAX_VEL:-}" bash "$REPO/tools/run-planner.sh" > "$OUT/planner.log" 2>&1 &
     TRAJ_PID=$!
     sleep 1
     if [ "$STATIONS" -gt 0 ]; then

@@ -34,7 +34,7 @@ pkill -f "super_lio_node" 2>/dev/null
 sleep 1
 
 cd "$OUT" || exit 1
-setsid nohup env LIO_TRUTH_TAP=$TAP_PORT "$BIN" --model quad --speedup 1 -I0 \
+setsid nohup env LIO_TRUTH_TAP=$TAP_PORT "$BIN" --model "${SITL_MODEL:-x}" --speedup 1 -I0 \
     --home -35.363261,149.165230,584,0 --serial0 tcp:5760 -w > sitl.log 2>&1 &
 SITL_PID=$!
 cd - > /dev/null

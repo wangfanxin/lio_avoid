@@ -38,7 +38,14 @@ PARAMS="${PARAMS:-$HERE/params/ego_planner_humble.yaml}"
 GOAL=""
 CHECK=0
 RATE=4.0
-MAXVEL=1.0
+# manager/max_vel -- THE KNOB THAT WAS SILENTLY PINNED, and the answer to "why is every plan capped at ~1.3
+# m/s".  ROS 2 applies `-p NAME:=VALUE` ON TOP of `--params-file`, so the hard-coded `-p manager/max_vel:=$MAXVEL`
+# with MAXVEL=1.0 made the params file's own manager/max_vel a no-op.  MEASURED 2026-10-14: sortie F1's own
+# process list reads `-p manager/max_vel:=1.0` while the params file in force was ego_planner_fast3.yaml
+# (manager/max_vel 3.0, bspline/limit_vel 3.0) -- which is why "0 of 106 plans above 2.0 m/s, plan max 1.28"
+# survived every attempt to raise the speed in the params.  Empty by default now: THE PARAMS FILE GOVERNS.
+# EGO_MAX_VEL=... (or --max-vel V) overrides it deliberately, and the header prints which one is in force.
+MAXVEL="${EGO_MAX_VEL:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --goal) GOAL="$2"; shift 2 ;;
@@ -57,6 +64,7 @@ cat <<EOF
   planner       $PLANNER_WS/install/ego_planner/lib/ego_planner/ego_planner_node
   adapter       $HERE/planner/ego_adapter.py
   params        $PARAMS
+  max_vel       ${MAXVEL:-<not overridden: the params file's manager/max_vel governs>}
   calibration   $CALIB
   world         $WORLD
   goal          ${GOAL:-from $WORLD mission_b.goal}
@@ -118,10 +126,12 @@ fi
 RELAY_PID=$!
 PIDS="$PIDS $RELAY_PID"
 
+VEL_ARGS=()
+if [ -n "$MAXVEL" ]; then VEL_ARGS=(-p "manager/max_vel:=$MAXVEL"); fi
 ros2 run ego_planner ego_planner_node --ros-args \
   -r /cloud_registered:=/lio/cloud_world \
   --params-file "$PARAMS" \
-  -p "manager/max_vel:=$MAXVEL" \
+  "${VEL_ARGS[@]}" \
   -r odom_world:=/lio/robo/odom \
   -r grid_map/odom:=/lio/robo/odom \
   -r grid_map/cloud:=/cloud_registered &

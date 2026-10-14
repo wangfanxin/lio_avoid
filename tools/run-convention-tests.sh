@@ -21,7 +21,7 @@ sleep 0.5
 
 start_sitl() {
     local heading="$1"
-    setsid nohup env LIO_TRUTH_TAP=$TAP_PORT "$BIN" --model quad --speedup 1 -I0 \
+    setsid nohup env LIO_TRUTH_TAP=$TAP_PORT "$BIN" --model "${SITL_MODEL:-x}" --speedup 1 -I0 \
         --home "$LATLON,$heading" --serial0 tcp:5760 -w > "$OUT/sitl_$heading.log" 2>&1 &
     SITL_PID=$!
     for _ in $(seq 1 24); do

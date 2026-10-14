@@ -36,8 +36,10 @@ echo "tap port  : $PORT"
 echo "sim time  : ${SECONDS_SIM} s"
 echo
 
-# --model quad: the built-in quadcopter model.  -w wipes the (SITL) EEPROM so the run starts from
-# firmware defaults rather than from whatever a previous run left behind.
+# --model: the simulator's motor GEOMETRY, which has to match the mixer FRAME_TYPE (1 = X) -- `quad` is
+# quad_plus_motors in libraries/SITL/SIM_Frame.cpp:414, and driving plus geometry with an X mixer couples
+# roll into pitch 1:1.  See the long note in tools/run-mission.sh.  -w wipes the (SITL) EEPROM so the run
+# starts from firmware defaults rather than from whatever a previous run left behind.
 #
 # --serial0 is spelled out WITHOUT `:wait`.  The default is `tcp:5760:wait`, and `wait` makes the
 # firmware block in accept() before the sketch's main loop ever runs -- the model does not step, so
@@ -47,7 +49,7 @@ echo
 # setsid + nohup: the simulator gets its own session, so nothing that happens to this script's
 # process group can take it down quietly, and its console keeps running to sitl.log.
 cd "$OUT" || exit 1
-setsid nohup env LIO_TRUTH_TAP=$PORT "$BIN" --model quad --speedup 1 -I0 --home "$HOME_POS" \
+setsid nohup env LIO_TRUTH_TAP=$PORT "$BIN" --model "${SITL_MODEL:-x}" --speedup 1 -I0 --home "$HOME_POS" \
     --serial0 tcp:5760 ${DEFAULTS:+--defaults "$DEFAULTS"} -w > sitl.log 2>&1 &
 SITL_PID=$!
 cd - > /dev/null

@@ -20,7 +20,7 @@ cd "$OUT" || exit 1
 # first (the SITL log shows a single "Loaded defaults from ..." line, and the FCU reported
 # EK3_SRC1_POSXY 3 (GPS) / VISO_TYPE 0 / GUID_OPTIONS 0 while claiming to have loaded the baro file).
 # The parameter check below is what caught it.  One comma-separated list is the documented form.
-setsid nohup env LIO_TRUTH_TAP=$TAP "$BIN" --model quad --speedup 1 -I0 \
+setsid nohup env LIO_TRUTH_TAP=$TAP "$BIN" --model "${SITL_MODEL:-x}" --speedup 1 -I0 \
     --home -35.363261,149.165230,584,0 --serial0 tcp:5760 \
     --defaults "$REPO/params/apm_lio_only.parm,$REPO/params/sitl_basics.parm,$REPO/params/phase_a_posz_baro.parm" \
     -w > sitl.log 2>&1 &
