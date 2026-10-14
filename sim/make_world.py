@@ -123,8 +123,16 @@ fake_truth:
 """
 
 
-def generate(cells, cell, radius, seed, min_gap, clear_rect, pad_clearance):
-    """Integer-boundary grid; returns (pillars, dropped_for_clear, dropped_for_pad, dropped_for_gap)."""
+def generate(cells, cell, radius, seed, min_gap, clear_rect, pad_clearance,
+             clear_box=None, clear_band=0.0):
+    """Integer-boundary grid; returns (pillars, dropped_for_clear, dropped_for_pad, dropped_for_gap).
+
+    `clear_box` is a METRIC rectangle (x0, x1, y0, y1) and `clear_band` an extra margin around it: any
+    pillar whose centre lies inside the box grown by the band is dropped.  The cell-aligned `clear_rect`
+    cannot express "the 6 x 4 m mission square plus a margin" on a 2 m grid, because its granularity is a
+    whole cell -- MEASURED 2026-10-14, user's spec: 12 x 12 m of 2 x 2 m cells (36 pillars of r = 0.3 m),
+    a 6 x 4 m flight square, and the pillars near the square removed.
+    """
     rng = random.Random(seed)
     half = cells // 2                      # centres at +-0.5 ... +-(half-0.5)
     centres = [(i + 0.5) * cell for i in range(-half, half)]
@@ -142,6 +150,17 @@ def generate(cells, cell, radius, seed, min_gap, clear_rect, pad_clearance):
                     # a pillar is dropped if its SURFACE would enter the rectangle: the reserved
                     # region is free space, not just free of centres
                     if (x0 - radius <= px <= x1 + radius) and (y0 - radius <= py <= y1 + radius):
+                        here = "clear"
+                        break
+                if clear_box:
+                    bx0, bx1, by0, by1 = clear_box
+                    dx = max(bx0 - px, 0.0, px - bx1)
+                    dy = max(by0 - py, 0.0, py - by1)
+                    # SURFACE-aware, like the clear_rect rule above: the band is the free space left
+                    # between the pillar's surface and the square, not between its centre and the square.
+                    # MEASURED 2026-10-14: with a centre-based band the 2 m grid still left a pillar
+                    # 0.428 m from the square, i.e. 78 mm outside the 0.35 m half footprint.
+                    if math.hypot(dx, dy) < clear_band + radius:
                         here = "clear"
                         break
                 if math.hypot(px, py) - radius < pad_clearance:
@@ -225,6 +244,12 @@ def main() -> int:
                     help="minimum pillar-to-pillar SURFACE gap (the corridor the vehicle needs)")
     ap.add_argument("--clear-rect", default="0,3,0,2",
                     help="X0,X1,Y0,Y1 kept free of cylinders (mission A); empty string to disable")
+    ap.add_argument("--clear-box", default="",
+                    help="X0,X1,Y0,Y1 in METRES: the mission square's own rectangle; together with "
+                         "--clear-band this removes the pillars near the square")
+    ap.add_argument("--clear-band", type=float, default=0.0,
+                    help="free space left between the square and a pillar's SURFACE; a pillar whose "
+                         "surface would enter that band is dropped")
     ap.add_argument("--pad-clearance", type=float, default=0.8,
                     help="free radius around the origin, since with integer boundaries the pad sits "
                          "on a corner of four cells")
@@ -241,20 +266,33 @@ def main() -> int:
                          "see the comment in the emitted file and docs/FRAMES.md 0.3")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                   "..", "worlds", "pillars.yaml"))
+    # The square's size is a parameter because it decides the SPEED the mission can fly: accelerating to
+    # and braking from v needs v^2/(2*a) at each end of every leg, so a 2.0 m leg cannot hold 2 m/s at
+    # any sane acceleration (0.8 m + 0.8 m of the 2.0 m leg is accel and brake).  A faster mission needs a
+    # bigger clear rectangle, hence a bigger arena -- and a clearance to the pillars at least as large as
+    # the braking distance, or the geometry only *looks* safe.
+    ap.add_argument("--square-w", type=float, default=2.0, help="mission square, East extent, m")
+    ap.add_argument("--square-h", type=float, default=1.2, help="mission square, North extent, m")
     args = ap.parse_args()
 
     clear = tuple(float(v) for v in args.clear_rect.split(",")) if args.clear_rect else None
+    clear_box = tuple(float(v) for v in args.clear_box.split(",")) if args.clear_box else None
     pillars, nc, np_, ng = generate(args.cells, args.cell, args.radius, args.seed, args.min_gap,
-                                    clear, args.pad_clearance)
+                                    clear, args.pad_clearance, clear_box, args.clear_band)
     # the square is centred in the clear rectangle, so every leg keeps a margin wider than the
     # vehicle: starting it at the pad put one leg exactly on the rectangle boundary (measured
     # clearance 0.200 m, less than the 0.35 m half footprint)
-    if clear:
-        sx0 = (clear[0] + clear[1]) / 2.0 - 1.0
-        sy0 = (clear[2] + clear[3]) / 2.0 - 0.6
+    # the square is centred in the reserved region, so every leg keeps a margin wider than the vehicle:
+    # starting it at the pad put one leg exactly on the boundary (measured clearance 0.200 m, less than
+    # the 0.35 m half footprint).  `--clear-box` (metric) wins over `--clear-rect` (cell-aligned) when
+    # both are given, because it is the one that describes the square itself.
+    centre_box = clear_box if clear_box else clear
+    if centre_box:
+        sx0 = (centre_box[0] + centre_box[1]) / 2.0 - args.square_w / 2.0
+        sy0 = (centre_box[2] + centre_box[3]) / 2.0 - args.square_h / 2.0
     else:
         sx0, sy0 = 0.0, 0.0
-    square = (sx0, sy0, sx0 + 2.0, sy0 + 1.2)
+    square = (sx0, sy0, sx0 + args.square_w, sy0 + args.square_h)
     halfw = args.cells * args.cell / 2.0
     rect_txt = ("%g,%g,%g,%g" % clear) if clear else "none"
     ncell = int((clear[1] - clear[0]) / args.cell) * int((clear[3] - clear[2]) / args.cell) if clear \

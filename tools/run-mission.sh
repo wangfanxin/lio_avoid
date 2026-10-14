@@ -27,6 +27,15 @@ case "$ALT_MODE" in
     lio)  ALT_PARM="$REPO/params/phase_a_posz_lio.parm" ;;
     *) echo "ALT_MODE must be baro or lio, not '$ALT_MODE'" >&2; exit 1 ;;
 esac
+# WORLD and MISSION_PARM select the mission itself: the same pipeline flies the slow 2.0 x 1.2 m square in
+# the dense forest (default) or the fast 6.0 x 4.0 m square in the sparse one, and every geometric number
+# -- the trajectory, the corner reference the metrics judge against, the geofence -- comes from the world
+# file through tools/world-info.py, so a reference cannot drift from what is flown (STATUS.md row 44).
+WORLD="${WORLD:-$REPO/worlds/pillars.yaml}"
+MISSION_PARM="${MISSION_PARM:-$REPO/params/phase_a_mission.parm}"
+[ -f "$WORLD" ] || { echo "no world file at $WORLD" >&2; exit 1; }
+eval "$(python3 "$REPO/tools/world-info.py" --world "$WORLD" --shell)"
+MISSION_NAME="$(basename "$MISSION_PARM" .parm)"
 
 set +u
 source /opt/ros/humble/setup.bash
@@ -44,14 +53,16 @@ sleep 1
 echo "== revisions under test =="
 echo "   ardupilot : $(git -C "$AP" describe --tags --always) $(git -C "$AP" rev-parse --short HEAD) (tap applied: $(git -C "$AP" --no-pager diff --stat | tail -1 | tr -s ' '))"
 echo "   super_lio : $(git -C /home/fanxin/lio_avoid/src/Super-LIO rev-parse --short HEAD)  liblio $(md5sum "$WS/install/super_lio/lib/liblio.so" | cut -c1-16)"
-echo "   config    : lio/config/livox_360.yaml + apm_lio_only,sitl_basics,${ALT_MODE}_posz,phase_a_mission"
+echo "   config    : lio/config/livox_360.yaml + apm_lio_only,sitl_basics,${ALT_MODE}_posz,$MISSION_NAME"
+echo "   world     : $WORLD  ($CORNERS)"
+echo "   geofence  : $GEOFENCE_M m, take-off altitude $TAKEOFF_ALT m"
 echo "   run dir   : $OUT"
 echo
 
 cd "$OUT" || exit 1
 setsid nohup env LIO_TRUTH_TAP=$TAP "$BIN" --model quad --speedup 1 -I0 \
     --home -35.363261,149.165230,584,0 --serial0 tcp:5760 \
-    --defaults "$REPO/params/apm_lio_only.parm,$REPO/params/sitl_basics.parm,$ALT_PARM,$REPO/params/phase_a_mission.parm" \
+    --defaults "$REPO/params/apm_lio_only.parm,$REPO/params/sitl_basics.parm,$ALT_PARM,$MISSION_PARM" \
     -w > sitl.log 2>&1 &
 SITL=$!
 cd - > /dev/null
@@ -111,11 +122,11 @@ if [ "$NAV_SOURCE" = "lio" ]; then
     # with the predicted one here and the measured one there, every commanded corner moved 51 mm in N
     TRAJ_CALIB_ARG="--calib-file $CALIB"
 fi
-python3 "$REPO/planner/rectangle_source.py" $TRAJ_CALIB_ARG > "$OUT/traj.log" 2>&1 &
+python3 "$REPO/planner/rectangle_source.py" --world "$WORLD" $TRAJ_CALIB_ARG > "$OUT/traj.log" 2>&1 &
 TRAJ_PID=$!
 sleep 1
 python3 "$REPO/fsm/mission_fsm.py" --nav-source "$NAV_SOURCE" $CALIB_ARG \
-    --tap-port 0 --alt 2.0 --hold 3.0 ${FSM_ARGS:-} \
+    --tap-port 0 --alt "$TAKEOFF_ALT" --hold 3.0 --geofence-m "$GEOFENCE_M" ${FSM_ARGS:-} \
     --phase-log "$OUT/phase.csv" > "$OUT/fsm.log" 2>&1
 FSM_RC=$?
 cat "$OUT/fsm.log"
@@ -125,9 +136,11 @@ sleep 1
 echo
 echo "== metrics =="
 BINFILE=$(ls "$OUT"/logs/*.BIN 2>/dev/null | tail -1)
+# the corner reference comes from the SAME world file the trajectory was built from.  `--corners=` with
+# the `=` is not style: a mission whose corners start at a negative coordinate (the 6 x 4 m square is
+# centred on the pad, so they do) made argparse read "-3.0000,..." as another option and refuse to run.
 python3 "$REPO/tools/metrics.py" --tap "$OUT/tap.csv" --odom "$OUT/lio.csv" \
-    --phase "$OUT/phase.csv" --bin "${BINFILE:-}" \
-    --corners "0.5,0.4,2.0;2.5,0.4,2.0;2.5,1.6,2.0;0.5,1.6,2.0" \
+    --phase "$OUT/phase.csv" --bin "${BINFILE:-}" --corners="$CORNERS" \
     | tee "$OUT/metrics.txt"
 MET_RC=${PIPESTATUS[0]}
 

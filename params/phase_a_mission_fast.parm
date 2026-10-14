@@ -1,0 +1,28 @@
+# Mission A, FAST arm: the same pipeline at 2 m/s instead of 0.25 m/s.
+#
+# WHY A SEPARATE FILE: `phase_a_mission.parm` is the precision configuration the 10-flight table in
+# docs/metrics/stepB-rectangle-20261013.txt was measured with, and its numbers must stay comparable to
+# what it flew.  This file is the other arm -- user's request, 2026-10-14: "WP_SPD 0.25 m/s 慢速飞太慢了，
+# 搞2m/s飞行行不行".
+#
+# THE GEOMETRY HAS TO CARRY THE SPEED, or the number is a lie.  Reaching v and braking from it costs
+# v^2/(2*a) at each end of every leg:
+#     2.0 m/s with WP_ACC 2.5  -> 0.80 m to accelerate + 0.80 m to brake = 1.60 m of every leg
+# so the 2.0 x 1.2 m square of `worlds/pillars.yaml` (legs of 2.0 and 1.2 m) can never hold 2 m/s: it
+# would peak near 1.1 m/s on the long legs and never reach the short ones.  That is why this arm flies
+# `worlds/pillars_fast.yaml`: a 6.0 x 4.0 m square in an 18 x 18 m arena whose pillar clearance to the
+# square is 2.20 m -- comfortably more than the 0.80 m braking distance.  (The old world's clearance is
+# 0.60 m, i.e. at 2 m/s the vehicle could not stop before a pillar, and SITL has no obstacle collision,
+# so that combination would have produced numbers that look fine and mean nothing.)
+#
+# The vertical is unchanged: the altitude loop is the LIO's (EK3_SRC1_POSZ = 6) and the take-off/landing
+# profile is the same.
+WP_SPD 2.0
+LOIT_SPEED_MS 2.0
+WP_RADIUS_M 0.10
+WP_ACC 2.5
+WP_JERK 2.0
+LOIT_ACC_MAX_M 3.0
+LOIT_BRK_ACC_M 3.0
+LOIT_BRK_JRK_M 3.0
+PSC_ACCZ_P 0.5

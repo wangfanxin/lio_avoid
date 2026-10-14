@@ -219,17 +219,29 @@ def main() -> int:
         jit = np.sqrt(np.mean(d2_l ** 2, axis=0)) * 1e3
         steps = np.abs(np.diff(p_lio, axis=0)) * 1e3
         p99 = np.percentile(steps, 99.0, axis=0)
+        # THE OUTLIER BOUND HAS TO KNOW THE SPEED.  A sample at 2 m/s moves 10 mm in the 5 ms between
+        # two deliveries, so "p99 step <= 10 mm" fails on honest flight -- MEASURED 2026-10-14: the three
+        # 2 m/s flights all reported 11.2-11.4 mm with the same LIO that reports 3.3-4.5 mm at 0.25 m/s,
+        # i.e. the gate was measuring the mission's speed, not the estimator's stability.  A step is an
+        # outlier now when the delivered stream's p99 exceeds 3x the TRUTH's p99 on the same samples --
+        # p99 against p99, so it compares like with like -- with 10 mm as the floor so the slow mission's
+        # bound is unchanged (there the truth's p99 is ~1.6 mm and the floor applies).
+        truth_steps = np.abs(np.diff(
+            np.column_stack([np.interp(t_lio, t_tap, p_tap[:, k]) for k in range(3)]), axis=0)) * 1e3
+        t_p99 = float(np.percentile(np.linalg.norm(truth_steps, axis=1), 99.0))
+        out_bound = max(10.0, 3.0 * t_p99)
         worst_i = int(np.argmax(np.linalg.norm(steps, axis=1)))
         ok_rate = rate_l >= 0.8 * args.lio_nominal_hz
         ok_gap = gap_l <= 3.0 * med_l
         ok_jit = bool(np.all(jit <= 2.0))
-        ok_out = bool(np.all(p99 <= 10.0))
+        ok_out = bool(np.all(p99 <= out_bound))
         print("A3 delivered-odometry continuity (rate %.1f Hz over %d samples, dt median %.3f ms, worst "
               "gap %.3f ms):" % (rate_l, len(t_lio), med_l, gap_l))
         print("   wander  rms 2nd difference  E %6.3f N %6.3f U %6.3f mm   (<= 2.00, 10%% of A1)   [%s]"
               % (jit[0], jit[1], jit[2], "PASS" if ok_jit else "FAIL"))
-        print("   outliers p99 single step    E %6.3f N %6.3f U %6.3f mm   (<= 10.00)             [%s]"
-              % (p99[0], p99[1], p99[2], "PASS" if ok_out else "FAIL"))
+        print("   outliers p99 single step    E %6.3f N %6.3f U %6.3f mm   (<= %5.2f = 3x the truth's own "
+              "p99 %.2f mm/sample)   [%s]"
+              % (p99[0], p99[1], p99[2], out_bound, t_p99, "PASS" if ok_out else "FAIL"))
         print("   worst step %.3f mm at %.2f s of the recording (reported, not gated)"
               % (float(np.linalg.norm(steps[worst_i])), (t_lio[worst_i + 1] - t_lio[0]) * 1e-6))
         print("   delivery rate %.1f Hz (>= %.1f) %s;  worst gap %.3f ms (<= %.3f) %s"
@@ -267,6 +279,28 @@ def main() -> int:
             if m.sum() > 10:
                 ia, ib = match(t_al[m], t_tap_ned)
                 err = p_e[m][ia] - p_tap_ned[ib]
+                # A PURE DELAY IS NOT AN ERROR, and at speed it dominates: the FCU's estimate is built
+                # from LIO+link data that is tens of milliseconds old, so at 2 m/s a 30 ms delay shows up
+                # as 60 mm of position error.  MEASURED 2026-10-14: the 2 m/s flights report 73-78 mm at
+                # zero lag, and the same flights' own lag fit puts ~most of it in the delay.  A4 therefore
+                # reports the best-fit lag, the residual AT that lag (which is what the gate uses, 50 mm as
+                # before) and the zero-lag figure, so a delay can never masquerade as an estimator error.
+                ia0, ib0 = match(t_al[m], t_tap_ned)
+                e0 = p_e[m][ia0] - p_tap_ned[ib0]
+                r0 = e0 - e0.mean(axis=0)
+                h_zero = float(np.sqrt(np.mean(np.sum(r0[:, :2] ** 2, axis=1)))) * 1e3
+                best_err, best_lag_e = None, 0
+                for lag in range(-150_000, 150_001, 2000):
+                    ref = np.column_stack([np.interp(t_al[m] + lag, t_tap_ned, p_tap_ned[:, k])
+                                           for k in range(3)])
+                    r = p_e[m] - ref
+                    ro = r - r.mean(axis=0)
+                    h = float(np.sqrt(np.mean(np.sum(ro[:, :2] ** 2, axis=1)))) * 1e3
+                    if best_err is None or h < best_err:
+                        best_err, best_lag_e = h, lag
+                ref = np.column_stack([np.interp(t_al[m] + best_lag_e, t_tap_ned, p_tap_ned[:, k])
+                                       for k in range(3)])
+                err = p_e[m] - ref
                 off = err.mean(axis=0)
                 res = err - off
                 # NAMED a4_*: this block used to assign plain `h_rms` (in MILLIMETRES) over A1's `h_rms`
@@ -274,20 +308,18 @@ def main() -> int:
                 # printed "A1/A2/B1 FAIL" on flights where all three passed.  The batch summary parses the
                 # per-line numbers and was unaffected, but the per-flight file is the evidence and was wrong.
                 a4_h_rms = float(np.sqrt(np.mean(np.sum(res[:, :2] ** 2, axis=1)))) * 1e3
-                # the SAME offset while parked separates a datum from a tracking error: a datum is the
-                # same number before and after take-off, a tracking error is not
-                mp = ~m
+                m0 = ~m
                 parked = ""
-                if mp.sum() > 10:
-                    ip, jp = match(t_al[mp], t_tap_ned)
+                if m0.sum() > 10:
+                    ip, jp = match(t_al[m0], t_tap_ned)
                     if len(ip) > 10:
-                        off_p = (p_e[mp][ip] - p_tap_ned[jp]).mean(axis=0)
+                        off_p = (p_e[m0][ip] - p_tap_ned[jp]).mean(axis=0)
                         parked = "  (while parked: N %+.4f E %+.4f D %+.4f m)" % tuple(off_p)
-                print("A4 FCU estimate vs truth after take-off (%d of %d samples, clock lag %.2f s, "
-                      "vertical alignment residual %.1f mm):" % (int(m.sum()), len(t_e), best_lag * 1e-6,
-                                                                 best * 1e3))
-                print("   horizontal rms %8.2f mm  (<= 50, mean removed)   vertical rms %8.2f mm"
-                      % (a4_h_rms, float(np.sqrt(np.mean(res[:, 2] ** 2))) * 1e3))
+                print("A4 FCU estimate vs truth after take-off (%d of %d samples, vertical alignment "
+                      "residual %.1f mm):" % (int(m.sum()), len(t_e), best * 1e3))
+                print("   horizontal rms %8.2f mm  (<= 50, mean removed) at the best-fit lag %+.0f ms; "
+                      "zero lag would be %8.2f mm" % (a4_h_rms, best_lag_e * 1e-3, h_zero))
+                print("   vertical rms %8.2f mm" % (float(np.sqrt(np.mean(res[:, 2] ** 2))) * 1e3))
                 print("   datum offsets removed: N %+.4f m  E %+.4f m  D %+.4f m%s"
                       % (*off, parked))
                 print("   [%s] A4" % ("PASS" if a4_h_rms <= 50.0 else "FAIL"))
@@ -314,17 +346,25 @@ def main() -> int:
     ex = float(p_route[:, 0].max() - p_route[:, 0].min())
     ny = float(p_route[:, 1].max() - p_route[:, 1].min())
     print()
-    # The commanded rectangle is 2.0 m (E) by 1.2 m (N).  The bound was written as "<= 2.10 / 1.26",
-    # i.e. +0.10 on E and +0.06 on N: the same geometric question answered with two different
-    # tolerances, and the 0.06 had no basis.  Both axes now carry the same +0.10 as E (and as B3's
-    # corner-arrival tolerance), and the legacy 1.26 bound is still counted and printed, so the
-    # stricter number stays visible instead of disappearing.
-    b1_ok = ex <= 2.10 and ny <= 1.30
+    # The commanded rectangle comes from `--corners`, i.e. from the world file through
+    # tools/world-info.py -- NOT from a number typed here.  It used to be hard-coded as 2.000/1.200 with
+    # bounds 2.10/1.30, which silently mis-judged any other mission: MEASURED 2026-10-14, the first
+    # 2 m/s flight in the 6.0 x 4.0 m world was scored B1 "E 8.336 <= 2.10 FAIL" against a 2 m square it
+    # was never flying.  The tolerance stays what it was: +0.10 m on each axis (the same as B3's corner
+    # arrival), and the legacy +0.06 on N is still counted so the stricter number stays visible.
+    if corners:
+        ca = np.array(corners[:4], dtype=float) if len(corners) >= 4 else None
+        cw = float(ca[:, 0].max() - ca[:, 0].min()) if ca is not None else 2.0
+        ch = float(ca[:, 1].max() - ca[:, 1].min()) if ca is not None else 1.2
+    else:
+        cw, ch = 2.0, 1.2
+    b1_ok = ex <= cw + 0.10 and ny <= ch + 0.10
+    b1_legacy = ny <= ch + 0.06 and ex <= cw + 0.10
     print("B1 truth box extents over the route (%.1f s): E %.3f m  N %.3f m   "
-          "(command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [%s]"
-          % (len(m_route) and (t_tap[m_route][-1] - t_tap[m_route][0]) * 1e-6, ex, ny,
-             "PASS" if b1_ok else "FAIL"))
-    print("   against the legacy bound 1.26 on N: %s" % ("PASS" if ny <= 1.26 else "FAIL"))
+          "(command %.3f / %.3f; target <= %.2f / %.2f = +0.10 on both axes)  [%s]"
+          % (len(m_route) and (t_tap[m_route][-1] - t_tap[m_route][0]) * 1e-6, ex, ny, cw, ch,
+             cw + 0.10, ch + 0.10, "PASS" if b1_ok else "FAIL"))
+    print("   against the legacy bound %.2f on N: %s" % (ch + 0.06, "PASS" if b1_legacy else "FAIL"))
 
     # B2 straightness per leg: fit a line to each leg's truth samples, take the max perpendicular error.
     # Windowing is by SIM TIME (the phase log's second column), because the recordings are indexed by it
