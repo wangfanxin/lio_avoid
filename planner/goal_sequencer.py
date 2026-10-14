@@ -71,6 +71,10 @@ def main() -> int:
     ap.add_argument("--world", default=os.path.join(ROOT, "worlds", "forest_b.yaml"))
     ap.add_argument("--calib-file", default="/mnt/d/distill_self/_stage/calib.json")
     ap.add_argument("--goal-topic", default="/goal_pose")
+    ap.add_argument("--stop-topic", default="/mission/stop",
+                    help="publish the current stop index here as std_msgs/Int32 (0-based, -1 = the sequence "
+                         "is complete).  The FSM follows trajectories until it reads -1, which is what keeps "
+                         "its state and the mission's from drifting apart")
     ap.add_argument("--odom-topic", default="/lio/robo/odom")
     ap.add_argument("--arrive", type=float, default=0.35,
                     help="horizontal distance to the stop that counts as reached, m")
@@ -106,13 +110,19 @@ def main() -> int:
     from geometry_msgs.msg import PoseStamped
     from nav_msgs.msg import Odometry
     from rclpy.node import Node
+    from std_msgs.msg import Int32
 
     class Sequencer(Node):
         def __init__(self):
             super().__init__("goal_sequencer")
             self.calib = load_calib(args.calib_file)
             self.pub = self.create_publisher(PoseStamped, args.goal_topic, 1)
+            # THE MISSION'S STATE, published so the FSM does not have to guess it.  MEASURED 2026-10-14:
+            # with the FSM counting trajectories instead, four consecutive sorties aborted on a wait because
+            # its counter had drifted out of step with the stops actually commanded.
+            self.index_pub = self.create_publisher(Int32, args.stop_topic, 10)
             self.create_subscription(Odometry, args.odom_topic, self.on_odom, 10)
+            self.last_index = None
             self.here_w = None
             self.i = 0
             self.t_stop = None
@@ -128,6 +138,7 @@ def main() -> int:
             self.min_alt = (args.min_alt if args.min_alt >= 0.0
                             else float(max(s[2] for s in stops)) - 0.60)
             self.told_waiting = False
+            self.done_logged = False
             self.fh = open(args.log, "w") if args.log else None
             self.create_timer(1.0 / max(args.rate, 1.0), self.tick)
             print("goal_sequencer: %d stops from %s, arrive %.2f m, timeout %.0f s, calib %s"
@@ -154,6 +165,18 @@ def main() -> int:
             self.pub.publish(m)
             self.t_last_pub = time.monotonic()
 
+        def pub_index(self, i):
+            """Publish the mission's stop index: 0-based while running, -1 when the sequence is complete.
+
+            This is the FSM's only source of truth about where the mission is; it replaces the FSM's own
+            trajectory counting, which drifted out of step and aborted four consecutive sorties.
+            """
+            if self.last_index != i:
+                self.last_index = i
+                m = Int32()
+                m.data = int(i)
+                self.index_pub.publish(m)
+
         def tick(self):
             now = time.monotonic()
             if now - self.t0 < args.start_after or self.here_w is None:
@@ -166,13 +189,19 @@ def main() -> int:
                              % (self.min_alt, self.here_w[2]))
                 return
             if self.i >= len(stops):
-                self.log("sequence complete: %d of %d stops reached, %d missed%s"
-                         % (len(self.reached), len(stops), len(self.missed),
-                            (" (%s)" % ", ".join("stop %d by %.2f m" % m for m in self.missed))
-                            if self.missed else ""))
-                rclpy.shutdown()
+                # -1 on the stop topic is the FSM's signal that the mission is over and it should land.
+                # The node keeps running (and keeps saying -1) instead of shutting itself down, because a
+                # one-shot signal can be missed by a consumer that starts late or drops a message.
+                self.pub_index(-1)
+                if not self.done_logged:
+                    self.done_logged = True
+                    self.log("sequence complete: %d of %d stops reached, %d missed%s"
+                             % (len(self.reached), len(stops), len(self.missed),
+                                (" (%s)" % ", ".join("stop %d by %.2f m" % m for m in self.missed))
+                                if self.missed else ""))
                 return
             p = stops[self.i]
+            self.pub_index(self.i)
             if self.t_stop is None:
                 self.t_stop = now
                 self.pub_goal(p)

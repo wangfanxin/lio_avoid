@@ -181,7 +181,8 @@ else
 fi
 python3 "$REPO/fsm/mission_fsm.py" --nav-source "$NAV_SOURCE" $CALIB_ARG \
     --tap-port 0 --alt "$TAKEOFF_ALT" --hold 3.0 --geofence-m "$GEOFENCE_M" ${FSM_ARGS:-} \
-    --phase-log "$OUT/phase.csv" > "$OUT/fsm.log" 2>&1
+    ${YAW_MODE:+--yaw-mode "$YAW_MODE"} \
+    --phase-log "$OUT/phase.csv" --setpoint-log "$OUT/setpoints.csv" > "$OUT/fsm.log" 2>&1
 FSM_RC=$?
 cat "$OUT/fsm.log"
 

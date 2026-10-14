@@ -60,9 +60,14 @@ def main() -> int:
         rclpy.init(args=[])
     world = load_world(args.world) if os.path.exists(args.world) else None
     node = Node("record_traj")
-    # the adapter publishes this topic RELIABLE + TRANSIENT_LOCAL (latched), so a late subscriber still
-    # receives the newest path; matching it is what makes the recording complete.
-    qos = QoSProfile(depth=10, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.RELIABLE,
+    # the adapter publishes this topic RELIABLE + TRANSIENT_LOCAL with DEPTH 1 (latched), so a subscriber
+    # that is slower than the 4 Hz republish misses most of the messages -- MEASURED 2026-10-14: the first
+    # recording held 56 of ~400 messages, and a plan that is 1.8 s stale is 1.8 m behind a vehicle flying at
+    # 1 m/s, which is exactly the size of the "tracking error" it then reports.  A DEEPER queue on our side
+    # cannot fix a depth-1 publisher, so the honest fix is (a) this queue, (b) reading fast, and (c) knowing
+    # the limit: the join in tools/plan-vs-truth.py uses the message that was in force, and the count of
+    # messages received versus the topic's own measured rate says how complete the recording is.
+    qos = QoSProfile(depth=100, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
     fh = open(args.csv, "w")
     fh.write("t_us,t0_us,n,arc_m,clr_m,z_min,z_max,frame_id\n")

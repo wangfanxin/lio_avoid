@@ -94,9 +94,19 @@ class Mission:
         self.bridge = self._make_bridge()
         self.phase = "init"
         self.phase_t0 = time.monotonic()
+        self.yaw_last = float(args.yaw)          # the heading actually streamed (velocity mode slews it)
+        self.yaw_track_err = 0.0
+        self.stop_index = None                   # the sequencer's stop index (-1 = sequence complete)
         self.log_fh = open(args.phase_log, "w")
         self.log_fh.write("t_wall,t_sim_us,phase,cmd_x,cmd_y,cmd_z,lio_x,lio_y,lio_z,truth_x,truth_y,"
                           "truth_z\n")
+        # the per-tick setpoint trace (see the comment where it is written): commanded position, velocity
+        # and acceleration next to the FCU's own position/velocity and the LIO's, so a tracking question is
+        # answered by the record instead of by inference from the SITL truth afterwards.
+        self.sp_log = open(args.setpoint_log, "w") if args.setpoint_log else None
+        if self.sp_log is not None:
+            self.sp_log.write("t_wall,t_sim_us,cmd_x,cmd_y,cmd_z,vel_x,vel_y,vel_z,acc_x,acc_y,acc_z,"
+                              "fcu_x,fcu_y,fcu_z,fcu_vx,fcu_vy,fcu_vz,lio_x,lio_y,lio_z,yaw_cmd\n")
         self.lio = {"t_us": 0, "p": np.zeros(3), "q": np.array([1.0, 0.0, 0.0, 0.0]),
                     "v": np.zeros(3), "n": 0, "rate": 0.0, "last_wall": 0.0,
                     "prev_p": None, "v_source": "diff", "v_seen": 0}
@@ -160,7 +170,19 @@ class Mission:
         self.node.create_subscription(Odometry, self.args.truth_topic,
                                       lambda m: self.tap.on_odom(m), best_effort)
         self.node.create_subscription(Path, self.args.traj_topic, self._on_path, latched)
+        # THE SEQUENCER'S STATE.  The FSM does not count stops any more (see follow_spline_stations): it
+        # reads the mission's own stop index, so the two cannot drift apart.  Volatile + reliable: the
+        # sequencer publishes at 1 Hz and the value is a state, not an event.
+        from std_msgs.msg import Int32
+        self.node.create_subscription(Int32, self.args.stop_topic, self._on_stop, 10)
         self.rclpy = rclpy
+
+    def _on_stop(self, m):
+        """The sequencer's current stop index (0-based; -1 = the sequence is complete)."""
+        prev = self.stop_index
+        self.stop_index = int(m.data)
+        if prev is None or prev != self.stop_index:
+            self.log("sequencer stop index %d" % self.stop_index)
 
     def _on_lio(self, m):
         now = time.monotonic()
@@ -214,6 +236,39 @@ class Mission:
             self.path_l = np.array(pts)
             self.path_t = np.array(ts)
 
+    def yaw_command(self, velocity, period):
+        """The yaw to stream with this setpoint.
+
+        `--yaw-mode fixed` (the historical behaviour, and what every mission-A number was flown with)
+        streams `--yaw` unchanged -- MEASURED 2026-10-14 from the SITL tap's own attitude: the heading held
+        -1.0 deg (B1) and -0.8 deg (B5), i.e. North, while the velocity azimuth swept the whole circle, so
+        the aircraft flew the entry leg 90.4 deg sideways and spent 83 % of the circle more than 30 deg off
+        its velocity vector (docs/metrics/phaseB-yaw-vs-velocity.txt).
+
+        `--yaw-mode velocity` (the user's instruction: "yaw方向最好朝着飞行速度方向") points the nose along the
+        horizontal velocity it is being asked to fly.  Three details matter:
+          * the source is the PLAN's feed-forward velocity, not the measured one, so the nose leads the
+            motion instead of chasing it;
+          * below `--yaw-v-min` (0.2 m/s) the last heading is HELD, because the azimuth of a hovering
+            vehicle is noise and a spinning yaw would feed back into the EKF's yaw observation;
+          * the turn is SLEW LIMITED (`--yaw-rate-max`, 120 deg/s) so a stop-to-stop plan that reverses
+            direction does not command an instantaneous 180 deg flip.
+
+        Frame: the bridge writes this number straight into LOCAL_NED's yaw field, where 0 IS North and +90
+        deg IS East -- the same convention as `--yaw` and as `atan2(v_E, v_N)`.
+        """
+        if self.args.yaw_mode != "velocity" or velocity is None:
+            return self.args.yaw
+        v_e, v_n = float(velocity[0]), float(velocity[1])
+        speed = math.hypot(v_e, v_n)
+        if speed >= self.args.yaw_v_min:
+            want = math.atan2(v_e, v_n)
+            d = (want - self.yaw_last + math.pi) % (2.0 * math.pi) - math.pi
+            mx = math.radians(self.args.yaw_rate_max) * max(period, 1e-3)
+            self.yaw_last = (self.yaw_last + max(-mx, min(mx, d)) + math.pi) % (2.0 * math.pi) - math.pi
+            self.yaw_track_err = d
+        return self.yaw_last
+
     def pump(self, seconds=None, setpoint=None, until=None, velocity=None, accel=None):
         """The main loop body: poll everything, stream at 50 Hz, run the gates."""
         period = 1.0 / GATES["rate_hz"]
@@ -232,21 +287,45 @@ class Mission:
             if now >= self.next_stream:
                 self.next_stream = now + period
                 self.stream_external_nav()
+                yaw = self.yaw_command(velocity, period)
                 if velocity is not None and setpoint is not None and accel is not None:
                     # THE TIME-PARAMETERISED FEED: the plan says where it wants to be, how fast it wants to
                     # be going, and how hard it intends to accelerate.  Sending all three is what makes the
                     # FCU follow the planner's profile instead of re-deriving one from WP_SPD/WP_ACC.
                     self.cmd = np.asarray(setpoint, dtype=float)
-                    self.bridge.send_position_velocity(self.cmd, velocity, self.args.yaw, accel)
+                    self.bridge.send_position_velocity(self.cmd, velocity, yaw, accel)
                 elif velocity is not None and setpoint is not None:
                     self.cmd = np.asarray(setpoint, dtype=float)
-                    self.bridge.send_position_velocity(self.cmd, velocity, self.args.yaw)
+                    self.bridge.send_position_velocity(self.cmd, velocity, yaw)
                 elif velocity is not None:
-                    self.bridge.send_velocity(velocity, self.args.yaw)
+                    self.bridge.send_velocity(velocity, yaw)
                 elif setpoint is not None:
                     self.cmd = np.asarray(setpoint, dtype=float)
-                    self.bridge.send_position(self.cmd, self.args.yaw)
+                    self.bridge.send_position(self.cmd, yaw)
                 n += 1
+                # THE SETPOINT TRACE.  The phase log records only the command in force when a PHASE changes,
+                # which is enough for the metrics and useless for a tracking question: MEASURED 2026-10-14,
+                # the FCU flew at 1.28-1.31 m on B5 and 3.28 m on B2b while the mission commanded 2.00 m,
+                # and there was no record of what was actually streamed at those instants -- only of what
+                # the SITL truth and the FCU's own log said afterwards.  This writes the commanded setpoint
+                # next to the FCU's and the LIO's answers, every stream tick.
+                if self.sp_log is not None:
+                    st_sp = self.bridge.state()
+                    self.sp_log.write(
+                        "%.4f,%d,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,"
+                        "%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f\n" % (
+                            time.monotonic(), self.tap.t_us,
+                            self.cmd[0], self.cmd[1], self.cmd[2],
+                            (velocity[0] if velocity is not None else 0.0),
+                            (velocity[1] if velocity is not None else 0.0),
+                            (velocity[2] if velocity is not None else 0.0),
+                            (accel[0] if accel is not None else 0.0),
+                            (accel[1] if accel is not None else 0.0),
+                            (accel[2] if accel is not None else 0.0),
+                            st_sp.pos[0], st_sp.pos[1], st_sp.pos[2],
+                            st_sp.vel[0], st_sp.vel[1], st_sp.vel[2],
+                            self.lio["p"][0], self.lio["p"][1], self.lio["p"][2],
+                            yaw))
                 self.check_gates()
                 if self.abort_reason:
                     return n
@@ -531,23 +610,47 @@ class Mission:
         return False
 
     def follow_spline_stations(self, n):
-        """Fly n stops in sequence, one published trajectory each, and land after the last one."""
-        self.log("stations: %d -- one trajectory per stop, followed to its own end" % n)
+        """Fly the mission's stops in sequence, and land when the SEQUENCER says the sequence is over.
+
+        WHY THIS IS DRIVEN BY THE SEQUENCER AND NOT BY COUNTING TRAJECTORIES.  The first version counted the
+        trajectories it flew (`--stations N`) and matched freshness by the plan's start stamp.  MEASURED
+        2026-10-14 on four consecutive sorties: that counter drifts out of step with the stops the mission
+        actually commanded -- a stale plan still passes the freshness test after the FSM has moved on, so the
+        FSM ends up waiting for a "next" trajectory that the sequencer has already stopped sending, and the
+        flight aborts on its wait (B2b at station 8, B3 at 8, B4 and B5 at 4, B7 at 4) even though the
+        vehicle and the planner were both healthy.
+
+        The sequencer already knows exactly where the mission is: it publishes its current stop index on
+        `--stop-topic` (`std_msgs/Int32`, -1 = sequence complete).  This loop therefore does the simple,
+        checkable thing: follow each fresh trajectory to its end, print which stop it was, and stop when the
+        sequencer says there are no more.  Stop bookkeeping (reached / missed, and with what error) stays in
+        ONE place -- the sequencer's own log.
+        """
+        self.log("following trajectories until the sequencer says the sequence is done "
+                 "(stop topic %s); %d stops expected" % (self.args.stop_topic, n))
         last_t0 = None
-        for i in range(n):
+        flown = 0
+        while True:
             if self.abort_reason:
                 return self.abort_reason
+            if self.stop_index is not None and self.stop_index < 0:
+                self.log("sequence complete: %d trajectories flown, the sequencer reports every stop done"
+                         % flown)
+                return None
             if not self._wait_for_spline(last_t0):
-                return ("station %d of %d: no new trajectory on %s within %.0f s"
-                        % (i + 1, n, self.args.traj_topic, self.args.traj_wait_s))
+                if self.stop_index is not None and self.stop_index < 0:
+                    return None
+                return ("no new trajectory on %s within %.0f s after %d trajectories (sequencer at stop %s)"
+                        % (self.args.traj_topic, self.args.traj_wait_s, flown, self.stop_index))
             last_t0 = float(self.path_t[0]) if self.path_t is not None else None
             t_stop = time.monotonic()
             rc = self._spline_once()
+            flown += 1
             if rc:
-                return "station %d of %d: %s" % (i + 1, n, rc)
-            self.log("station %d of %d done in %.1f s" % (i + 1, n, time.monotonic() - t_stop))
-            self.phase_mark("station%d" % (i + 1))
-        return None
+                return "trajectory %d: %s" % (flown, rc)
+            self.log("trajectory %d done in %.1f s (sequencer now at stop %s)"
+                     % (flown, time.monotonic() - t_stop, self.stop_index))
+            self.phase_mark("traj%d" % flown)
 
     def _spline_once(self):
         """Follow the trajectory currently in `self.path_l` / `self.path_t` in TIME, to its end."""
@@ -853,6 +956,8 @@ class Mission:
                     self.bridge._sent_nav))
         self.log("the FCU's last words: %s" % _texts(st))
         self.log_fh.close()
+        if self.sp_log is not None:
+            self.sp_log.close()
         try:
             self.bridge.close()
         except Exception:
@@ -945,14 +1050,27 @@ def main() -> int:
     ap.add_argument("--settle-s", type=float, default=GATES["settle_s"],
                     help="and give up waiting after this long")
     ap.add_argument("--yaw", type=float, default=0.0, help="commanded yaw, rad (0 = North)")
+    ap.add_argument("--yaw-mode", default="fixed", choices=["fixed", "velocity"],
+                    help="fixed: stream --yaw unchanged (the historical behaviour, and what every mission-A "
+                         "number was flown with).  velocity: point the nose along the plan's horizontal "
+                         "velocity (the user's instruction, 2026-10-14) -- the sensor's 45 deg fan then "
+                         "looks along the direction of travel instead of across it")
+    ap.add_argument("--yaw-rate-max", type=float, default=120.0,
+                    help="velocity mode: maximum yaw slew, deg/s")
+    ap.add_argument("--yaw-v-min", type=float, default=0.20,
+                    help="velocity mode: below this speed the last heading is held (the azimuth of a hover "
+                         "is noise, and a spinning yaw feeds back into the EKF)")
     ap.add_argument("--follow", default="corner", choices=["corner", "path", "spline"],
                     help="corner: visit the path's corners (the rectangle; every table in docs/metrics/ "
                          "was flown this way).  path: follow the trajectory itself with a look-ahead "
                          "point, which is what a planner's B-spline needs (PLAN.md 4.1)")
     ap.add_argument("--stations", type=int, default=1,
-                    help="spline mode: follow this many trajectories IN SEQUENCE, one per commanded stop, "
-                         "and land after the last (mission B's circle is 12; see planner/goal_sequencer.py, "
-                         "which publishes the stops).  1 = the single-trajectory behaviour")
+                    help="spline mode: the number of stops the mission EXPECTS (only printed; the loop is "
+                         "driven by --stop-topic so the FSM and the sequencer cannot drift apart).  1 = the "
+                         "single-trajectory behaviour")
+    ap.add_argument("--stop-topic", default="/mission/stop",
+                    help="spline mode with >1 stop: the sequencer's current stop index (std_msgs/Int32, "
+                         "-1 = sequence complete).  The FSM follows trajectories until it reads -1")
     ap.add_argument("--min-traj-m", type=float, default=0.50,
                     help="spline mode: ignore a published trajectory whose horizontal arc length is below "
                          "this (m).  The adapter republishes the current spline at 4 Hz from t_cur, so an "
@@ -981,6 +1099,10 @@ def main() -> int:
     ap.add_argument("--cross-gain", type=float, default=1.0,
                     help="vel mode: lateral velocity per metre of cross-track error, 1/s")
     ap.add_argument("--phase-log", default=os.path.join(here, "..", "logs", "phase.csv"))
+    ap.add_argument("--setpoint-log", default="",
+                    help="write every streamed setpoint (position, velocity, acceleration) next to the "
+                         "FCU's and the LIO's answers; empty = off.  This is what makes a tracking error "
+                         "measurable at the instant it happens instead of inferred from the truth later")
     args = ap.parse_args()
     # the effective gates go into the run's own log, so a flight's record says what it actually flew
     GATES["arrive_m"] = args.arrive_m
