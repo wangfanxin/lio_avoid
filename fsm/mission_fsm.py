@@ -164,7 +164,16 @@ class Mission:
         best_effort = QoSProfile(depth=50, history=HistoryPolicy.KEEP_LAST,
                                  reliability=ReliabilityPolicy.BEST_EFFORT)
         self.phase_pub = self.node.create_publisher(String, "/fsm/phase", 10)
-        latched = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
+        # THE PLAN SUBSCRIPTION'S DEPTH IS THE MISSION'S THROUGHPUT.  It was depth 1, and with RELIABLE +
+        # depth 1 a publisher DISCARDS an unacked sample as soon as the next one is published.  MEASURED
+        # 2026-10-14 (sortie AC1, the circle): tools/record-traj.py -- which subscribes with depth 100 --
+        # recorded 41 /planner/traj messages while this FSM flew exactly ONE trajectory in the whole sortie
+        # and then waited 60 s and aborted ("no new trajectory on /planner/traj within 60 s after 1
+        # trajectories (sequencer at stop 2)").  The same pathology was measured on the goal hop the same day
+        # (sequencer -> adapter: 42 published, 6-12 received; deepening both queues changed nothing there
+        # because the ADAPTER is the slow one -- here the FSM is).  Depth 20 keeps TRANSIENT_LOCAL (so a
+        # late-starting FSM still gets the latched plan) and costs nothing.
+        latched = QoSProfile(depth=20, history=HistoryPolicy.KEEP_LAST,
                              reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.node.create_subscription(Odometry, self.args.lio_topic, self._on_lio, best_effort)
