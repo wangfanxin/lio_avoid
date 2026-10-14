@@ -200,13 +200,21 @@ class Mission:
             self.lio["v_seen"] += 1
 
     def _on_path(self, m):
-        pts = []
+        pts, ts = [], []
         for ps in m.poses:
             pts.append([ps.pose.position.x, ps.pose.position.y, ps.pose.position.z])
+            # THE PER-POINT STAMP IS THE TIME PARAMETERISATION.  `planner/ego_adapter.py` stamps every point
+            # with the spline's start_time + that point's trajectory time, and the planner uses the SYSTEM
+            # clock (`RCL_SYSTEM_TIME`, noted in the adapter), i.e. the same domain this node's wall clock is
+            # in.  So a follower can recover the planned position, velocity AND acceleration at any t from
+            # the Path alone -- no interface change, and no dependency on the planner's message type
+            # (PLAN 4.1 keeps those out of the flight-critical code).
+            ts.append(float(ps.header.stamp.sec) + 1e-9 * float(ps.header.stamp.nanosec))
         if pts:
             self.path_l = np.array(pts)
+            self.path_t = np.array(ts)
 
-    def pump(self, seconds=None, setpoint=None, until=None, velocity=None):
+    def pump(self, seconds=None, setpoint=None, until=None, velocity=None, accel=None):
         """The main loop body: poll everything, stream at 50 Hz, run the gates."""
         period = 1.0 / GATES["rate_hz"]
         t_end = None if seconds is None else time.monotonic() + seconds
@@ -224,7 +232,16 @@ class Mission:
             if now >= self.next_stream:
                 self.next_stream = now + period
                 self.stream_external_nav()
-                if velocity is not None:
+                if velocity is not None and setpoint is not None and accel is not None:
+                    # THE TIME-PARAMETERISED FEED: the plan says where it wants to be, how fast it wants to
+                    # be going, and how hard it intends to accelerate.  Sending all three is what makes the
+                    # FCU follow the planner's profile instead of re-deriving one from WP_SPD/WP_ACC.
+                    self.cmd = np.asarray(setpoint, dtype=float)
+                    self.bridge.send_position_velocity(self.cmd, velocity, self.args.yaw, accel)
+                elif velocity is not None and setpoint is not None:
+                    self.cmd = np.asarray(setpoint, dtype=float)
+                    self.bridge.send_position_velocity(self.cmd, velocity, self.args.yaw)
+                elif velocity is not None:
                     self.bridge.send_velocity(velocity, self.args.yaw)
                 elif setpoint is not None:
                     self.cmd = np.asarray(setpoint, dtype=float)
@@ -425,6 +442,77 @@ class Mission:
         self.pump(seconds, setpoint=target)
         return None
 
+    def follow_spline(self):
+        """Follow the trajectory the way the PLANNER parameterised it: position + velocity feed-forward at t.
+
+        This is what `traj_server` does upstream, and it is the honest consumer of a time-parameterised
+        B-spline.  Our `--follow path` instead throws the timing away and re-derives speed from a look-ahead,
+        which measured a 12x too-slow first version (`0.45 + 0.6 v`) and then corner cutting (`1.2 + 0.8 v`:
+        C2 0.574 m where the plan's own margin was 0.62 m).  Feeding the planned velocity as well removes the
+        reason for either compromise: the FCU is told how fast the plan wants to be going, not just where it
+        should be.
+
+        Implementation: the Path's per-point stamps ARE the trajectory timeline (`t0 + t_i`, system clock,
+        same domain as this node), so the reference at wall time `now` is obtained by interpolating the
+        path IN TIME -- position, and by differencing, velocity and acceleration.  ArduPilot honours
+        position + velocity in `SET_POSITION_TARGET_LOCAL_NED`; the acceleration field is sent too, but for
+        a copter it is generally ignored (`PSC` uses the velocity target and its own accel limits), so the
+        A/B below measures what the FCU actually does rather than what the message could carry.
+        """
+        if self.path_l is None:
+            return "no trajectory on %s" % self.args.traj_topic
+        if self.path_t is None or len(self.path_t) != len(self.path_l):
+            return ("the Path carries no usable per-point stamps (%s), so the time parameterisation cannot "
+                    "be recovered -- use --follow path for a geometric source like the rectangle"
+                    % ("none" if self.path_t is None else "%d stamps for %d points"
+                       % (len(self.path_t), len(self.path_l))))
+        R, t = self.calib.R_WL, self.calib.t_WL
+        p = (R @ self.path_l.T).T + t
+        tt = self.path_t - self.path_t[0]                 # seconds from the trajectory's start
+        if tt[-1] <= 1e-6:
+            return "the Path's stamps span %.6f s -- not a trajectory" % tt[-1]
+        dur = float(tt[-1])
+        self.log("follow-spline: %d points, %.2f s of trajectory (%.2f m), stamps in the system clock"
+                 % (len(p), dur, float(np.sum(np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1)))))
+
+        def ref_at(t_rel):
+            """(position, velocity, acceleration) of the plan at t_rel seconds from its start."""
+            k = int(np.clip(np.searchsorted(tt, t_rel, side="right") - 1, 0, len(tt) - 2))
+            h = max(tt[k + 1] - tt[k], 1e-6)
+            w = float(np.clip((t_rel - tt[k]) / h, 0.0, 1.0))
+            pos = p[k] + w * (p[k + 1] - p[k])
+            vel = (p[k + 1] - p[k]) / h
+            if 0 < k < len(tt) - 2:
+                acc = ((p[k + 2] - p[k + 1]) / max(tt[k + 2] - tt[k + 1], 1e-6) - vel) / h
+            else:
+                acc = np.zeros(3)
+            return pos, vel, acc
+
+        self.set_phase("traj")
+        t_start = time.monotonic()
+        t_wall0 = time.time()                              # the stamps are wall-clock seconds
+        while True:
+            if self.abort_reason:
+                return self.abort_reason
+            t_rel = (time.time() - t_wall0) + self.args.spline_lead
+            pos, vel, acc = ref_at(t_rel)
+            self.cmd = pos
+            self.pump(0.05, setpoint=pos, velocity=vel, accel=acc)
+            st = self.bridge.state()
+            here = np.array(st.pos)
+            left = dur - t_rel
+            if time.monotonic() - t_start > self.args.traj_timeout_s:
+                return ("trajectory timed out after %.0f s: t %.2f of %.2f s, %.2f m from the end"
+                        % (self.args.traj_timeout_s, t_rel, dur,
+                           float(np.linalg.norm(here[:2] - p[-1, :2]))))
+            if left < self.args.arrive_m / max(self.args.follow_speed, 0.1) and \
+                    float(np.linalg.norm(np.array(st.vel)[:2])) < self.args.settle_speed:
+                self.log("trajectory complete (spline): %.2f s of plan, final speed %.3f m/s, "
+                         "%.3f m from the last point"
+                         % (dur, float(np.linalg.norm(np.array(st.vel)[:2])),
+                            float(np.linalg.norm(here[:2] - p[-1, :2]))))
+                return None
+
     def follow_path(self):
         """Follow the published Path itself: look-ahead along the arc, one setpoint per 50 Hz tick.
 
@@ -619,6 +707,7 @@ class Mission:
     def run(self):
         self.next_stream = time.monotonic()
         self.path_l = None
+        self.path_t = None
         self.start_ros()
         try:
             steps = [self.preflight, self.takeoff, lambda: self.hold(self.args.hold)]
@@ -636,7 +725,9 @@ class Mission:
                 # obliges the FSM to do and what a B-spline from ego-planner needs: a planner path has no
                 # corners to visit, and corner-to-corner flying would cut straight through the pillars it
                 # was planned to avoid.
-                if self.args.follow == "path":
+                if self.args.follow == "spline":
+                    steps.append(self.follow_spline)
+                elif self.args.follow == "path":
                     steps.append(self.follow_path)
                 else:
                     steps.append(self.legs)
@@ -762,7 +853,7 @@ def main() -> int:
     ap.add_argument("--settle-s", type=float, default=GATES["settle_s"],
                     help="and give up waiting after this long")
     ap.add_argument("--yaw", type=float, default=0.0, help="commanded yaw, rad (0 = North)")
-    ap.add_argument("--follow", default="corner", choices=["corner", "path"],
+    ap.add_argument("--follow", default="corner", choices=["corner", "path", "spline"],
                     help="corner: visit the path's corners (the rectangle; every table in docs/metrics/ "
                          "was flown this way).  path: follow the trajectory itself with a look-ahead "
                          "point, which is what a planner's B-spline needs (PLAN.md 4.1)")
@@ -772,6 +863,9 @@ def main() -> int:
                     help="path mode: extra look-ahead per m/s of speed")
     ap.add_argument("--traj-timeout-s", type=float, default=180.0,
                     help="path mode: give up if the trajectory is not finished in this long")
+    ap.add_argument("--spline-lead", type=float, default=0.0,
+                    help="spline mode: start this many seconds into the plan (a small lead hides the"
+                         " first setpoint's staleness; 0 = follow the plan from its own t=0)")
     ap.add_argument("--traj-wait-s", type=float, default=45.0,
                     help="path mode: wait this long for the source to publish a first trajectory "
                          "(a planner needs the map before it can plan)")

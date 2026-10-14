@@ -51,6 +51,10 @@ IGNORE_YAW = 1 << 10
 IGNORE_YAW_RATE = 1 << 11
 POS_YAW_MASK = IGNORE_VX | IGNORE_VY | IGNORE_VZ | IGNORE_AFX | IGNORE_AFY | IGNORE_AFZ | IGNORE_YAW_RATE
 VEL_YAW_MASK = (1 << 0) | (1 << 1) | (1 << 2) | IGNORE_AFX | IGNORE_AFY | IGNORE_AFZ | IGNORE_YAW_RATE
+# position + velocity + yaw: use the first three axes, ignore acceleration and yaw rate
+POS_VEL_YAW_MASK = IGNORE_AFX | IGNORE_AFY | IGNORE_AFZ | IGNORE_YAW_RATE
+# position + velocity + acceleration + yaw: everything the trajectory can feed forward
+POS_VEL_ACC_YAW_MASK = IGNORE_YAW_RATE
 
 
 class MavlinkBridge(Bridge):
@@ -327,6 +331,30 @@ class MavlinkBridge(Bridge):
         self.log("bridge/mavlink: EKF origin never accepted in %d attempts (last result %s)"
                  % (attempts, result))
         return False
+
+    def send_position_velocity(self, p_f, v_f, yaw_rad: float, a_f=None):
+        """Position AND velocity (and acceleration, if given) in one setpoint -- the time-parameterised feed.
+
+        WHY: a planner hands over a trajectory that knows how fast it wants to be flown.  Sending only the
+        position makes the FCU's own waypoint navigator re-derive a speed profile from its `WP_SPD`/`WP_ACC`
+        limits, which is what our geometric follower had to fight with a look-ahead; sending the planned
+        velocity as well tells it directly.  ArduPilot honours position + velocity in this message; the
+        acceleration field is sent when given, but for a copter `PSC` generally uses the velocity target and
+        its own acceleration limits, so whether it helps is a MEASUREMENT, not an assumption.
+        """
+        x_ned, y_ned, z_ned = float(p_f[1]), float(p_f[0]), -float(p_f[2])
+        vx, vy, vz = float(v_f[1]), float(v_f[0]), -float(v_f[2])
+        if a_f is None:
+            ax = ay = az = 0.0
+            mask = POS_VEL_YAW_MASK
+        else:
+            ax, ay, az = float(a_f[1]), float(a_f[0]), -float(a_f[2])
+            mask = POS_VEL_ACC_YAW_MASK
+        self.mav.mav.set_position_target_local_ned_send(
+            0, self.mav.target_system, self.mav.target_component,
+            mavutil.mavlink.MAV_FRAME_LOCAL_NED, mask,
+            x_ned, y_ned, z_ned, vx, vy, vz, ax, ay, az, yaw_rad, 0.0)
+        self._sent_positions += 1
 
     def send_position(self, p_f, yaw_rad: float):
         # F (ENU, z up) -> NED
