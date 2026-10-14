@@ -1,0 +1,24 @@
+# yaw control as flown in mission B: the FSM streams --yaw (default 0.0 rad = North) in EVERY setpoint
+# (fsm/mission_fsm.py:240-248, bridge/mavlink_impl.py POS_VEL_ACC_YAW_MASK = IGNORE_YAW_RATE),
+# so the aircraft holds its heading and does NOT point along its velocity.  Measured from the SITL tap's
+# body->NED quaternion vs its own NED velocity, airborne and moving samples only.
+#
+# heading   = NED yaw in degrees (0 = North, + = East) -- the same convention as the velocity azimuth
+# mismatch  = |velocity azimuth - heading|
+
+missionA-B1-circle-01  (5780 samples airborne and moving)
+   heading  : median -1.0 deg, min -1.1, max -0.8  (0 = North)
+   vel dir  : median +89.4 deg, range +87.4 .. +97.1
+   |heading - velocity direction|: median 90.4 deg, p95 97.0 deg, max 98.1 deg
+     more than  30 deg off the velocity vector: 100.0 % of the moving flight
+     more than  60 deg off the velocity vector: 100.0 % of the moving flight
+     more than  90 deg off the velocity vector:  69.2 % of the moving flight
+     more than 120 deg off the velocity vector:   0.0 % of the moving flight
+missionA-B5-circle-12  (19878 samples airborne and moving)
+   heading  : median -0.8 deg, min -1.7, max +0.1  (0 = North)
+   vel dir  : median +1.1 deg, range -180.0 .. +179.9
+   |heading - velocity direction|: median 82.0 deg, p95 115.5 deg, max 180.0 deg
+     more than  30 deg off the velocity vector:  83.4 % of the moving flight
+     more than  60 deg off the velocity vector:  70.8 % of the moving flight
+     more than  90 deg off the velocity vector:  29.4 % of the moving flight
+     more than 120 deg off the velocity vector:   4.8 % of the moving flight
