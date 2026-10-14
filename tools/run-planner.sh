@@ -33,7 +33,7 @@ CALIB=/mnt/d/distill_self/_stage/calib.json
 # r = 0.4 m, the r = 4 m circle).  `WORLD=...` overrides it, and run-mission.sh passes the same file it
 # gave the sensor -- the "two worlds" bug of STATUS.md row 50 was exactly a mismatch here.
 WORLD="${WORLD:-$HERE/worlds/forest_b.yaml}"
-PARAMS="$HERE/params/ego_planner_humble.yaml"
+PARAMS="${PARAMS:-$HERE/params/ego_planner_humble.yaml}"
 
 GOAL=""
 CHECK=0

@@ -67,6 +67,9 @@ def main() -> int:
     ap.add_argument("--world", default=os.path.join(ROOT, "worlds", "forest_b.yaml"))
     ap.add_argument("--calib", default="/mnt/d/distill_self/_stage/calib.json")
     ap.add_argument("--out", default="")
+    ap.add_argument("--fresh-s", type=float, default=0.50,
+                    help="a published plan older than this is not 'the plan in force' for a vehicle that has "
+                         "moved on; the deviation is reported again restricted to fresher ones")
     args = ap.parse_args()
 
     tj = os.path.join(args.run, "traj.csv")
@@ -177,6 +180,21 @@ def main() -> int:
     both = (clr_true[air] < 0.20) & (clr_pl[air] >= 0.20)
     print("  of the samples that break the contract, %.1f %% were following a plan that HELD it "
           "(so the vehicle, not the plan, is what went below)" % (100.0 * both.sum() / max((clr_true[air] < 0.20).sum(), 1)))
+    # FRESHNESS.  A plan message that is seconds old is not "the plan in force" for a vehicle that has since
+    # moved on, and mixing those in inflates the tail: MEASURED on B9 the lateral p95 read 2.009 m over all
+    # samples.  The deviation that matters is the one measured while the plan is younger than --fresh-s.
+    age = np.abs((t_msg_s[idx] - (t_tap_s + off))[air])
+    fresh = age <= args.fresh_s
+    if fresh.sum() > 100:
+        print("  while the plan is younger than %.2f s (%d of %d samples): lateral |truth-plan| "
+              "median %.3f m, p95 %.3f m, max %.3f m; vertical median %.3f m, p95 %.3f m"
+              % (args.fresh_s, int(fresh.sum()), len(air), np.median(lat[air][fresh]),
+                 np.percentile(lat[air][fresh], 95), lat[air][fresh].max(),
+                 np.median(ver[air][fresh]), np.percentile(ver[air][fresh], 95)))
+        cf = (clr_true[air][fresh] < 0.20) & (clr_pl[air][fresh] >= 0.20)
+        print("  with fresh plans only: %.1f %% of samples below the contract, %.2f %% inside a pillar"
+              % (100.0 * (clr_true[air][fresh] < 0.20).mean(),
+                 100.0 * (clr_true[air][fresh] < 0.0).mean()))
     if args.out:
         np.savetxt(args.out, np.column_stack([t_tap_s[air] - t_tap_s[0], lat[air], ver[air],
                                               clr_pl[air], clr_true[air]]), delimiter=",",

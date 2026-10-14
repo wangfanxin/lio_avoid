@@ -1,0 +1,25 @@
+C2's requirement, measured on the COMPLETED 12-stop sortie B9 (2026-10-14)
+
+the mission: 12 of 12 stops reached, C1 0.086 m, A1 9.84 mm, A2 5.76 mm, landed -- only C2 fails
+
+fresh-plan samples: 69921
+  plan clearance: min 0.187, p05 0.243, median 0.351 m
+  plan clearance bin      n     truth < 0.20 m   truth < 0    needed plan clr for 95 %% of samples to pass
+  [0.20, 0.25)           5705       29.0 %           0.77 %
+  [0.25, 0.30)           4740       21.5 %           4.16 %
+  [0.30, 0.35)          24153       14.6 %           2.15 %
+  [0.35, 0.40)          13122       23.1 %           2.28 %
+  [0.40, 0.50)          13135       20.6 %           0.00 %
+  [0.50, 0.75)           8918       21.9 %           0.00 %
+
+interpretation: the fraction of TRUTH samples below the 0.20 m contract does NOT fall as the plan's
+own clearance grows (29.0 % at plan 0.20-0.25 m, 21.5 % at 0.25-0.30, 14.6 % at 0.30-0.35, 23.1 % at
+0.35-0.40, 20.6 % at 0.40-0.50, 21.9 % at 0.50-0.75).  So C2 is not lost to a plan that is too tight:
+it is lost to the vehicle NOT BEING ON THE PLAN (|truth - plan| median 0.232 m, p95 0.852 m with fresh
+plans), and that tail is what the next measurement has to localise -- a lag ALONG a path cannot explain
+it, because the distance to the curve is invariant to it.
+
+the slow arm (sortie B10, params/ego_planner_slow.yaml: manager/max_vel 0.8, bspline/limit_vel 0.5):
+  stops 1-4 reached, stop 5 missed by 1.876 m, flight aborted; C2 -0.344 m, 71.0 % below the contract,
+  4.04 % inside a pillar; the vehicle wandered to 4.10 m altitude and |truth - plan| went 1.618 m
+  lateral / 1.551 m vertical.  Slowing the planner down made it WORSE, so speed alone is not the lever.
