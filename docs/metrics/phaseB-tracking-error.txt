@@ -1,0 +1,48 @@
+THE TRACKING ERROR, MEASURED (2026-10-14): the aircraft, not the plan
+
+the three links of the chain, each measured against the one above it (sorties C6 / B11 / D1):
+  LIO pose vs truth            A1   8.0-9.6 mm            <- the estimator's input is exact
+  FCU EKF estimate vs truth    A4   18-20 mm (lag +38 ms) <- the estimator's output is good
+  FCU MOTION vs the streamed command                             <- THE WEAK LINK
+missionA-C6-pad-corner-corner  (4657 airborne ticks, 1778 moving)
+   |TRUTH - command|  horizontal: median 0.133 m, p95 2.938 m, max 3.495 m
+   |TRUTH - command|  vertical  : median -0.069 m, p95 0.325 m
+   while moving (0.64 m/s median): horizontal median 0.187, p95 0.674
+   along the command +0.122 m (mean), across -0.026 m (mean); sd along 0.267, across 0.134
+   commanded speed 0.64 m/s -> a pure time lag of -191 ms would explain the mean along
+   [FCU estimate vs its own command, for contrast]: median 0.134 m
+missionA-B11-circle-12-latest  (4901 airborne ticks, 2229 moving)
+   |TRUTH - command|  horizontal: median 0.272 m, p95 2.139 m, max 2.467 m
+   |TRUTH - command|  vertical  : median -0.015 m, p95 0.858 m
+   while moving (0.69 m/s median): horizontal median 0.125, p95 0.553
+   along the command +0.005 m (mean), across +0.017 m (mean); sd along 0.239, across 0.120
+   commanded speed 0.69 m/s -> a pure time lag of -6 ms would explain the mean along
+   [FCU estimate vs its own command, for contrast]: median 0.291 m
+
+why it matters for C2: of the samples that break the 0.20 m contract on C6, 100.0 % were following a
+plan that HELD it, and the median deviation while the truth was INSIDE a pillar was 0.392 m against
+0.214 m overall (docs/metrics/phaseB-collisions-C6.txt).  So the plan is not the problem and raising
+the gate only hides it: the loop that turns commands into motion is.
+
+A/B: WHICH FIELDS OF THE SETPOINT (same mission, same world, same yaw, same gate)
+arm                ticks  moving |t-c| med med(moving)  p95(mov)     v cmd   vel err
+C6  pos+vel+acc     4657    1778     0.133     0.187     0.674     0.636     0.184
+D1  pos+vel         4996    2096     0.162     0.217     0.819     0.636     0.276
+  -> dropping the acceleration field made tracking slightly WORSE (moving median 0.187 -> 0.217 m),
+     so the setpoint form is not the lever; position+velocity+acceleration stays.
+
+THE LOOPS THEMSELVES: every gain is the FIRMWARE DEFAULT for SITL's stock 3.0 kg / 0.35 m quad --
+we have never set one.  From the flight's own BIN (Copter 4.7.1 names):
+  PSC_NE_POS_P 1.0   PSC_NE_VEL_P ? (default)   PSC_NE_VEL_I 1.0   PSC_NE_VEL_D 0.25
+  PSC_NE_VEL_FF 0.0  PSC_NE_VEL_FLTD/FLTE 5.0 Hz   PSC_NE_JERK 5.0
+  PSC_D_POS_P 1.0    PSC_D_VEL_P 5.0            PSC_D_ACC_P 0.05   PSC_D_ACC_I 0.1
+  ATC_ANG_RLL/PIT_P 4.5   ATC_RAT_RLL/PIT_P 0.135  I 0.135  D 0.0036   ATC_RAT_YAW_P 0.18
+  ATC_ANGLE_MAX 30.0 (ours)   MOT_THST_HOVER 0.3676   INS_GYRO_FILTER 20 Hz
+
+NEXT, in order of how much it should move the number:
+  1. sweep the position/velocity loop (PSC_NE_POS_P / PSC_NE_VEL_P,D) -- the two gains in the loop
+     that is failing; 3 flights, one variable each;
+  2. if a sweep does not do it, AUTOTUNE the rate loops (ATC_RAT_*_D 0.0036 is the stock value and
+     is what a 3 kg quad's rate loop usually needs most);
+  3. only then consider a plan-side margin, and note that a 0.45 m gate cannot be met in a forest whose
+     corridors are 0.568 m wide, so that route needs a wider world too.

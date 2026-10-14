@@ -299,17 +299,28 @@ class Mission:
                 self.next_stream = now + period
                 self.stream_external_nav()
                 yaw = self.yaw_command(velocity, period)
-                if velocity is not None and setpoint is not None and accel is not None:
+                # WHICH FIELDS OF THE SETPOINT GO OUT.  The three arms exist because the tracking error is
+                # the open question: MEASURED 2026-10-14, the estimate is good (A4 18-20 mm) and the plans
+                # are legal (100 % of the contract-breaking samples followed a plan that HELD it), while the
+                # AIRCRAFT sits 0.13-0.19 m from the command it is being streamed at 0.64-0.69 m/s.  If
+                # ArduPilot ignores or limits our velocity feed-forward it re-derives its own speed profile,
+                # which would look exactly like this: a smooth, slowly varying error with no fixed lag.
+                # ArduPilot honours position + velocity; the acceleration field is the one whose effect is
+                # unproven, so all three are selectable and the A/B is one flight each.
+                mode = self.args.setpoint_mode
+                vel = None if mode == "pos" else velocity
+                acc = None if mode != "posvelacc" else accel
+                if vel is not None and setpoint is not None and acc is not None:
                     # THE TIME-PARAMETERISED FEED: the plan says where it wants to be, how fast it wants to
                     # be going, and how hard it intends to accelerate.  Sending all three is what makes the
                     # FCU follow the planner's profile instead of re-deriving one from WP_SPD/WP_ACC.
                     self.cmd = np.asarray(setpoint, dtype=float)
-                    self.bridge.send_position_velocity(self.cmd, velocity, yaw, accel)
-                elif velocity is not None and setpoint is not None:
+                    self.bridge.send_position_velocity(self.cmd, vel, yaw, acc)
+                elif vel is not None and setpoint is not None:
                     self.cmd = np.asarray(setpoint, dtype=float)
-                    self.bridge.send_position_velocity(self.cmd, velocity, yaw)
-                elif velocity is not None:
-                    self.bridge.send_velocity(velocity, yaw)
+                    self.bridge.send_position_velocity(self.cmd, vel, yaw)
+                elif vel is not None:
+                    self.bridge.send_velocity(vel, yaw)
                 elif setpoint is not None:
                     self.cmd = np.asarray(setpoint, dtype=float)
                     self.bridge.send_position(self.cmd, yaw)
@@ -1123,6 +1134,11 @@ def main() -> int:
     ap.add_argument("--settle-s", type=float, default=GATES["settle_s"],
                     help="and give up waiting after this long")
     ap.add_argument("--yaw", type=float, default=0.0, help="commanded yaw, rad (0 = North)")
+    ap.add_argument("--setpoint-mode", default="posvelacc", choices=["pos", "posvel", "posvelacc"],
+                    help="which fields of SET_POSITION_TARGET_LOCAL_NED carry the plan: position only, "
+                         "position+velocity, or position+velocity+acceleration (the historical default).  The "
+                         "tracking error (0.13-0.19 m at 0.65 m/s) is the open question, and this is the "
+                         "cheapest way to ask whether the feed-forward is being honoured")
     ap.add_argument("--yaw-mode", default="fixed", choices=["fixed", "velocity"],
                     help="fixed: stream --yaw unchanged (the historical behaviour, and what every mission-A "
                          "number was flown with).  velocity: point the nose along the plan's horizontal "
