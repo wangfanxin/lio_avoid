@@ -464,6 +464,22 @@ class EgoAdapter:
         out.header.frame_id = FRAME_L
         out.pose.position.x, out.pose.position.y, out.pose.position.z = (float(v) for v in p_l)
         out.pose.orientation.w = 1.0
+        # ONE FORWARD PER GOAL, NOT ONE PER SECOND.  MEASURED 2026-10-14 (sortie R1, the circle): the
+        # adapter forwarded the goal at 1 Hz (63 "Triggered!" callbacks in 85 s), and every forward makes ego
+        # rebuild its GLOBAL trajectory (planNextWaypoint -> planGlobalTraj) and push the FSM back into
+        # REPLAN_TRAJ -- 106 REPLAN_TRAJ->EXEC_TRAJ and 47 EXEC_TRAJ->REPLAN_TRAJ transitions in one sortie.
+        # The local plan was therefore invalidated once a second, the committed trajectory's anchor
+        # alternated between two pipelines, and the vehicle never followed one plan long enough to make
+        # progress (truth never left E <= 4.69 while 145 trajectories were committed).  The repetition
+        # existed because a goal that arrives before odometry used to crash the planner -- but nothing above
+        # this line forwards such a goal (see the DEFER guard), so the repeat has no job left.  The slow
+        # repeat stays as a safety net in case a goal is ever lost.
+        now = time.time()
+        same = (self.goal_l is not None) and float(np.linalg.norm(p_l - self.goal_l)) < 0.05
+        if same and (now - self.last_goal_fwd) < self.args.goal_repeat_s:
+            self.n_goal_dedup = getattr(self, "n_goal_dedup", 0) + 1
+            return
+        self.last_goal_fwd = now
         self.goal_pub.publish(out)
         self.goal_l, self.goal_w = p_l, p_w
         self.n_goal_out += 1
@@ -788,6 +804,18 @@ def main():
                          "(MEASURED: F1 withheld one plan ~250 times over 50 s while the aircraft hovered)")
     ap.add_argument("--stall-s", type=float, default=2.0,
                     help="how long the same trajectory must be withheld before it counts as a stall, s")
+    ap.add_argument("--goal-repeat-s", type=float, default=1.0,
+                    help="forward an UNCHANGED goal again only after this many seconds; 1.0 reproduces the "
+                         "historical behaviour, which is also the one MEASURED to be load-bearing: with "
+                         "dedup on (10 s) sortie S1 forwarded 2 goals instead of 63, ego committed 6 "
+                         "trajectories instead of 145, and the aircraft stopped dead at stop 1 -- because a "
+                         "1 Hz goal is what pulls ego back out of WAIT_TARGET (it enters that state on "
+                         "arrival by design) and pushes it into REPLAN_TRAJ.  So the repeats are NOT the bug; "
+                         "the bug is that each repeat makes ego rebuild its GLOBAL trajectory and "
+                         "invalidate the local plan with it (R1: 63 callbacks, 106 REPLAN_TRAJ->EXEC_TRAJ "
+                         "and 47 EXEC_TRAJ->REPLAN_TRAJ transitions in one sortie, 145 trajectories, no "
+                         "progress).  The fix therefore belongs INSIDE ego (ignore a waypoint it is already "
+                         "pursuing), not here")
     ap.add_argument("--odom-topic", default="/lio/robo/odom")
     ap.add_argument("--rate", type=float, default=4.0, help="republish rate, Hz (>= 2 required)")
     ap.add_argument("--dt", type=float, default=0.02, help="trajectory-time sample spacing, s")

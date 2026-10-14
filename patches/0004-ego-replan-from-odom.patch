@@ -1,8 +1,8 @@
 diff --git a/src/planner/plan_manage/src/ego_replan_fsm.cpp b/src/planner/plan_manage/src/ego_replan_fsm.cpp
-index 9823311..4c61092 100755
+index 9823311..c62fab3 100755
 --- a/src/planner/plan_manage/src/ego_replan_fsm.cpp
 +++ b/src/planner/plan_manage/src/ego_replan_fsm.cpp
-@@ -771,6 +771,33 @@ namespace ego_planner
+@@ -771,6 +771,38 @@ namespace ego_planner
      start_vel_ = info->velocity_traj_.evaluateDeBoorT(t_cur);
      start_acc_ = info->acceleration_traj_.evaluateDeBoorT(t_cur);
  
@@ -17,20 +17,25 @@ index 9823311..4c61092 100755
 +    // odometry, the odometry wins; the acceleration is zeroed because ego never fills odom_acc_ (it is
 +    // commented out in odometryCallback).
 +    {
++      // PATCH H2 (patches/0004-ego-replan-from-odom.patch): ALWAYS, not above a threshold.
++      // MEASURED 2026-10-14 (sortie Q1): with the 0.30 m threshold ego committed 123 trajectories, one per
++      // second, whose start ALTERNATED between the vehicle (4.52, 0.02) and a point 0.30 m away
++      // (4.35, 0.31) for sixty seconds while the truth never left E <= 4.69 -- so every "new" trajectory
++      // began somewhere else, none was ever flown to completion, the vehicle never progressed, and the
++      // sequencer's timeout took the stop.  The alternation distance IS the threshold: that is what
++      // identifies it as the cause.  The proxy below is only ever right while the vehicle is following that
++      // trajectory; the odometry is the vehicle.
 +      const double start_dev = (start_pt_ - odom_pos_).norm();
-+      if (start_dev > 0.30)
++      static long replan_from_odom_count = 0;
++      if ((replan_from_odom_count++ % 20) == 0)
 +      {
-+        static long replan_from_odom_count = 0;
-+        if ((replan_from_odom_count++ % 20) == 0)
-+        {
-+          RCLCPP_WARN(node_->get_logger(),
-+                      "PLAN-START: the trajectory put the start %.3f m from the odometry; using the odometry "
-+                      "(%ld times so far)", start_dev, replan_from_odom_count);
-+        }
-+        start_pt_ = odom_pos_;
-+        start_vel_ = odom_vel_;
-+        start_acc_.setZero();
++        RCLCPP_WARN(node_->get_logger(),
++                    "PLAN-START: replanning from the odometry (the trajectory put the start %.3f m away; "
++                    "%ld replans)", start_dev, replan_from_odom_count);
 +      }
++      start_pt_ = odom_pos_;
++      start_vel_ = odom_vel_;
++      start_acc_.setZero();
 +    }
 +
      bool success = callReboundReplan(false, false);
