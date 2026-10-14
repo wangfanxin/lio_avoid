@@ -603,19 +603,26 @@ class EgoAdapter:
             d = np.linalg.norm(pos - self.odom_l, axis=1)
             i0 = int(np.argmin(d))
             info["start_d"] = float(d[i0])
-            if d[i0] > self.args.start_max and not self._connection_is_clear(self.odom_l, pos[i0]):
-                # The start distance is a PROXY for the property that matters: can the vehicle get from
-                # where it is to where the path begins without crossing a pillar?  MEASURED 2026-10-14 in
-                # the first live Mission B attempts: the planner planned fine but every path started
-                # 3.4-3.6 m away and this gate withheld 150 of them, which from the flight side looks
-                # exactly like "a planner that never plans".  When the straight connection is inside the
-                # arena and clears every pillar by the footprint, the follower can fly it, so the path is
-                # published; otherwise it is still withheld, now with the clearance that failed.
-                return None, ("starts %.3f m from the vehicle (> %.2f m); t_cur %.3f s of dur %.3f s (start_time %.3f, now %.3f, sim_offset %.1f) and the connecting segment is "
-                              "not clear (%s)" % (d[i0], self.args.start_max, t_cur, dur, t0,
-                                                  self.node.get_clock().now().nanoseconds * 1e-9,
-                                                  self.node.get_clock().now().nanoseconds * 1e-9 - t0,
-                                                  self._connection_is_clear(self.odom_l, pos[i0], True)))
+            # NO START/CONNECTOR GATE.  This used to refuse a plan whose nearest point was further than
+            # --start-max (0.50 m) AND whose straight connection from the vehicle was not clear, and that pair
+            # of conditions -- which upstream's own consumer does not have -- is what starved sorties
+            # AG1/AH1/AI1: MEASURED (sortie AI1, one DIAG line per second for 60 s) the FSM held ONE stale
+            # 0.163 m fragment whose first point was 5.97 m away while this gate refused every fresh plan with
+            # "starts 0.997 m from the vehicle (> 0.50 m) ... the connecting segment is not clear", so the
+            # message count stopped at 41 and the mission aborted.
+            # WHY THE GATE EXISTED, AND WHY IT IS NOT NEEDED ANY MORE: the FSM used to treat the published
+            # Path as a GEOMETRIC path to be joined (it rebased the timeline to "now" on every switch, so its
+            # first command was the path's first point = the connector).  upstream's traj_server evaluates the
+            # spline on the SPLINE'S OWN TIMELINE (`t_cur = now - start_time`, no rebasing) and hovers at the
+            # end once the time is past -- so there is no connector to clear, only a timed reference.  The FSM
+            # now does the same (see follow_spline), which is what makes this gate unnecessary rather than
+            # merely inconvenient.
+            if d[i0] > self.args.start_max:
+                self.n_far_start = getattr(self, "n_far_start", 0) + 1
+                if self.n_far_start <= 3 or self.n_far_start % 25 == 0:
+                    print("ego_adapter: NOTE %d: the plan's nearest point is %.3f m from the vehicle "
+                          "(> %.2f m) -- published anyway, upstream-style, and the FSM follows it on the "
+                          "spline's own timeline" % (self.n_far_start, d[i0], self.args.start_max), flush=True)
         # A path of ONE point is not a path: once the vehicle reaches the end of the spline the
         # projection lands on the last sample and the published Path degenerated to a single pose
         # (MEASURED 2026-10-14: "points per path 1" on the final messages, and an arc length of

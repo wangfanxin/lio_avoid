@@ -881,32 +881,41 @@ class Mission:
 
         self.set_phase("traj")
         t_start = time.monotonic()
-        t_wall0 = time.time()                              # the stamps are wall-clock seconds
+        # THE SPLINE'S OWN TIMELINE, NOT A REBASED ONE.  This used to set `t_wall0 = time.time()` on every
+        # plan switch, i.e. it treated the published Path as a GEOMETRIC path to be joined from its first
+        # point -- which is what created the "connector" (the straight line from the vehicle to the path's
+        # start) that the adapter then had to gate, and what starved the mission whenever that line crossed a
+        # pillar.  upstream's consumer does the opposite (src/planner/plan_manage/src/traj_server.cpp):
+        #     t_cur = (now - start_time_).seconds();  ... traj_[i].evaluateDeBoorT(t_cur)
+        # i.e. it evaluates the spline ON THE SPLINE'S OWN CLOCK, with no rebasing, and hovers at the end once
+        # t_cur passes the duration.  The per-point stamps the adapter writes (start_time + t_i) carry exactly
+        # that clock, so this is the same rule with no interface change.
         t0_cur = float(self.path_t[0])
         n_switch = 0
         while True:
             if self.abort_reason:
                 return self.abort_reason
-            # FOLLOW THE LATEST PLAN, not the first one seen.  MEASURED 2026-10-14 (B9, the completed 12-stop
-            # sortie): the deviation from the plan grows with the plan's AGE (0.200 m at <= 0.05 s old, 0.368 m
-            # at 0.30-0.50 s) and the truth then breaks the 0.20 m contract in 20 % of the samples even though
-            # every published plan HOLDS it -- because ego replans continuously (4 Hz, 2.6 Hz of genuinely new
-            # plans) and bends the path around pillars it has just seen, while this loop kept flying the copy it
-            # started with.  Upstream's traj_server does the other thing: it evaluates the NEWEST B-spline at
-            # the current time.  Switching rebases the time origin, which is exactly what the new plan's own
-            # stamps mean (its first point is the vehicle's current state).
             if self.args.follow_latest and self.path_t is not None \
                     and float(self.path_t[0]) != t0_cur and self._traj_usable():
                 p, tt, dur = snapshot()
                 t0_cur = float(self.path_t[0])
-                t_wall0 = time.time()
                 n_switch += 1
                 if n_switch <= 3 or n_switch % 20 == 0:
                     self.log("switched to a newer plan (%d so far): %d points, %.2f s, %.2f m"
                              % (n_switch, len(p), dur,
                                 float(np.sum(np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1)))))
-            t_rel = (time.time() - t_wall0) + self.args.spline_lead
+            t_rel = (time.time() - t0_cur) + self.args.spline_lead
             pos, vel, acc = ref_at(p, tt, t_rel)
+            # A PLAN WHOSE CLOCK HAS RUN OUT IS NOT A TARGET.  On the spline's own timeline a stale plan
+            # evaluates to its LAST point (upstream hovers there, and for their drone that point is the goal
+            # it was already heading for).  Here it can be metres away, and commanding it is a straight line
+            # through the forest: MEASURED (sortie AF1) that produced 8 of 12 stops AND 46.6 % of samples below
+            # the contract with 14.03 % INSIDE a pillar, while every published plan held 0.20 m.  So when the
+            # clock is out and the straight segment to that end point is not verified clear, hold where we are
+            # and wait for a fresh plan instead.
+            if t_rel >= dur and not self._hold_is_legal(pos):
+                self.pump(0.05)
+                continue
             self.cmd = pos
             st = self.bridge.state()                       # the FCU's own state, read BEFORE the freeze test
             here = np.array(st.pos)
