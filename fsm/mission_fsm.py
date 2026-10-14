@@ -610,6 +610,25 @@ class Mission:
         seg = float(np.sum(np.linalg.norm(np.diff(self.path_l[:, :2], axis=0), axis=1)))
         return seg >= self.args.min_traj_m
 
+    def _traj_starts_here(self):
+        """Does the plan in hand start where the vehicle is?
+
+        THE FRESHNESS TEST ALONE STARVES THE MISSION.  `_wait_for_spline` accepts a plan only when its
+        first-point stamp differs from the last one flown, on the assumption that every plan the planner
+        publishes is new.  MEASURED 2026-10-14 (sorties AA1-AD1, the circle): once the vehicle comes to rest,
+        ego's commits collapse to ~0.2 Hz (it enters WAIT_TARGET by design on arrival and each goal re-arms it
+        only once), so the adapter re-publishes THE SAME plan 4 times a second -- re-projected onto the
+        vehicle's CURRENT position every time, because that is what planner/ego_adapter.py's build_path does.
+        The FSM therefore threw away 19 of the 20 distinct plans the recorder saw and waited out its 60 s:
+        "ABORT: no new trajectory on /planner/traj within 60 s after 1 trajectories (sequencer at stop 2)".
+        A re-projected plan IS a usable plan: its first point is at the vehicle.  This is the test for that.
+        """
+        if self.path_l is None or len(self.path_l) < 2:
+            return False
+        st = self.bridge.state()
+        here = np.array(st.pos)
+        return float(np.linalg.norm(here[:2] - self.path_l[0, :2])) < self.args.reaccept_m
+
     def _wait_for_spline(self, last_t0):
         """Wait for a trajectory, optionally one NEWER than `last_t0` (its first point stamp).
 
@@ -618,11 +637,19 @@ class Mission:
         that does not; MEASURED 2026-10-14, without it the spline arm aborted at 16 s with "no trajectory"
         while the planner was still initialising.
         """
-        if self.path_l is not None:
-            if self._traj_usable() and (last_t0 is None
-                                        or (self.path_t is not None
-                                            and float(self.path_t[0]) != float(last_t0))):
+        def ok():
+            if not self._traj_usable():
+                return False
+            if last_t0 is None:
                 return True
+            if self.path_t is not None and float(self.path_t[0]) != float(last_t0):
+                return True
+            # ... or a re-published copy that the adapter has re-projected onto the vehicle (see
+            # _traj_starts_here): MEASURED, without this the FSM flies 1 of 20 published plans.
+            return self.args.reaccept_m > 0.0 and self._traj_starts_here()
+
+        if self.path_l is not None and ok():
+            return True
         t_wait = time.monotonic()
         self.log("waiting up to %.0f s on %s for %s"
                  % (self.args.traj_wait_s, self.args.traj_topic,
@@ -630,12 +657,13 @@ class Mission:
         while time.monotonic() - t_wait < self.args.traj_wait_s:
             if self.abort_reason:
                 return False
-            if self.path_l is not None and self._traj_usable() and \
-                    (last_t0 is None or (self.path_t is not None
-                                         and float(self.path_t[0]) != float(last_t0))):
-                self.log("trajectory arrived after %.1f s: %d points, t0 %.3f"
+            if self.path_l is not None and ok():
+                self.log("trajectory arrived after %.1f s: %d points, t0 %.3f%s"
                          % (time.monotonic() - t_wait, len(self.path_l),
-                            float(self.path_t[0]) if self.path_t is not None else float("nan")))
+                            float(self.path_t[0]) if self.path_t is not None else float("nan"),
+                            " (a re-projected copy, accepted because it starts at the vehicle)"
+                            if last_t0 is not None and self.path_t is not None
+                            and float(self.path_t[0]) == float(last_t0) else ""))
                 return True
             self.pump(0.1)
         return False
@@ -1194,6 +1222,13 @@ def main() -> int:
     ap.add_argument("--hold-max-s", type=float, default=20.0,
                     help="spline mode: how long to HOLD the current position while the sequencer dwells on "
                          "a stop before giving up and waiting for the next trajectory")
+    ap.add_argument("--reaccept-m", type=float, default=0.50,
+                    help="spline mode: also accept a plan whose first-point STAMP is unchanged, provided its "
+                         "first point is within this many metres of the vehicle -- i.e. a re-published copy "
+                         "that the adapter has re-projected onto the current position.  MEASURED 2026-10-14 "
+                         "(sorties AA1-AD1): ego's commit rate collapses to ~0.2 Hz once the vehicle rests, so "
+                         "without this the FSM flew 1 of the 20 distinct plans the recorder saw and aborted on "
+                         "its 60 s wait.  0 disables the fallback (the historical behaviour)")
     ap.add_argument("--hold-at-m", type=float, default=0.50,
                     help="spline mode: only hold the station if the trajectory ended within this distance of "
                          "the vehicle -- otherwise the plan was a short hop and the mission is still moving")
