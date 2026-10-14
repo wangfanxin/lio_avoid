@@ -42,10 +42,16 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 
-def load_world_module():
-    """tools/world-circle.py is a script with a hyphen in its name, so import it by path."""
-    path = os.path.join(ROOT, "tools", "world-circle.py")
-    spec = importlib.util.spec_from_file_location("world_circle", path)
+def load_world_module(mission="circle"):
+    """The mission's stop list: `tools/world-circle.py` or `tools/world-rect.py`.
+
+    Both are scripts with a hyphen in their name, so they are imported by path.  The mission shape is the
+    OWNER'S decision: since 2026-10-15 the mission is the rectangle x in [-4, +4], y in [-3, +3], and the
+    circle is kept only for comparison (it is no longer flown).
+    """
+    name = "world-rect.py" if mission == "rect" else "world-circle.py"
+    path = os.path.join(ROOT, "tools", name)
+    spec = importlib.util.spec_from_file_location("world_mission", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -76,6 +82,13 @@ def l_to_w(calib, p_l):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--world", default=os.path.join(ROOT, "worlds", "forest_b.yaml"))
+    ap.add_argument("--mission", default="rect", choices=["rect", "circle"],
+                    help="the mission's stop list: 'rect' (the owner's current mission, x in [-4,+4], "
+                         "y in [-3,+3]) or 'circle' (kept for comparison only)")
+    ap.add_argument("--stops", type=int, default=0,
+                    help="rect only: number of stops along the perimeter; 0 (the default) = the FOUR CORNERS, "
+                         "which is the mission the owner asked for ('矩形只要四个角点')")
+    ap.add_argument("--corners", action="store_true", help="rect only: force the 4 corners (already default)")
     ap.add_argument("--calib-file", default="/mnt/d/distill_self/_stage/calib.json",
                     help="the SAME L->W calibration the adapter and the FSM use")
     ap.add_argument("--out", default="", help="write the YAML here (default: stdout)")
@@ -94,9 +107,19 @@ def main() -> int:
     ap.add_argument("--node", default="ego_planner_node", help="the planner node name in the YAML")
     args = ap.parse_args()
 
-    wc = load_world_module()
+    wc = load_world_module(args.mission)
     calib = load_calib(args.calib_file)
-    stops_w = wc.commanded_points(args.world)
+    # Only pass the keywords the chosen generator actually accepts, so wiring one mission cannot break the
+    # other (the rectangle takes n/corners, the circle takes neither).
+    sig = inspect.signature(wc.commanded_points)
+    kw = {}
+    if "n" in sig.parameters and args.stops:
+        kw["n"] = args.stops
+    if "corners" in sig.parameters:
+        # THE OWNER'S MISSION: the four corners of x in [-4,+4], y in [-3,+3].  Asking for perimeter stops
+        # (--stops N) is the alternative, not the default.
+        kw["corners"] = (args.stops <= 0) or args.corners
+    stops_w = wc.commanded_points(args.world, **kw)
     if not stops_w:
         print("no commanded points in %s" % args.world, file=sys.stderr)
         return 1
@@ -147,8 +170,8 @@ def main() -> int:
         with open(args.out, "w") as fh:
             fh.write(text)
 
-    print("mission-params: %d stops from %s -> %s" % (len(stops_l), os.path.basename(args.world),
-                                                      args.out or "stdout"))
+    print("mission-params: mission=%s, %d stops from %s -> %s"
+          % (args.mission, len(stops_l), os.path.basename(args.world), args.out or "stdout"))
     print("   calibration  %s" % calib.summary())
     print("   advance %.3f m, loop %s, dwell %s" % (args.advance_m, args.loop,
                                                    dwell if dwell else args.dwell_s))
