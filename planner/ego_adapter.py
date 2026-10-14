@@ -702,6 +702,32 @@ class EgoAdapter:
         pos, ts = pos[i0:], ts[i0:]
         info["n"] = len(pos)
 
+        # AN EXPIRED OR DEGENERATE SPLINE IS NOT A PLAN -- SAY SO INSTEAD OF PUBLISHING THE STUB.
+        # MEASURED sortie AO2 (2026-10-14, circle): ego committed its last spline 75 s into an 82 s flight,
+        # and this node then re-projected that SAME expired spline ~250 times, each time as a 2-pose 0.006 m
+        # fragment ("published 2 poses on /planner/traj  (t_cur 0.415 / 0.415 s, start 0.1392 m from the
+        # vehicle ...)"), while the consumer refused every one of them with "arc 0.006 < 0.10 m" and the
+        # sortie aborted 60 s later.  From the consumer's side "the planner keeps offering me a FINISHED
+        # plan" and "the planner is offering me a BAD plan" are indistinguishable, and a stub 250 times over
+        # reads like a plan stream to any counter in the stack.  upstream's consumer has no length gate
+        # because upstream's producer only ever publishes a live spline; where it cannot, the honest signal
+        # is "I have no plan" -- here a WITHHELD plan with a named reason, which after --stall-s of the same
+        # trajectory also raises /planner/stalled (the signal the FSM and the orchestrator can consume).
+        _arc = (float(np.sum(np.linalg.norm(np.diff(pos[:, :2], axis=0), axis=1)))
+                if len(pos) >= 2 else 0.0)
+        info["arc"] = _arc
+        if t_cur >= dur - 1e-6:
+            self.n_no_plan = getattr(self, "n_no_plan", 0) + 1
+            return None, ("the spline's clock has run out (t_cur %.3f of %.3f s, committed %.1f s ago): "
+                          "nothing of it is left to publish and the planner has committed no newer "
+                          "trajectory" % (t_cur, dur, time.time() - t0))
+        if _arc < 0.10:
+            self.n_no_plan = getattr(self, "n_no_plan", 0) + 1
+            return None, ("what is left to fly is %.4f m long (t_cur %.3f of %.3f s, %d points, nearest "
+                          "point %.3f m from the vehicle): too short to be a plan -- the planner has "
+                          "committed no newer trajectory"
+                          % (_arc, t_cur, dur, len(pos), float(info.get("start_d", float("nan")))))
+
         cl = self.world.clearance(pos)
         info["clr_min"] = float(cl.min())
         # THE ALTITUDE BAND.  MEASURED 2026-10-14 across sorties: ego's B-spline wanders in z -- plans were
