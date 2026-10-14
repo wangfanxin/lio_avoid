@@ -77,6 +77,15 @@ def main() -> int:
     ap.add_argument("--z", type=float, default=None, help="override the mission altitude, m")
     ap.add_argument("--spacing", type=float, default=0.05, help="path point spacing, m")
     ap.add_argument("--rate", type=float, default=4.0, help="republish rate, Hz")
+    ap.add_argument("--hold-s", type=float, default=-1.0,
+                    help="HOVER THIS LONG AT EVERY CORNER: the producer then publishes one LEG per message and "
+                         "keeps publishing the leg past its flight time, so the consumer holds at the corner. "
+                         "-1 (default) = use the world file's mission_a.hold_s; 0 = one continuous path (old)")
+    ap.add_argument("--leg-speed", type=float, default=0.30,
+                    help="assumed speed used to decide that a leg has been flown (leg_len / this = the wait "
+                         "before the corner dwell starts).  The measured route speed on this mission is "
+                         "~0.15-0.25 m/s including the corners, so the default is deliberately slow: the "
+                         "dwell then begins after the aircraft has almost certainly arrived")
     ap.add_argument("--calib-file", default="",
                     help="the MEASURED L->W calibration -- the SAME file the FSM converts with.  "
                          "Without it this node publishes the path using the PREDICTED transform, and if "
@@ -87,7 +96,12 @@ def main() -> int:
     corners, mission = load_square(args.world)
     if args.z is not None:
         corners[:, 2] = args.z
+    hold_s = args.hold_s if args.hold_s >= 0.0 else float(mission.get("hold_s", 0.0) or 0.0)
     path_w = densify(corners, args.spacing)
+    legs_w = None
+    if hold_s > 0.0:
+        legs_w = [densify(np.asarray([corners[i], corners[(i + 1) % len(corners)]], dtype=float), args.spacing)
+                  for i in range(len(corners))]
     print("rectangle_source: square in W (ENU, origin = pad):")
     for i, c in enumerate(corners):
         print("   corner %d  E %+6.3f  N %+6.3f  U %+6.3f" % (i, c[0], c[1], c[2]))
@@ -116,6 +130,7 @@ def main() -> int:
           % (dt[0], dt[1], dt[2], float(np.linalg.norm(dt)) * 1e3))
     R_LW = calib.R_WL.T
     path_l = (R_LW @ (path_w - calib.t_WL).T).T
+    legs_l = None if legs_w is None else [(R_LW @ (leg - calib.t_WL).T).T for leg in legs_w]
     # what the FSM will compute back, printed here so the round trip is visible in the log
     back = (calib.R_WL @ path_l.T).T + calib.t_WL
     err = np.linalg.norm(back - path_w, axis=1)
@@ -140,27 +155,51 @@ def main() -> int:
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
     pub = node.create_publisher(Path, args.topic, qos)
 
-    msg = Path()
-    msg.header.frame_id = "lio_world"
-    for i, (x, y, z) in enumerate(path_l):
-        ps = PoseStamped()
-        ps.header.frame_id = "lio_world"
-        ps.pose.position.x = float(x)
-        ps.pose.position.y = float(y)
-        ps.pose.position.z = float(z)
-        # yaw per point: the tangent of the path, which is what the FSM holds
-        nxt = path_l[(i + 1) % len(path_l)]
-        yaw = math.atan2(nxt[1] - y, nxt[0] - x)
-        ps.pose.orientation.w = math.cos(yaw / 2.0)
-        ps.pose.orientation.z = math.sin(yaw / 2.0)
-        msg.poses.append(ps)
+    def make_path(pts):
+        m = Path()
+        m.header.frame_id = "lio_world"
+        for i, (x, y, z) in enumerate(pts):
+            ps = PoseStamped()
+            ps.header.frame_id = "lio_world"
+            ps.pose.position.x = float(x)
+            ps.pose.position.y = float(y)
+            ps.pose.position.z = float(z)
+            # yaw per point: the tangent of the path, which is what the FSM holds
+            nxt = pts[(i + 1) % len(pts)]
+            yaw = math.atan2(nxt[1] - y, nxt[0] - x)
+            ps.pose.orientation.w = math.cos(yaw / 2.0)
+            ps.pose.orientation.z = math.sin(yaw / 2.0)
+            m.poses.append(ps)
+        return m
+
+    msgs = [make_path(leg) for leg in legs_l] if legs_l is not None else [make_path(path_l)]
+    msg = msgs[0]
 
     import time
     print("publishing %d poses on %s at %.1f Hz (frame lio_world)" % (len(msg.poses), args.topic,
                                                                       args.rate), flush=True)
     t0 = time.monotonic()
     period = 1.0 / args.rate
+    if len(msgs) > 1:
+        print("corner holds ON: %d legs, %.1f s dwell at each corner (assumed leg speed %.2f m/s)"
+              % (len(msgs), hold_s, args.leg_speed), flush=True)
+    i_leg, leg_len, t_leg, t_hold = 0, None, time.monotonic(), None
     while rclpy.ok():
+        if len(msgs) > 1:
+            if leg_len is None:
+                leg_len = float(np.sum(np.linalg.norm(np.diff(legs_l[i_leg][:, :2], axis=0), axis=1)))
+                t_leg, t_hold = time.monotonic(), None
+                print("LEG %d -> corner %d: %.3f m, %.1f s of flight then %.1f s of hold"
+                      % (i_leg, (i_leg + 1) % len(legs_l), leg_len, leg_len / args.leg_speed, hold_s),
+                      flush=True)
+            if time.monotonic() - t_leg >= leg_len / args.leg_speed:
+                if t_hold is None:
+                    t_hold = time.monotonic()
+                    print("HOLD at corner %d: dwelling %.1f s" % ((i_leg + 1) % len(legs_l), hold_s), flush=True)
+                elif time.monotonic() - t_hold >= hold_s and i_leg < len(msgs) - 1:
+                    i_leg += 1
+                    leg_len = None
+        msg = msgs[i_leg]
         stamp = node.get_clock().now().to_msg()
         msg.header.stamp = stamp
         for ps in msg.poses:

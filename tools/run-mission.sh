@@ -351,7 +351,10 @@ if [ "$TRAJ_SOURCE" = "planner" ]; then
         FSM_ARGS="${FSM_ARGS:-} --stations $STATIONS"
     fi
 else
-    python3 "$REPO/planner/rectangle_source.py" --world "$WORLD" $TRAJ_CALIB_ARG > "$OUT/traj.log" 2>&1 &
+    # RECT_HOLD_S=5 -> hover 5 s at every corner (the producer then publishes one leg per message and keeps
+    # publishing the leg past its flight time, so the FSM holds at the corner; 0/unset = one continuous path)
+    python3 "$REPO/planner/rectangle_source.py" --world "$WORLD" $TRAJ_CALIB_ARG \
+        ${RECT_HOLD_S:+--hold-s "$RECT_HOLD_S"} > "$OUT/traj.log" 2>&1 &
     TRAJ_PID=$!
 fi
 python3 "$REPO/fsm/mission_fsm.py" --nav-source "$NAV_SOURCE" $CALIB_ARG \
