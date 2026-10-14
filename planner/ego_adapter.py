@@ -812,6 +812,35 @@ class EgoAdapter:
 
         info = {"t_cur": t_cur, "duration": dur, "n": len(pos), "t0": t0}
 
+        # WHERE DOES THIS PLAN START, AND WHERE IS THE AIRCRAFT?  (AP6 forensics, A.)
+        # MEASURED (tools/plan-start-audit.py on sortie AP6-rect-dyn, 14 committed trajectories): some plans
+        # are anchored at the vehicle to the millimetre (|cp0 - LIO track| 0.000-0.002 m) and others sit
+        # 2.2-2.6 m away with a 0.35 m extent -- hover plans somewhere the aircraft is not.  The FSM then
+        # refuses them (--reaccept-m 0.50) and the mission cannot advance, and NOTHING in the run said which
+        # kind of plan had arrived.  These four numbers, per newly committed trajectory, say it:
+        #     |cp0 - odom|        the first CONTROL point (what a reader would call "the start")
+        #     |spline(0) - odom|  the CURVE at t=0 -- for a uniform cubic B-spline this is a weighted average
+        #                         of cp0..cp3, so it is NOT cp0, and a diagnostic that conflates them
+        #                         mis-locates the plan by the length of the first segment
+        #     |cp(t_cur) - odom|  where the curve is at the time it is being read (what the consumer follows)
+        #     extent              how much ground the whole curve covers
+        if self.odom_l is not None and not getattr(self, "_start_logged_t0", None) == t0:
+            self._start_logged_t0 = t0
+            _cp0 = pts[0]
+            _s0 = pos[0]
+            _scur = bspline_eval(knots, pts, m.order, t_cur)
+            _ext = float(np.max(np.linalg.norm(pos - pos[0], axis=1)))
+            _anchor = float(np.linalg.norm(_cp0 - self.odom_l))
+            print("ego_adapter PLAN-START: traj %.3f  dur %.2f s, %d ctrl, %d samples | |cp0-odom| %.3f m, "
+                  "|spline(0)-odom| %.3f m, |spline(t_cur)-odom| %.3f m, extent %.3f m | odom "
+                  "[%+.3f %+.3f %+.3f] -> %s"
+                  % (t0, dur, len(pts), len(pos), _anchor,
+                     float(np.linalg.norm(_s0 - self.odom_l)),
+                     float(np.linalg.norm(_scur - self.odom_l)), _ext,
+                     self.odom_l[0], self.odom_l[1], self.odom_l[2],
+                     "ANCHORED at the vehicle" if _anchor < 0.30 else
+                     "*** NOT ANCHORED: the plan starts %.2f m from the vehicle ***" % _anchor), flush=True)
+
         # WHERE THE PATH STARTS.  The contract's third obligation is "never publish a path that starts
         # more than 0.5 m from the vehicle's current state", and this is the one place it can be met
         # or broken.  The spline is a TIMED trajectory planned at ~1 Hz from the odometry of that

@@ -86,11 +86,39 @@ source "$WS/install/setup.bash"
 set -u
 export ROS_LOCALHOST_ONLY=1
 
-pkill -f "sim/lidar_imu.py" 2>/dev/null
-pkill -f "sim/truth_rx.py" 2>/dev/null
-pkill -f "super_lio_node" 2>/dev/null
-pkill -f "rectangle_source.py" 2>/dev/null
-pkill -f "mission_fsm.py" 2>/dev/null
+# ------------------------------------------------------------------ PROCESS OWNERSHIP (audit F2)
+# NO UNANCHORED pkill, NO -9 BY PROGRAM NAME, AND NO SILENT TAKE-OVER.  The block that used to stand here
+# killed `sim/lidar_imu.py`, `super_lio_node`, `mission_fsm.py` ... by name -- i.e. it killed whatever else
+# happened to be running those programs, which in this project has ALREADY killed another agent's in-flight
+# sortie (`pkill -9 -f arducopter`), and it never touched the PLANNER chain, so a stale adapter could go on
+# publishing /planner/traj into the next sortie while that sortie's FSM overwrote its own plan without
+# asking.  The rule now:
+#   * THIS script is started with `setsid` and is therefore the leader of its own process group; the group is
+#     the sortie's identity, and teardown kills the GROUP, never a name;
+#   * a LOCK names the live sortie.  If its leader is alive the new sortie REFUSES TO START (exit 3) with the
+#     other tag in the message -- one flight at a time, enforced by the harness rather than by good manners;
+#   * if the leader is GONE, its group's leftovers are killed by GROUP ID (precise) and the run continues.
+LOCK=/tmp/lio_avoid_sortie.lock
+PGID_SELF="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+if [ -e "$LOCK" ]; then
+    OLD="$(cat "$LOCK" 2>/dev/null || true)"
+    OLD_PID="${OLD%%:*}"
+    OLD_TAG="${OLD##*:}"
+    if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+        echo "REFUSING TO START: a sortie is already live -- pid $OLD_PID, tag '$OLD_TAG' ($LOCK)." >&2
+        echo "  ONE FLIGHT AT A TIME is the project's rule, and this refusal is how it is enforced:" >&2
+        echo "  wait for that sortie to finish, or stop it deliberately.  Nothing has been killed." >&2
+        exit 3
+    fi
+    if [ -n "$OLD_PID" ]; then
+        echo "clearing the leftovers of the DEAD sortie '$OLD_TAG' (process group $OLD_PID):"
+        pgrep -g "$OLD_PID" 2>/dev/null | sed 's/^/   pid /' || true
+        kill -9 -- "-$OLD_PID" 2>/dev/null || true
+        sleep 1
+    fi
+fi
+echo "$$:$TAG" > "$LOCK"
+echo "sortie lock : $LOCK ($TAG, pid $$, process group ${PGID_SELF:-?})"
 sleep 1
 
 echo "== revisions under test =="
@@ -127,6 +155,17 @@ cleanup() {
         [ -n "$p" ] && kill -9 "$p" 2>/dev/null
     done
     kill -9 "$SITL" 2>/dev/null
+    # F2: AND ANYTHING ELSE THIS SORTIE LEFT IN ITS OWN PROCESS GROUP.  `ap6-fly.sh` starts this script with
+    # `setsid`, so `pgrep -g $$` is exactly "the processes this sortie started" -- no name matching, and no
+    # reach into another sortie's group.  A killed sortie therefore cannot leave an adapter behind publishing
+    # plans into the next one.
+    for p in $(pgrep -g "$$" 2>/dev/null); do
+        [ "$p" = "$$" ] && continue
+        kill -9 "$p" 2>/dev/null
+    done
+    if [ -e "$LOCK" ] && [ "$(cat "$LOCK" 2>/dev/null || true)" = "$$:$TAG" ]; then
+        rm -f "$LOCK"
+    fi
 }
 trap cleanup EXIT
 
@@ -256,8 +295,12 @@ if [ "$STATION_MODE" = "ego" ]; then
     # CONSTRUCTOR, so that delay can no longer be imposed from outside: --start-alt writes
     # fsm/waypoint_start_alt and the gate arms the tour from ego's own FSM loop once odom z >= 1.28 m.
     echo "== the station list ego will own (patch 0008) =="
+    # ... AND THE SAME LIST IN W FOR THE OBSERVER (see mission-params.py --stops-w-out).  MEASURED AP6: the
+    # observer scored the circle's 12 stops while ego flew the four corners, so its "N of N" was meaningless.
     python3 "$REPO/tools/mission-params.py" --world "$WORLD" --calib-file "$CALIB" \
-        --out "$STATION_PARAMS" --advance-m "${STATION_ADVANCE_M:-0.30}" \
+        --mission "${MISSION:-rect}" \
+        --out "$STATION_PARAMS" --stops-w-out "$OUT/stations_w.csv" \
+        --advance-m "${STATION_ADVANCE_M:-0.30}" \
         --start-alt "${STATION_START_ALT:-1.28}" || {
         echo "tools/mission-params.py FAILED: ego would fly with NO station list -- refusing to take off" >&2
         exit 1
@@ -269,6 +312,16 @@ if [ "$STATION_MODE" = "ego" ]; then
     STATION_GOAL="none"
     STATION_ARGS_PLANNER="--no-goal"
     STATION_ARGS_SEQ="--observe-wp-index /wp_index"
+    # THE OBSERVER'S STOP LIST = EGO'S STOP LIST (see the --stops-w-out above).  If the file is missing the
+    # run REFUSES rather than scoring a different mission in silence.
+    if [ ! -s "$OUT/stations_w.csv" ]; then
+        echo "REFUSING TO FLY: $OUT/stations_w.csv is empty -- the observer would score a DIFFERENT stop list" \
+             "than the one ego was given (MEASURED AP6: it scored the circle's 12 while ego flew 4 corners)" >&2
+        exit 1
+    fi
+    SEQ_STOPS="$(paste -sd';' "$OUT/stations_w.csv")"
+    echo "   observer   : scoring ego's OWN $STATIONS stops from $OUT/stations_w.csv"
+    echo "                $SEQ_STOPS"
 fi
 SEQ_PID=""
 if [ "$TRAJ_SOURCE" = "planner" ]; then

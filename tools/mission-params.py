@@ -106,6 +106,13 @@ def main() -> int:
     ap.add_argument("--dwell-s", type=float, default=0.0, help="dwell for every stop not named in --dwell-at")
     ap.add_argument("--loop", action="store_true", help="loop the tour (default: stop after the last stop)")
     ap.add_argument("--node", default="ego_planner_node", help="the planner node name in the YAML")
+    ap.add_argument("--stops-w-out", default="",
+                    help="ALSO write the stops in W (one 'x,y,z' per line) here.  The stations in the YAML are "
+                         "in L because ego works in L; the OBSERVER (planner/goal_sequencer.py, --observe-wp-index) "
+                         "scores in W, and MEASURED sortie AP6-rect-dyn it scored the CIRCLE's twelve stops "
+                         "while ego flew the owner's FOUR corners -- so every 'N of N' was against the wrong "
+                         "list.  This file is the one list in both encodings, and run-mission.sh feeds it to "
+                         "the sequencer as --stops=")
     args = ap.parse_args()
 
     wc = load_world_module(args.mission)
@@ -171,6 +178,12 @@ def main() -> int:
         with open(args.out, "w") as fh:
             fh.write(text)
 
+    if args.stops_w_out:
+        with open(args.stops_w_out, "w") as fh:
+            for p in stops_w:
+                fh.write("%.4f,%.4f,%.4f\n" % (float(p[0]), float(p[1]), float(p[2])))
+        print("   the SAME %d stops in W (for the observer's --stops=): %s"
+              % (len(stops_w), args.stops_w_out))
     print("mission-params: mission=%s, %d stops from %s -> %s"
           % (args.mission, len(stops_l), os.path.basename(args.world), args.out or "stdout"))
     print("   calibration  %s" % calib.summary())

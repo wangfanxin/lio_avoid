@@ -914,6 +914,50 @@ class Mission:
         except Exception:                                     # noqa: BLE001  (never block the flight on this)
             return None
 
+    def _pull_along_plan(self, plan_f, t0_cur):
+        """Stream a legal point ON the plan (B of the AP6 forensics), or return False.
+
+        The plan's points were all verified clear by the adapter's gate, and the only unverified part of
+        flying to one is the straight segment from where the vehicle is NOW.  So walk from the plan's END
+        backwards (the end is the goal, which is what the tour wants to reach) and take the FARTHEST point
+        whose straight segment is clear; stream it at the plan's own end-of-plan velocity, which is ZERO for
+        an expired plan.  Capped at `--pull-step-m` per call so the aircraft does not jump: the point chosen
+        is the farthest legal one WITHIN that cap, measured along the plan.
+        """
+        if plan_f is None or len(plan_f) < 2 or not self.args.pull_along_plan:
+            return False
+        st = self.bridge.state()
+        here = np.array(st.pos)
+        # the plan's points near the vehicle first: sort candidates by distance from the vehicle along the
+        # plan, farthest-first within the cap
+        d = np.linalg.norm(plan_f - here, axis=1)
+        i_near = int(np.argmin(d))
+        best = None
+        for i in range(len(plan_f) - 1, i_near - 1, -1):
+            step = float(np.sum(np.linalg.norm(np.diff(plan_f[i_near:i + 1], axis=0), axis=1))) \
+                if i > i_near else 0.0
+            if step > self.args.pull_step_m:
+                continue
+            if self._hold_is_legal(plan_f[i]):
+                best = i
+                break
+        if best is None:
+            return False
+        target = np.array(plan_f[best], dtype=float)
+        clr = self._hold_clearance(target)
+        if time.monotonic() - getattr(self, "_pull_log", 0.0) >= 1.0:
+            self._pull_log = time.monotonic()
+            self.log("PULL ALONG THE PLAN: the plan's clock is out and the straight pull to its end is "
+                     "refused; streaming point %d/%d of the VERIFIED plan at [%.2f %.2f %.2f] (%.2f m from "
+                     "the vehicle, segment clearance %s against the %.2f m contract)"
+                     % (best + 1, len(plan_f), target[0], target[1], target[2],
+                        float(np.linalg.norm(target[:2] - here[:2])),
+                        ("%.3f m" % clr) if clr is not None else "unavailable",
+                        self.args.footprint_contract))
+        self.yaw_hold = False
+        self.pump(0.05, setpoint=target, velocity=np.zeros(3))
+        return True
+
     def _hold_is_legal(self, target):
         """Is pulling straight at `target` legal?  The straight line is the whole question.
 
@@ -1146,6 +1190,17 @@ class Mission:
             # the contract with 14.03 % INSIDE a pillar, while every published plan held 0.20 m.  So when the
             # clock is out and the straight segment to that end point is not verified clear, hold where we are
             # and wait for a fresh plan instead.
+            if t_rel >= dur and not self._hold_is_legal(pos) and self._pull_along_plan(p, t0_cur):
+                # B (AP6 forensics): THE PLAN'S OWN POINTS ARE LEGAL, SO THEY ARE THE MOTION.  MEASURED
+                # (AP6-rect-dyn): the plan ran out with its end 0.092 m from the corner, the vehicle was
+                # 3.385 m from it, the straight pull was refused (two of the rectangle's four legs cross
+                # pillars) and this FSM then sent NOTHING for the rest of the sortie -- the aircraft cannot
+                # advance its tour and ego cannot see new space, because nothing moves.  `_pull_along_plan`
+                # streams a point that lies ON the verified plan (the adapter's gate checked every one of
+                # them) and whose straight segment from the vehicle is clear, so the aircraft moves along
+                # ground the plan already called free.  It returns False when no such point exists, and the
+                # old behaviour (hold + a 1 Hz DIAG with the clearance) is unchanged in that case.
+                continue
             if t_rel >= dur and not self._hold_is_legal(pos):
                 # NO SILENT WAITING.  This branch used to be a bare `pump(0.05); continue`.  MEASURED sortie
                 # AO1 (2026-10-14): ego accepted stop 2's goal (`GOAL-TRACE ... |end-new|=0.000 have_target=1`
@@ -1629,6 +1684,15 @@ def main() -> int:
                          "advances while the vehicle moves")
     ap.add_argument("--world-file", default="/mnt/d/distill_self/lio_avoid/worlds/forest_b.yaml",
                     help="spline mode: the world the wait-loop hold checks its straight segment against")
+    ap.add_argument("--pull-along-plan", dest="pull_along_plan", action="store_true", default=True,
+                    help="when the plan's clock is out and the straight pull to its END is refused, stream a "
+                         "point that lies ON the plan (every point of it passed the adapter's clearance gate) "
+                         "whose straight segment from the vehicle is clear, instead of standing still.  "
+                         "MEASURED AP6-rect-dyn: without this the FSM sent nothing for 70 s while the aircraft "
+                         "stood 3.385 m from the corner, so the tour could never advance")
+    ap.add_argument("--no-pull-along-plan", dest="pull_along_plan", action="store_false")
+    ap.add_argument("--pull-step-m", type=float, default=0.60,
+                    help="how far along the plan one pull may reach, m (a bound on the step, not a target)")
     ap.add_argument("--hold-at-m", type=float, default=0.50,
                     help="spline mode: only hold the station if the trajectory ended within this distance of "
                          "the vehicle -- otherwise the plan was a short hop and the mission is still moving")
