@@ -137,7 +137,15 @@ def main() -> int:
         def __init__(self):
             super().__init__("goal_sequencer")
             self.calib = load_calib(args.calib_file)
-            self.pub = self.create_publisher(PoseStamped, args.goal_topic, 1)
+            # GOAL QUEUE DEPTH 10, NOT 1.  MEASURED 2026-10-14 (sortie Y1, the circle, with counters on every
+            # link): this node published the stop-2 goal 42 times and the adapter's own counter shows it
+            # RECEIVED 12 -- and the adapter forwarded all 12 (dedup 0) and ego saw 13, so nothing was lost
+            # after the subscription.  RELIABLE with a history of 1 means the publisher DISCARDS an unacked
+            # sample as soon as the next one is published, and the adapter is a single-threaded rclpy node
+            # busy with 200 Hz odometry plus the 4 Hz clearance check, so 1 Hz goals were being overwritten
+            # before they were ever delivered.  Depth 10 covers ~10 s of a 1 Hz goal and the goals are
+            # identical, so a burst is harmless.
+            self.pub = self.create_publisher(PoseStamped, args.goal_topic, 10)
             # THE MISSION'S STATE, published so the FSM does not have to guess it.  MEASURED 2026-10-14:
             # with the FSM counting trajectories instead, four consecutive sorties aborted on a wait because
             # its counter had drifted out of step with the stops actually commanded.

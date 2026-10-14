@@ -755,6 +755,38 @@ class EgoAdapter:
         self._stall_t0, self._stall_said = None, False
 
     def tick(self):
+        # A PERIODIC STATUS LINE, because the counters are the only way to attribute a lost goal and the
+        # REPORT line is never seen (the run ends with SIGKILL, which prints nothing).  MEASURED 2026-10-14
+        # (sorties W1/X1): the sequencer published the stop-2 goal 42 / 41 times and this node forwarded only
+        # 9 / 10 of them, while every forward reached ego -- so 75-80 % of the goals are lost on the hop INTO
+        # this node, and splitting "goals in" from "forwarded" says whether the messages never arrive or
+        # arrive and are dropped by one of the guards above.
+        now = time.time()
+        # RE-FORWARD THE LAST GOAL FROM HERE, because THIS hop is the reliable one.  MEASURED 2026-10-14:
+        # sequencer -> adapter loses 75-85 % of the goals under load (sortie Y1: 42 published, 12 received;
+        # sortie Z1 with both queues deepened to 10: 42 published, 6 received) while adapter -> ego lost
+        # NOTHING (Y1: 12 forwarded, 13 callbacks).  ego needs a goal about once a second to be pulled out of
+        # WAIT_TARGET (measured: without it, 69 "wait for goal" lines and a 70 s stall), and patches/0005
+        # makes such a repeat a no-op while the same goal is under pursuit -- so generating the 1 Hz stream
+        # HERE, from the last goal that did arrive, gives ego what it needs without depending on the lossy
+        # hop.  One goal per stop getting through is enough.
+        if self.goal_l is not None and self.args.reforward_hz > 0.0 and \
+                (now - getattr(self, "_last_reforward", 0.0)) >= 1.0 / self.args.reforward_hz:
+            self._last_reforward = now
+            m = self.PoseStamped()
+            m.header.stamp = self.node.get_clock().now().to_msg()
+            m.header.frame_id = FRAME_L
+            m.pose.position.x, m.pose.position.y, m.pose.position.z = (float(v) for v in self.goal_l)
+            m.pose.orientation.w = 1.0
+            self.goal_pub.publish(m)
+            self.n_reforward = getattr(self, "n_reforward", 0) + 1
+        if now - getattr(self, "_last_status", 0.0) >= 5.0:
+            self._last_status = now
+            print("ego_adapter STATUS: goals in %d, forwarded %d, dedup %d, deferred %d, rejected %d | "
+                  "bsplines %d | paths %d, withheld %d, stalls %d"
+                  % (self.n_goal_in, self.n_goal_out, getattr(self, "n_goal_dedup", 0), self.n_goal_deferred,
+                     self.n_goal_rejected, self.n_bspline, self.n_pub, self.n_blocked, self.n_stall),
+                  flush=True)
         if self.bspline is None:
             return
         path, info = self.build_path()
@@ -810,6 +842,14 @@ def main():
                          "(MEASURED: F1 withheld one plan ~250 times over 50 s while the aircraft hovered)")
     ap.add_argument("--stall-s", type=float, default=2.0,
                     help="how long the same trajectory must be withheld before it counts as a stall, s")
+    ap.add_argument("--reforward-hz", type=float, default=1.0,
+                    help="re-publish the last goal to the planner at this rate (0 = off).  MEASURED "
+                         "2026-10-14: sequencer->adapter loses 75-85 %% of the goals (Y1: 42 published, 12 "
+                         "received; Z1 with both queues at depth 10: 42 published, 6 received) while "
+                         "adapter->ego loses nothing, and ego needs roughly one goal a second to leave "
+                         "WAIT_TARGET (69 'wait for goal' lines, 70 s of stall, in sortie U1).  So the "
+                         "stream is generated on the hop that works; patches/0005 makes each repeat a no-op "
+                         "while the same goal is under pursuit, and re-arms ego after an arrival")
     ap.add_argument("--goal-repeat-s", type=float, default=0.0,
                     help="forward an UNCHANGED goal again only after this many seconds; 0.0 = forward every "
                          "goal the sender publishes, which is the historical behaviour AND the one this stack "
