@@ -1,0 +1,436 @@
+--- a/src/planner/plan_manage/src/ego_replan_fsm.cpp
++++ b/src/planner/plan_manage/src/ego_replan_fsm.cpp
+@@ -48,6 +48,29 @@
+       node_->get_parameter("fsm/waypoint" + to_string(i) + "_z", waypoints_[i][2]);
+     }
+ 
++    /* PATCH 0008: advance rule, dwell and end-of-tour for the waypoint sequence. */
++    node_->declare_parameter("fsm/waypoint_advance_m", -1.0);
++    node_->get_parameter("fsm/waypoint_advance_m", waypoint_advance_m_);
++    if (waypoint_advance_m_ <= 0.0)
++      waypoint_advance_m_ = no_replan_thresh_;            // upstream's rule when unset
++    node_->declare_parameter("fsm/waypoint_loop", false);
++    node_->get_parameter("fsm/waypoint_loop", waypoint_loop_);
++    for (int i = 0; i < 50; i++)
++      waypoint_dwell_s_[i] = 0.0;
++    for (int i = 0; i < waypoint_num_ && i < 50; i++)
++    {
++      node_->declare_parameter("fsm/waypoint" + to_string(i) + "_dwell_s", 0.0);
++      node_->get_parameter("fsm/waypoint" + to_string(i) + "_dwell_s", waypoint_dwell_s_[i]);
++    }
++    waypoint_arrived_ = false;
++    waypoint_done_ = 0;
++    waypoint_arrive_time_ = node_->now();
++    wp_index_pub_time_ = node_->now();
++    wp_index_pub_ = node_->create_publisher<std_msgs::msg::Int32>("wp_index", 10);
++    RCLCPP_INFO(node_->get_logger(),
++                "WP-INDEX: sequence armed: %d waypoints, advance %.3f m, loop %d",
++                waypoint_num_, waypoint_advance_m_, (int)waypoint_loop_);
++
+     /* initialize main modules */
+     visualization_.reset(new PlanningVisualization(node_));
+ 
+@@ -183,6 +206,18 @@
+     planNextWaypoint(wps_[wp_id_]);
+   }
+ 
++  void EGOReplanFSM::publishWaypointIndex()
++  {
++    // PATCH 0008: the stop the mission is actually on, PUBLISHED rather than inferred.  -1 = finished.
++    std_msgs::msg::Int32 msg;
++    msg.data = (waypoint_done_ == 1) ? -1 : wp_id_;
++    wp_index_pub_->publish(msg);
++    wp_index_pub_time_ = node_->now();
++    const int safe_id = (wp_id_ >= 0 && wp_id_ < 50) ? wp_id_ : 0;
++    RCLCPP_INFO(node_->get_logger(), "WP-INDEX: %d of %d (dwell %.1f s, done %d, have_target %d)",
++                msg.data, waypoint_num_, waypoint_dwell_s_[safe_id], waypoint_done_, (int)have_target_);
++  }
++
+   void EGOReplanFSM::planNextWaypoint(const Eigen::Vector3d next_wp)
+   {
+     bool success = false;
+@@ -685,13 +720,34 @@
+ 
+       Eigen::Vector3d pos = info->position_traj_.evaluateDeBoorT(t_cur);
+ 
++      // PATCH 0008: keep the stop index observable at 1 Hz (a late subscriber then sees the real index
++      // instead of guessing it).
++      if (target_type_ == TARGET_TYPE::PRESET_TARGET &&
++          (time_now - wp_index_pub_time_).seconds() >= 1.0)
++      {
++        publishWaypointIndex();
++      }
++
+       /* && (end_pt_ - pos).norm() < 0.5 */
+       if ((target_type_ == TARGET_TYPE::PRESET_TARGET) &&
+           (wp_id_ < waypoint_num_ - 1) &&
+-          (end_pt_ - pos).norm() < no_replan_thresh_)
++          (end_pt_ - pos).norm() < waypoint_advance_m_)
+       {
+-        wp_id_++;
+-        planNextWaypoint(wps_[wp_id_]);
++        // PATCH 0008: arrive -> DWELL -> advance, and say which waypoint we are on.  Upstream advances on
++        // no_replan_thresh_ with no dwell; our missions need both, and the index has to be visible outside.
++        if (!waypoint_arrived_)
++        {
++          waypoint_arrived_ = true;
++          waypoint_arrive_time_ = time_now;
++          publishWaypointIndex();
++        }
++        if ((time_now - waypoint_arrive_time_).seconds() >= waypoint_dwell_s_[wp_id_])
++        {
++          wp_id_++;
++          waypoint_arrived_ = false;
++          planNextWaypoint(wps_[wp_id_]);
++          publishWaypointIndex();
++        }
+       }
+       else if ((local_target_pt_ - end_pt_).norm() < 1e-3) // close to the global target
+       {
+@@ -731,8 +787,33 @@
+ 
+           if (target_type_ == TARGET_TYPE::PRESET_TARGET)
+           {
+-            wp_id_ = 0;
+-            planNextWaypoint(wps_[wp_id_]);
++            // PATCH 0008: dwell at the LAST waypoint, then END the tour (upstream loops to waypoint 0 for
++            // ever, so a mission can never observe "the sequence is finished" -- and the index it never
++            // published is what our scoring layer needs).
++            if (!waypoint_arrived_)
++            {
++              waypoint_arrived_ = true;
++              waypoint_arrive_time_ = time_now;
++              publishWaypointIndex();
++            }
++            if ((time_now - waypoint_arrive_time_).seconds() < waypoint_dwell_s_[wp_id_])
++            {
++              goto force_return;                            // still dwelling: keep the target and the plan
++            }
++            if (waypoint_loop_)
++            {
++              wp_id_ = 0;
++              waypoint_arrived_ = false;
++              planNextWaypoint(wps_[wp_id_]);
++            }
++            else
++            {
++              waypoint_done_ = 1;
++              RCLCPP_INFO(node_->get_logger(),
++                          "WP-INDEX: waypoint %d of %d finished -- tour complete, handing the mission back",
++                          wp_id_, waypoint_num_);
++            }
++            publishWaypointIndex();
+           }
+ 
+           changeFSMExecState(WAIT_TARGET, "FSM");
+--- a/src/planner/plan_manage/include/ego_planner/ego_replan_fsm.h
++++ b/src/planner/plan_manage/include/ego_planner/ego_replan_fsm.h
+@@ -1,142 +1,166 @@
+-#ifndef _REBO_REPLAN_FSM_H_
+-#define _REBO_REPLAN_FSM_H_
+-
+-#include <Eigen/Eigen>
+-#include <algorithm>
+-#include <iostream>
+-#include "nav_msgs/msg/path.hpp"
+-#include "nav_msgs/msg/odometry.hpp"
+-#include "sensor_msgs/msg/imu.hpp"
+-#include "rclcpp/rclcpp.hpp"
+-#include "std_msgs/msg/empty.hpp"
+-#include <vector>
+-#include "visualization_msgs/msg/marker.hpp"
+-
+-#include "bspline_opt/bspline_optimizer.h"
+-#include "plan_env/grid_map.h"
+-#include "traj_utils/msg/bspline.hpp"
+-#include "traj_utils/msg/multi_bsplines.hpp"
+-#include "geometry_msgs/msg/pose_stamped.hpp"
+-#include "traj_utils/msg/data_disp.hpp"
+-#include "ego_planner/planner_manager.h"
+-#include "traj_utils/planning_visualization.h"
+-
+-using std::vector;
+-
+-namespace ego_planner
+-{
+-
+-  class EGOReplanFSM
+-  {
+-
+-  private:
+-    /* ---------- flag ---------- */
+-    enum FSM_EXEC_STATE
+-    {
+-      INIT,
+-      WAIT_TARGET,
+-      GEN_NEW_TRAJ,
+-      REPLAN_TRAJ,
+-      EXEC_TRAJ,
+-      EMERGENCY_STOP,
+-      SEQUENTIAL_START
+-    };
+-    enum TARGET_TYPE
+-    {
+-      MANUAL_TARGET = 1,
+-      PRESET_TARGET = 2,
+-      REFENCE_PATH = 3
+-    };
+-
+-    /* planning utils */
+-    EGOPlannerManager::Ptr planner_manager_;
+-    PlanningVisualization::Ptr visualization_;
+-    traj_utils::msg::DataDisp data_disp_;
+-    traj_utils::msg::MultiBsplines multi_bspline_msgs_buf_;
+-
+-    /* parameters */
+-    int target_type_; // 1 mannual select, 2 hard code
+-    double no_replan_thresh_, replan_thresh_;
+-    double waypoints_[50][3];
+-    int waypoint_num_, wp_id_;
+-    double planning_horizen_, planning_horizen_time_;
+-    double emergency_time_;
+-    bool flag_realworld_experiment_;
+-    bool enable_fail_safe_;
+-
+-    /* planning data */
+-    bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_;
+-    FSM_EXEC_STATE exec_state_;
+-    int continously_called_times_{0};
+-
+-    Eigen::Vector3d odom_pos_, odom_vel_, odom_acc_; // odometry state
+-    Eigen::Quaterniond odom_orient_;
+-
+-    Eigen::Vector3d init_pt_, start_pt_, start_vel_, start_acc_, start_yaw_; // start state
+-    Eigen::Vector3d end_pt_, end_vel_;                                       // goal state
+-    Eigen::Vector3d local_target_pt_, local_target_vel_;                     // local target state
+-    std::vector<Eigen::Vector3d> wps_;
+-    int current_wp_;
+-
+-    bool flag_escape_emergency_;
+-
+-    /* ROS utils */
+-    rclcpp::Node::SharedPtr node_;
+-    rclcpp::TimerBase::SharedPtr exec_timer_, safety_timer_;
+-
+-    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr waypoint_sub_;
+-    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+-    rclcpp::Subscription<traj_utils::msg::MultiBsplines>::SharedPtr swarm_trajs_sub_;
+-    rclcpp::Subscription<traj_utils::msg::Bspline>::SharedPtr broadcast_bspline_sub_;
+-    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr trigger_sub_;
+-
+-    // rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr replan_pub_;
+-    // rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr new_pub_;
+-    rclcpp::Publisher<traj_utils::msg::Bspline>::SharedPtr bspline_pub_;
+-    rclcpp::Publisher<traj_utils::msg::DataDisp>::SharedPtr data_disp_pub_;
+-    rclcpp::Publisher<traj_utils::msg::MultiBsplines>::SharedPtr swarm_trajs_pub_;
+-    rclcpp::Publisher<traj_utils::msg::Bspline>::SharedPtr broadcast_bspline_pub_;
+-
+-    /* helper functions */
+-    bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj); // front-end and back-end method
+-    bool callEmergencyStop(Eigen::Vector3d stop_pos);                          // front-end and back-end method
+-    bool planFromGlobalTraj(const int trial_times = 1);
+-    bool planFromCurrentTraj(const int trial_times = 1);
+-
+-    /* return value: std::pair< Times of the same state be continuously called, current continuously called state > */
+-    void changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call);
+-    std::pair<int, EGOReplanFSM::FSM_EXEC_STATE> timesOfConsecutiveStateCalls();
+-    void printFSMExecState();
+-
+-    void readGivenWps();
+-    void planNextWaypoint(const Eigen::Vector3d next_wp);
+-    void getLocalTarget();
+-
+-    /* ROS functions */
+-    void execFSMCallback();
+-    void checkCollisionCallback();
+-    void waypointCallback(const std::shared_ptr<const geometry_msgs::msg::PoseStamped> &msg);
+-    void triggerCallback(const std::shared_ptr<const geometry_msgs::msg::PoseStamped> &msg);
+-    void odometryCallback(const std::shared_ptr<const nav_msgs::msg::Odometry> &msg);
+-    void swarmTrajsCallback(const std::shared_ptr<const traj_utils::msg::MultiBsplines> &msg);
+-    void BroadcastBsplineCallback(const std::shared_ptr<const traj_utils::msg::Bspline> &msg);
+-
+-    bool checkCollision();
+-    void publishSwarmTrajs(bool startup_pub);
+-
+-  public:
+-    EGOReplanFSM(/* args */)
+-    {
+-    }
+-    ~EGOReplanFSM()
+-    {
+-    }
+-
+-    void init(rclcpp::Node::SharedPtr &node);
+-
+-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+-  };
+-
+-} // namespace ego_planner
+-
++#ifndef _REBO_REPLAN_FSM_H_
++#define _REBO_REPLAN_FSM_H_
++
++#include <Eigen/Eigen>
++#include <algorithm>
++#include <iostream>
++#include "nav_msgs/msg/path.hpp"
++#include "nav_msgs/msg/odometry.hpp"
++#include "sensor_msgs/msg/imu.hpp"
++#include "rclcpp/rclcpp.hpp"
++#include "std_msgs/msg/empty.hpp"
++// PATCH 0008 (patches/0008-ego-waypoint-sequence.patch): the stop index is published.
++#include "std_msgs/msg/int32.hpp"
++#include <vector>
++#include "visualization_msgs/msg/marker.hpp"
++
++#include "bspline_opt/bspline_optimizer.h"
++#include "plan_env/grid_map.h"
++#include "traj_utils/msg/bspline.hpp"
++#include "traj_utils/msg/multi_bsplines.hpp"
++#include "geometry_msgs/msg/pose_stamped.hpp"
++#include "traj_utils/msg/data_disp.hpp"
++#include "ego_planner/planner_manager.h"
++#include "traj_utils/planning_visualization.h"
++
++using std::vector;
++
++namespace ego_planner
++{
++
++  class EGOReplanFSM
++  {
++
++  private:
++    /* ---------- flag ---------- */
++    enum FSM_EXEC_STATE
++    {
++      INIT,
++      WAIT_TARGET,
++      GEN_NEW_TRAJ,
++      REPLAN_TRAJ,
++      EXEC_TRAJ,
++      EMERGENCY_STOP,
++      SEQUENTIAL_START
++    };
++    enum TARGET_TYPE
++    {
++      MANUAL_TARGET = 1,
++      PRESET_TARGET = 2,
++      REFENCE_PATH = 3
++    };
++
++    /* planning utils */
++    EGOPlannerManager::Ptr planner_manager_;
++    PlanningVisualization::Ptr visualization_;
++    traj_utils::msg::DataDisp data_disp_;
++    traj_utils::msg::MultiBsplines multi_bspline_msgs_buf_;
++
++    /* parameters */
++    int target_type_; // 1 mannual select, 2 hard code
++    double no_replan_thresh_, replan_thresh_;
++    double waypoints_[50][3];
++    int waypoint_num_, wp_id_;
++    // PATCH 0008 (patches/0008-ego-waypoint-sequence.patch): THE WAYPOINT SEQUENCE IS EGO'S OWN, with the
++    // three things upstream's version lacks for our missions and one thing it never had:
++    //   waypoint_advance_m_  an EXPLICIT advance tolerance (upstream reuses no_replan_thresh_, which is also
++    //                        the replan-suppression threshold; MEASURED AO2: the aircraft settled 0.273 m
++    //                        from the commanded stop, so a 0.15 m rule never advances);
++    //   waypoint_dwell_s_    hover this long at a waypoint before advancing (the diagonal mission hovers
++    //                        10 s at (-5,-5); upstream's tour is continuous and cannot express a dwell);
++    //   waypoint_loop_       false = after the LAST waypoint the tour is DONE (upstream loops to 0 for ever,
++    //                        which no mission can observe as "finished");
++    //   wp_index_pub_        the index is PUBLISHED, so the scoring layer observes the sequence instead of
++    //                        driving it -- nothing outside ego can run ahead of the vehicle any more.
++    double waypoint_advance_m_;
++    double waypoint_dwell_s_[50];
++    bool waypoint_loop_;
++    bool waypoint_arrived_;
++    int waypoint_done_;
++    rclcpp::Time waypoint_arrive_time_;
++    rclcpp::Time wp_index_pub_time_;
++    rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr wp_index_pub_;
++    double planning_horizen_, planning_horizen_time_;
++    double emergency_time_;
++    bool flag_realworld_experiment_;
++    bool enable_fail_safe_;
++
++    /* planning data */
++    bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_;
++    FSM_EXEC_STATE exec_state_;
++    int continously_called_times_{0};
++
++    Eigen::Vector3d odom_pos_, odom_vel_, odom_acc_; // odometry state
++    Eigen::Quaterniond odom_orient_;
++
++    Eigen::Vector3d init_pt_, start_pt_, start_vel_, start_acc_, start_yaw_; // start state
++    Eigen::Vector3d end_pt_, end_vel_;                                       // goal state
++    Eigen::Vector3d local_target_pt_, local_target_vel_;                     // local target state
++    std::vector<Eigen::Vector3d> wps_;
++    int current_wp_;
++
++    bool flag_escape_emergency_;
++
++    /* ROS utils */
++    rclcpp::Node::SharedPtr node_;
++    rclcpp::TimerBase::SharedPtr exec_timer_, safety_timer_;
++
++    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr waypoint_sub_;
++    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
++    rclcpp::Subscription<traj_utils::msg::MultiBsplines>::SharedPtr swarm_trajs_sub_;
++    rclcpp::Subscription<traj_utils::msg::Bspline>::SharedPtr broadcast_bspline_sub_;
++    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr trigger_sub_;
++
++    // rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr replan_pub_;
++    // rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr new_pub_;
++    rclcpp::Publisher<traj_utils::msg::Bspline>::SharedPtr bspline_pub_;
++    rclcpp::Publisher<traj_utils::msg::DataDisp>::SharedPtr data_disp_pub_;
++    rclcpp::Publisher<traj_utils::msg::MultiBsplines>::SharedPtr swarm_trajs_pub_;
++    rclcpp::Publisher<traj_utils::msg::Bspline>::SharedPtr broadcast_bspline_pub_;
++
++    /* helper functions */
++    bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj); // front-end and back-end method
++    bool callEmergencyStop(Eigen::Vector3d stop_pos);                          // front-end and back-end method
++    bool planFromGlobalTraj(const int trial_times = 1);
++    bool planFromCurrentTraj(const int trial_times = 1);
++
++    /* return value: std::pair< Times of the same state be continuously called, current continuously called state > */
++    void changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call);
++    std::pair<int, EGOReplanFSM::FSM_EXEC_STATE> timesOfConsecutiveStateCalls();
++    void printFSMExecState();
++
++    void readGivenWps();
++    void planNextWaypoint(const Eigen::Vector3d next_wp);
++    void getLocalTarget();
++
++    /* ROS functions */
++    void execFSMCallback();
++    void checkCollisionCallback();
++    void waypointCallback(const std::shared_ptr<const geometry_msgs::msg::PoseStamped> &msg);
++
++    // PATCH 0008: publish which waypoint the mission is on (-1 = the tour is finished).
++    void publishWaypointIndex();
++    void triggerCallback(const std::shared_ptr<const geometry_msgs::msg::PoseStamped> &msg);
++    void odometryCallback(const std::shared_ptr<const nav_msgs::msg::Odometry> &msg);
++    void swarmTrajsCallback(const std::shared_ptr<const traj_utils::msg::MultiBsplines> &msg);
++    void BroadcastBsplineCallback(const std::shared_ptr<const traj_utils::msg::Bspline> &msg);
++
++    bool checkCollision();
++    void publishSwarmTrajs(bool startup_pub);
++
++  public:
++    EGOReplanFSM(/* args */)
++    {
++    }
++    ~EGOReplanFSM()
++    {
++    }
++
++    void init(rclcpp::Node::SharedPtr &node);
++
++    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
++  };
++
++} // namespace ego_planner
++
+ #endif
+\ No newline at end of file
