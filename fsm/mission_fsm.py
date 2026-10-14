@@ -246,6 +246,10 @@ class Mission:
         if pts:
             self.path_l = np.array(pts)
             self.path_t = np.array(ts)
+            # HOW MANY PLANS ACTUALLY ARRIVE.  MEASURED 2026-10-14 (sortie AH1): the adapter published 38
+            # plans, 20 with distinct stamps and 16 usable (arc >= 0.30 m, clearance >= 0.281 m), and this FSM
+            # flew ONE -- so the acceptance decision is the last unexplained link and it needs a denominator.
+            self.paths_seen = getattr(self, "paths_seen", 0) + 1
 
     def yaw_command(self, velocity, period):
         """The yaw to stream with this setpoint.
@@ -662,6 +666,7 @@ class Mission:
         if self.path_l is not None and len(self.path_l) >= 2:
             hold_pt = np.array(self.path_l[-1], dtype=float)
         t_wait = time.monotonic()
+        t_diag = 0.0
         self.log("waiting up to %.0f s on %s for %s"
                  % (self.args.traj_wait_s, self.args.traj_topic,
                     "a trajectory" if last_t0 is None else "the NEXT stop's trajectory"))
@@ -680,6 +685,28 @@ class Mission:
                 self.pump(0.1, setpoint=hold_pt, velocity=np.zeros(3))
             else:
                 self.pump(0.1)
+            # WHY IS THE PLAN IN HAND NOT ACCEPTED?  Once a second, say which test refuses it -- the same
+            # discipline that resolved every other link in this chain (see
+            # docs/metrics/phaseB-plan-supply-loop-20261014.txt: 16 usable plans published, 1 flown).
+            if time.monotonic() - t_diag >= 1.0:
+                t_diag = time.monotonic()
+                seen = getattr(self, "paths_seen", 0)
+                if self.path_l is None or len(self.path_l) < 2:
+                    self.log("DIAG: no plan in hand (%d message(s) received)" % seen)
+                else:
+                    arc = float(np.sum(np.linalg.norm(np.diff(self.path_l[:, :2], axis=0), axis=1)))
+                    here = np.array(self.bridge.state().pos)
+                    d0 = float(np.linalg.norm(here[:2] - self.path_l[0, :2]))
+                    same = (last_t0 is not None and self.path_t is not None
+                            and float(self.path_t[0]) == float(last_t0))
+                    why = ("arc %.3f < %.2f m" % (arc, self.args.min_traj_m) if arc < self.args.min_traj_m
+                           else ("stamp unchanged and the first point is %.3f m away (need < %.2f)"
+                                 % (d0, self.args.reaccept_m) if same and d0 >= self.args.reaccept_m
+                                 else "accepted on the next evaluation"))
+                    self.log("DIAG: %d message(s), arc %.3f m, %d points, first point %.3f m from the vehicle,"
+                             " stamp %s -> refused because: %s"
+                             % (seen, arc, len(self.path_l), d0,
+                                "same as the last flown" if same else "new", why))
         return False
 
     def _load_world(self):
