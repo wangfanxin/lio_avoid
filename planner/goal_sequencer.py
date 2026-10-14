@@ -103,6 +103,14 @@ def main() -> int:
                          "1 while the vehicle was still on the pad put ego-planner into GEN_NEW_TRAJ and it "
                          "never produced a trajectory again -- 599 replans, 0 plan_success, the FSM waited "
                          "90 s for a trajectory that never came, and the flight had to be killed")
+    ap.add_argument("--observe-wp-index", default="",
+                    help="OBSERVER MODE: subscribe to ego's wp_index topic (patch 0008 publishes it) and "
+                         "mirror it onto --stop-topic instead of publishing goals.  Use this once the "
+                         "station list is passed to ego as fsm/waypoint* (tools/mission-params.py): the "
+                         "sequence is then ego's, its advance test is a test on the vehicle, and this node "
+                         "can no longer run ahead of the aircraft (MEASURED AO1: it walked stops 2..11 on "
+                         "its own timeout while the vehicle hovered at stop 1).  Stops are still SCORED "
+                         "here from truth -- reached, missed, and how long each took.")
     ap.add_argument("--log", default="", help="write the per-stop log here as well as stdout")
     ap.add_argument("--dry-run", action="store_true", help="print the stops and exit (no ROS)")
     args = ap.parse_args()
@@ -167,6 +175,12 @@ def main() -> int:
             # its counter had drifted out of step with the stops actually commanded.
             self.index_pub = self.create_publisher(Int32, args.stop_topic, 10)
             self.create_subscription(Odometry, args.odom_topic, self.on_odom, 10)
+            self.ego_index = None
+            if args.observe_wp_index:
+                self.create_subscription(Int32, args.observe_wp_index, self.on_wp_index, 10)
+                print("goal_sequencer: OBSERVER MODE: ego owns the sequence (%s); this node mirrors it onto "
+                      "%s and scores the stops, it publishes NO goals"
+                      % (args.observe_wp_index, args.stop_topic), flush=True)
             self.last_index = None
             self.here_w = None
             self.i = 0
@@ -202,7 +216,24 @@ def main() -> int:
                             msg.pose.pose.position.z], dtype=float)
             self.here_w = l_to_w(self.calib, p_l)
 
+        def on_wp_index(self, msg):
+            """EGO owns the sequence (patch 0008): mirror its index onto --stop-topic, unchanged.
+
+            The FSM's interface stays the same (`/mission/stop`, Int32, -1 = the tour is finished) -- but the
+            number now comes from the planner that is actually flying the sequence, so it cannot run ahead.
+            """
+            self.ego_index = int(msg.data)
+            m = Int32()
+            m.data = self.ego_index
+            self.index_pub.publish(m)
+            if self.last_index != self.ego_index:
+                self.last_index = self.ego_index
+                self.log("ego wp_index %d (%s)" % (self.ego_index,
+                                                   "tour complete" if self.ego_index < 0 else "running"))
+
         def pub_goal(self, p):
+            if args.observe_wp_index:
+                return                       # OBSERVER MODE: see --observe-wp-index
             m = PoseStamped()
             m.header.stamp = self.get_clock().now().to_msg()
             m.header.frame_id = "world_w"
@@ -223,6 +254,8 @@ def main() -> int:
             This is the FSM's only source of truth about where the mission is; it replaces the FSM's own
             trajectory counting, which drifted out of step and aborted four consecutive sorties.
             """
+            if args.observe_wp_index:
+                return                       # OBSERVER MODE: the index comes from ego (on_wp_index)
             if self.last_index != i:
                 self.last_index = i
                 m = Int32()

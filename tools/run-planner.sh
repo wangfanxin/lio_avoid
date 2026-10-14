@@ -133,9 +133,21 @@ PIDS="$PIDS $RELAY_PID"
 
 VEL_ARGS=()
 if [ -n "$MAXVEL" ]; then VEL_ARGS=(-p "manager/max_vel:=$MAXVEL"); fi
+# THE STATION LIST LIVES IN EGO (patch 0008).  MEASURED sortie AO2: with the stops driven from outside,
+# the adapter had converted the next goal while ego's own end_pt_ was still the previous stop's -- two
+# sources of truth for "where the mission is".  tools/mission-params.py writes fsm/waypoint* (already
+# converted into the LIO frame with the measured calibration); passing it here makes ego plan the tour
+# itself, with an advance test on the VEHICLE.  ROS 2 applies --params-file in order, so this one wins.
+STATION_ARGS=()
+if [ -n "${STATION_PARAMS:-}" ]; then
+  [ -f "$STATION_PARAMS" ] || { echo "no station params at $STATION_PARAMS" >&2; exit 1; }
+  STATION_ARGS=(--params-file "$STATION_PARAMS")
+  echo "  stations      $STATION_PARAMS (ego plans the sequence itself)"
+fi
 ros2 run ego_planner ego_planner_node --ros-args \
   -r /cloud_registered:=/lio/cloud_world \
   --params-file "$PARAMS" \
+  "${STATION_ARGS[@]}" \
   "${VEL_ARGS[@]}" \
   -r odom_world:=/lio/robo/odom \
   -r grid_map/odom:=/lio/robo/odom \
