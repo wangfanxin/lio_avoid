@@ -20,7 +20,14 @@ never what it is.  The one transformation is the frame: the stops are written in
 measured calibration (`planner/common/frames.py`), instead of per goal at flight time.
 
 usage: tools/mission-params.py --world worlds/forest_b.yaml --out /tmp/stations.yaml \
-           [--calib-file _stage/calib.json] [--advance-m 0.30] [--dwell-at 0:10] [--loop]
+           [--calib-file _stage/calib.json] [--advance-m 0.30] [--start-alt 1.28] [--dwell-at 0:10] [--loop]
+
+--start-alt writes `fsm/waypoint_start_alt` (patch 0008's START-ALTITUDE GATE).  WHY IT EXISTS: MEASURED
+earlier, asking ego to plan its FIRST trajectory while the vehicle is still on the pad left it in
+GEN_NEW_TRAJ with 599 replans and 0 successes and the sortie had to be killed; the old external sequencer
+worked around that by delaying its first goal until odom z >= max_stop_z - 0.60 = 1.28 m.  Without the gate
+this script would re-introduce exactly that failure, because flight_type 2 makes ego start the tour in its
+constructor.  The default -1.0 is DISABLED = the behaviour every earlier patch-0008 sortie flew.
 """
 import argparse
 import importlib.util
@@ -76,6 +83,12 @@ def main() -> int:
                     help="the advance tolerance (AO2 MEASURED the aircraft settling 0.273 m from a commanded "
                          "stop, so upstream's no_replan_thresh_ = 0.15 m would never advance)")
     ap.add_argument("--dwell-at", default="", help="dwell seconds per stop index, e.g. '0:10' or '0:10;3:5'")
+    ap.add_argument("--start-alt", type=float, default=-1.0,
+                    help="fsm/waypoint_start_alt: > 0 = ego does NOT plan its first waypoint at "
+                         "construction; the tour is armed by the FSM loop once odom z >= this.  -1.0 "
+                         "(default) = disabled.  MEASURED earlier: planning from the pad gave 599 replans "
+                         "and 0 successes, and the old external sequencer delayed its first goal until "
+                         "max_stop_z - 0.60 = 1.28 m")
     ap.add_argument("--dwell-s", type=float, default=0.0, help="dwell for every stop not named in --dwell-at")
     ap.add_argument("--loop", action="store_true", help="loop the tour (default: stop after the last stop)")
     ap.add_argument("--node", default="ego_planner_node", help="the planner node name in the YAML")
@@ -106,6 +119,8 @@ def main() -> int:
              "      flight_type: 2                 # PRESET_TARGET",
              "      waypoint_num: %d" % len(stops_l),
              "      waypoint_advance_m: %.3f" % args.advance_m,
+             # patch 0008's START-ALTITUDE GATE: the tour must not be armed while the vehicle is on the pad.
+             "      waypoint_start_alt: %.2f" % args.start_alt,
              "      waypoint_loop: %s" % ("true" if args.loop else "false")]
     for i, q in enumerate(stops_l):
         lines.append("      waypoint%d_x: %.4f" % (i, q[0]))
