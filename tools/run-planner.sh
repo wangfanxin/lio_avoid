@@ -92,6 +92,17 @@ cleanup() {
 }
 trap cleanup INT TERM
 
+# The LIO publishes its registered scan as /lio/cloud_world; the planner declares /cloud_registered, which
+# exists nowhere in this stack (MEASURED 2026-10-14: `ros2 topic list` with a fresh daemon shows 14 topics
+# and not that one).  A `-r /cloud_registered:=/lio/cloud_world` on the node's own command line did NOT
+# change the subscription it reported, so the name is made REAL here instead -- verifiable in one command,
+# `ros2 topic hz /cloud_registered`, and removable in one line if the planner is ever pointed at the LIO's
+# name directly.
+python3 "$HERE/tools/cloud_relay.py" --in /lio/cloud_world --out /cloud_registered \
+    > "${RELAY_LOG:-/tmp/cloud_relay.log}" 2>&1 &
+RELAY_PID=$!
+PIDS="$PIDS $RELAY_PID"
+
 ros2 run ego_planner ego_planner_node --ros-args \
   -r /cloud_registered:=/lio/cloud_world \
   --params-file "$PARAMS" \
