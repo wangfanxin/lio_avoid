@@ -66,6 +66,7 @@ echo "   ardupilot : $(git -C "$AP" describe --tags --always) $(git -C "$AP" rev
 echo "   super_lio : $(git -C /home/fanxin/lio_avoid/src/Super-LIO rev-parse --short HEAD)  liblio $(md5sum "$WS/install/super_lio/lib/liblio.so" | cut -c1-16)"
 echo "   config    : lio/config/livox_360.yaml + apm_lio_only,sitl_basics,${ALT_MODE}_posz,$MISSION_NAME,$EKF_NAME"
 echo "   world     : $WORLD  ($CORNERS)"
+echo "   sensor    : the SAME world file ($REPO/sim/lidar_imu.py --world \"$WORLD\")"
 echo "   geofence  : $GEOFENCE_M m, take-off altitude $TAKEOFF_ALT m"
 echo "   run dir   : $OUT"
 echo
@@ -104,7 +105,7 @@ python3 "$REPO/sim/truth_rx.py" --ros --moving --duration 0 --port $TAP --fanout
     > "$OUT/truth_rx.log" 2>&1 &
 RX_PID=$!
 sleep 2
-python3 "$REPO/sim/lidar_imu.py" --port $FAN --duration 0 > "$OUT/lidar_imu.log" 2>&1 &
+python3 "$REPO/sim/lidar_imu.py" --port $FAN --world "$WORLD" --duration 0 > "$OUT/lidar_imu.log" 2>&1 &
 SENSOR_PID=$!
 sleep 2
 ros2 run super_lio super_lio_node --ros-args --params-file "$REPO/lio/config/livox_360.yaml" \
