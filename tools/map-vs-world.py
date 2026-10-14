@@ -25,6 +25,11 @@ def main() -> int:
     ap.add_argument("--cloud", required=True)
     ap.add_argument("--world", required=True)
     ap.add_argument("--scan", type=int, default=0, help="which recorded scan (0 = all)")
+    ap.add_argument("--calib-file", default="/mnt/d/distill_self/_stage/calib.json",
+                    help="the L->W calibration.  THE CLOUD IS IN L AND THE WORLD FILE IS IN W: comparing"
+                         " them without this reported points 0.18 m from the axis of a 0.30 m pillar, i.e."
+                         " inside it (MEASURED 2026-10-14), and every conclusion drawn from that would"
+                         " have been about the frame, not about the map.")
     args = ap.parse_args()
 
     t, p = [], []
@@ -42,6 +47,16 @@ def main() -> int:
         print("no points in %s" % args.cloud)
         return 1
     P = np.array(p)
+    # L -> W, the one conversion that makes the comparison mean anything
+    try:
+        import json
+        c = json.load(open(args.calib_file))
+        R, t = np.array(c["R_WL"]), np.array(c["t_WL"])
+        P = (R @ P.T).T + t
+        print("cloud transformed L->W with %s (yaw %+.3f deg)" % (args.calib_file, c.get("yaw_deg", 0.0)))
+    except Exception as exc:                                   # noqa: BLE001
+        print("WARNING: no L->W calibration applied (%s) -- the distances below are in the wrong frame"
+              % exc)
     cfg = yaml.safe_load(open(args.world)) or {}
     pillars = cfg.get("pillars", []) or []
     print("cloud %s: %d points, %d scans, z %.2f..%.2f m" % (args.cloud, len(P), len(set(t)),
