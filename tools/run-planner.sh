@@ -135,8 +135,8 @@ EOF
   AGOAL=(--auto-goal "$gx" "$gy" "$gz" --goal-timeout "${GOAL_TIMEOUT:-5}")
 fi
 
-python3 "$HERE/planner/ego_adapter.py" \ \
-    ${DUMP_BSPLINE:+--dump-bspline "$DUMP_BSPLINE"}
+python3 "$HERE/planner/ego_adapter.py" \
+  ${DUMP_BSPLINE:+--dump-bspline "$DUMP_BSPLINE"} \
   --calib-file "$CALIB" \
   --world "$WORLD" \
   --rate "$RATE" \
