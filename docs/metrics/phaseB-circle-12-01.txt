@@ -1,0 +1,36 @@
+run summary
+   truth samples 247823 over 206.4 s; delivered-odometry samples 37644 over 188.1 s
+   phases: preflight(1), takeoff(1), hold(1), traj(1), station1(1), station2(1), station3(1), station4(1), station5(1), abort(1)
+   LAND+disarm (B4): FAIL (aborted)
+
+trajectory mode: the FSM followed the published Path (one 'traj' phase), so the
+   rectangle lines B1/B2/B3 do not apply; C1 (final point) and C2 (obstacle clearance)
+   are this mission's own lines, and A1-A4 are unchanged.
+route window: 21407.65 .. 21407.65 s (wall) = 1 traj phases
+
+A1 route horizontal rms      5.63 mm   (target <= 20)
+A2 route vertical rms        4.07 mm   (target <= 50, mean removed)
+A3 delivered-odometry continuity (rate 200.1 Hz over 37644 samples, dt median 4.998 ms, worst gap 4.998 ms):
+   wander  rms 2nd difference  E  0.874 N  0.914 U  1.021 mm   (<= 2.00, 10% of A1)   [PASS]
+   outliers p99 single step    E  4.957 N  6.382 U  3.641 mm   (<= 18.39 = 3x the truth's own p99 6.13 mm/sample)   [PASS]
+   worst step 58.354 mm at 17.81 s of the recording (reported, not gated)
+   delivery rate 200.1 Hz (>= 160.0) PASS;  worst gap 4.998 ms (<= 14.994) PASS
+   [PASS] A3
+A4 FCU estimate vs truth after take-off (1817 of 1860 samples, vertical alignment residual 98.4 mm):
+   horizontal rms   336.92 mm  (<= 50, mean removed) at the best-fit lag +60 ms; zero lag would be   337.45 mm
+   vertical rms    19.76 mm
+   datum offsets removed: N -0.0411 m  E +0.0415 m  D -0.0965 m  (while parked: N +0.0002 E +0.0003 D -0.1136 m)
+   [FAIL] A4
+   vs the LIO pose it was fed (same fit A1 uses): horizontal rms    22.24 mm, vertical rms    13.67 mm   (LIO vs truth is A1 above)
+
+B1/B2/B3 skipped: they are defined against a commanded rectangle (this is a planner trajectory)
+B2 straightness per leg (truth vs the line through that leg's own endpoints):
+B3 corner arrival (truth to the commanded corner, horizontal; vertical shown for the record):
+
+B4 landing: 'land' in the phase log -> NO
+   note: the disarm itself is in the FSM's own output and the FCU's BIN, not in this file
+
+C2 obstacle clearance over the whole flight (64 pillars from forest_b.yaml): minimum pillar-surface distance -0.349 m;  116439 of 208352 samples inside the 0.20 m footprint  [FAIL]
+C1 final point: the aircraft stopped 2.197 m from the last commanded point (-4.059, 2.801)  [FAIL]
+
+A1/A2 FAIL   (A1 5.63 mm <= 20, A2 4.07 mm <= 50, B1 n/a: planner trajectory, aborted True)

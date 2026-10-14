@@ -315,6 +315,19 @@ class Mission:
         if reasons:
             self.abort_reason = "; ".join(reasons)
 
+    def phase_mark(self, name):
+        """A one-shot marker in the phase log, for events that are not phases.
+
+        `--stations N` uses it after every stop, so the metrics can count how many stops the flight actually
+        completed and where each one ended -- the "多少分之多少" the user asked for.
+        """
+        self.log("mark -> %s" % name)
+        self.log_fh.write("%.3f,%d,%s,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n" % (
+            time.monotonic(), self.tap.t_us, name, self.cmd[0], self.cmd[1], self.cmd[2],
+            self.lio["p"][0], self.lio["p"][1], self.lio["p"][2],
+            self.tap.p[0], self.tap.p[1], self.tap.p[2]))
+        self.log_fh.flush()
+
     # ------------------------------------------------------------------ phases
     def set_phase(self, phase):
         if phase == self.phase:
@@ -458,23 +471,86 @@ class Mission:
         position + velocity in `SET_POSITION_TARGET_LOCAL_NED`; the acceleration field is sent too, but for
         a copter it is generally ignored (`PSC` uses the velocity target and its own accel limits), so the
         A/B below measures what the FCU actually does rather than what the message could carry.
+
+        `--stations N > 1` flies a SEQUENCE: one trajectory per commanded stop, each one waited for
+        separately (see `follow_spline_stations`).  That is mission B's shape: the goal sequencer feeds ego
+        one stop at a time and the FSM consumes the trajectory each stop produces.
         """
-        if self.path_l is None:
-            # a planner's trajectory is ASYNCHRONOUS -- same wait as follow_path, and for the same
-            # reason: MEASURED 2026-10-14, without it the spline arm aborted at 16 s with
-            # "no trajectory" while the planner was still initialising.
-            t_wait = time.monotonic()
-            self.log("no trajectory yet on %s -- waiting up to %.0f s for the source to publish one"
-                     % (self.args.traj_topic, self.args.traj_wait_s))
-            while self.path_l is None and time.monotonic() - t_wait < self.args.traj_wait_s:
-                if self.abort_reason:
-                    return self.abort_reason
-                self.pump(0.1)
-            if self.path_l is None:
-                return ("no trajectory on %s after %.0f s (a planner that never plans looks exactly "
-                        "like this)" % (self.args.traj_topic, self.args.traj_wait_s))
-            self.log("trajectory arrived after %.1f s: %d points"
-                     % (time.monotonic() - t_wait, len(self.path_l)))
+        if self.args.stations > 1:
+            return self.follow_spline_stations(self.args.stations)
+        if not self._wait_for_spline(None):
+            return self.abort_reason or ("no trajectory on %s after %.0f s (a planner that never plans "
+                                         "looks exactly like this)"
+                                         % (self.args.traj_topic, self.args.traj_wait_s))
+        return self._spline_once()
+
+    def _traj_usable(self):
+        """Is the trajectory in hand one the FSM should fly?  Length is the test, and it is measured.
+
+        MEASURED 2026-10-14 (the first 12-stop attempt): the adapter republishes the CURRENT spline at 4 Hz
+        from `t_cur` onward, so when a plan is nearly exhausted what it publishes is a STUB -- 23 points,
+        0.43 s, 0.17 m.  The FSM's freshness test (a different `path_t[0]`) is satisfied by any new Path, so
+        it took that stub as "station 2", "flew" it in 2.1 s and burned a station of the mission on 17 cm.
+        A trajectory shorter than `--min-traj-m` is therefore not a station's plan and is skipped.
+        """
+        if self.path_l is None or self.path_t is None:
+            return False
+        if len(self.path_l) < 2:
+            return False
+        seg = float(np.sum(np.linalg.norm(np.diff(self.path_l[:, :2], axis=0), axis=1)))
+        return seg >= self.args.min_traj_m
+
+    def _wait_for_spline(self, last_t0):
+        """Wait for a trajectory, optionally one NEWER than `last_t0` (its first point stamp).
+
+        Returns True when a usable trajectory is in hand.  A planner's trajectory is ASYNCHRONOUS, so the
+        wait is what makes the same FSM work for a source that answers instantly (the rectangle) and for one
+        that does not; MEASURED 2026-10-14, without it the spline arm aborted at 16 s with "no trajectory"
+        while the planner was still initialising.
+        """
+        if self.path_l is not None:
+            if self._traj_usable() and (last_t0 is None
+                                        or (self.path_t is not None
+                                            and float(self.path_t[0]) != float(last_t0))):
+                return True
+        t_wait = time.monotonic()
+        self.log("waiting up to %.0f s on %s for %s"
+                 % (self.args.traj_wait_s, self.args.traj_topic,
+                    "a trajectory" if last_t0 is None else "the NEXT stop's trajectory"))
+        while time.monotonic() - t_wait < self.args.traj_wait_s:
+            if self.abort_reason:
+                return False
+            if self.path_l is not None and self._traj_usable() and \
+                    (last_t0 is None or (self.path_t is not None
+                                         and float(self.path_t[0]) != float(last_t0))):
+                self.log("trajectory arrived after %.1f s: %d points, t0 %.3f"
+                         % (time.monotonic() - t_wait, len(self.path_l),
+                            float(self.path_t[0]) if self.path_t is not None else float("nan")))
+                return True
+            self.pump(0.1)
+        return False
+
+    def follow_spline_stations(self, n):
+        """Fly n stops in sequence, one published trajectory each, and land after the last one."""
+        self.log("stations: %d -- one trajectory per stop, followed to its own end" % n)
+        last_t0 = None
+        for i in range(n):
+            if self.abort_reason:
+                return self.abort_reason
+            if not self._wait_for_spline(last_t0):
+                return ("station %d of %d: no new trajectory on %s within %.0f s"
+                        % (i + 1, n, self.args.traj_topic, self.args.traj_wait_s))
+            last_t0 = float(self.path_t[0]) if self.path_t is not None else None
+            t_stop = time.monotonic()
+            rc = self._spline_once()
+            if rc:
+                return "station %d of %d: %s" % (i + 1, n, rc)
+            self.log("station %d of %d done in %.1f s" % (i + 1, n, time.monotonic() - t_stop))
+            self.phase_mark("station%d" % (i + 1))
+        return None
+
+    def _spline_once(self):
+        """Follow the trajectory currently in `self.path_l` / `self.path_t` in TIME, to its end."""
         if self.path_t is None or len(self.path_t) != len(self.path_l):
             return ("the Path carries no usable per-point stamps (%s), so the time parameterisation cannot "
                     "be recovered -- use --follow path for a geometric source like the rectangle"
@@ -873,6 +949,15 @@ def main() -> int:
                     help="corner: visit the path's corners (the rectangle; every table in docs/metrics/ "
                          "was flown this way).  path: follow the trajectory itself with a look-ahead "
                          "point, which is what a planner's B-spline needs (PLAN.md 4.1)")
+    ap.add_argument("--stations", type=int, default=1,
+                    help="spline mode: follow this many trajectories IN SEQUENCE, one per commanded stop, "
+                         "and land after the last (mission B's circle is 12; see planner/goal_sequencer.py, "
+                         "which publishes the stops).  1 = the single-trajectory behaviour")
+    ap.add_argument("--min-traj-m", type=float, default=0.50,
+                    help="spline mode: ignore a published trajectory whose horizontal arc length is below "
+                         "this (m).  The adapter republishes the current spline at 4 Hz from t_cur, so an "
+                         "almost-exhausted plan arrives as a 0.17 m stub, and a station must not be burned "
+                         "on one")
     ap.add_argument("--lookahead-base", type=float, default=0.45,
                     help="path mode: look-ahead distance at zero speed, m")
     ap.add_argument("--lookahead-gain", type=float, default=0.60,

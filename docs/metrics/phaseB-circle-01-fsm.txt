@@ -1,0 +1,37 @@
+gates in force: arrive 0.060 m, settle speed 0.080 m/s within 3.0 s, speed 0.25 m/s, geofence 6.00 m
+[   0.10] bridge/mavlink: connected to tcp:127.0.0.1:5760, system 1 component 0
+[   0.61] phase -> preflight
+[   0.61] navigation source: lio
+[   0.61] waiting for the LIO on /lio/robo/odom
+[   0.75] LIO live: 21 messages, p_L = [+0.000 +0.001 -0.001], rate 259.1 Hz
+[   1.75] velocity source: lio/odom (12 samples with a non-zero velocity); if 'diff' the FSM is differentiating the pose, which is noisier
+[   1.75] L->F from /mnt/d/distill_self/lio_avoid/../_stage/calib.json: L->W yaw +90.050 deg, t = [-0.0008 -0.0041 +0.1156] m (n=45589, rms 0.0177 m)
+[   4.75] L->F: rotation from the construction (L->W yaw +90.050 deg, t = [-0.0008 -0.0041 +0.1156] m (n=45589, rms 0.0177 m))
+[   4.75]       translation measured from 145 parked samples: t = [+0.0016 +0.0000 +0.1030] m, residual rms 0.0007 m
+[   4.75]       (the parked mismatch to the prediction is [+0.002 +0.004 -0.013] m in F; the rotation gets checked on the flight data, where the path shape identifies it)
+[   4.75] setting the EKF origin
+[   6.67] bridge/mavlink: EKF origin ACCEPTED on attempt 1
+[   7.68] bridge/mavlink: EKF origin accepted but not yet broadcast -- continuing
+[   8.18] FCU: armed=False mode=STABILIZE pos=[-0.001 +0.000 +0.163] alt AMSL 584.2 m gps_fix=0
+[   8.23] bridge/mavlink: mode -> GUIDED
+[   9.28] bridge/mavlink: accel calibration -> ACCEPTED
+[   9.83] bridge/mavlink: command 400 -> ACCEPTED
+[  11.83] armed; landed_state=1
+[  11.83] phase -> takeoff
+[  11.83] bridge/mavlink: takeoff 2.00 m above the pad = 586.08 m on the FCU's own datum (584.1 m)
+[  11.88] bridge/mavlink: command 22 -> ACCEPTED
+[  11.89] takeoff commanded to 2.00 m; streaming external nav ONLY until airborne
+[  13.90] airborne: truth altitude 0.353 m
+[  13.90] phase -> hold
+[  13.90] holding at [-0.000 +0.000 +2.000] for 3.0 s
+[  16.90] no trajectory yet on /planner/traj -- waiting up to 60 s for the source to publish one
+[  26.07] trajectory arrived after 9.2 s: 324 points
+[  26.07] follow-spline: 324 points, 6.45 s of trajectory (4.00 m), stamps in the system clock
+[  26.07] phase -> traj
+[  32.58] trajectory complete (spline): 6.45 s of plan, final speed 0.062 m/s, 0.032 m from the last point
+[  32.58] phase -> land
+[  32.63] bridge/mavlink: mode -> LAND
+[  39.09] landed: armed=False mode=LAND
+[  39.09] phase -> done
+[  39.09] final: armed=False mode=LAND alt AMSL 584.1 m; 458 setpoints, 1767 external-nav messages
+[  39.09] the FCU's last words: Initialising ArduPilot | Arming motors | SIM Hit ground at 0.532594 m/s | Disarming motors

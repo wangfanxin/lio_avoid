@@ -382,8 +382,10 @@ def main() -> int:
         ex = float(p_route[:, 0].max() - p_route[:, 0].min())
         ny = float(p_route[:, 1].max() - p_route[:, 1].min())
     print()
-    if traj_mode:
-        print("B1/B2/B3 skipped: they are defined against a commanded rectangle (see the note above).")
+    if traj_mode or not corners:
+        print("B1/B2/B3 skipped: they are defined against a commanded rectangle (%s)"
+              % ("this is a planner trajectory" if traj_mode else
+                 "mission.corners is EMPTY in this world, so there is no box to judge them against"))
     else:
         # The commanded rectangle comes from `--corners`, i.e. from the world file through
         # tools/world-info.py -- NOT from a number typed here.  It used to be hard-coded as 2.000/1.200
@@ -500,9 +502,21 @@ def main() -> int:
         print("C1 final point: the aircraft stopped %.3f m from the last commanded point (%.3f, %.3f)  [%s]"
               % (d_goal, goal[0], goal[1], "PASS" if d_goal <= 0.30 else "FAIL"))
     print()
-    verdict = (h_rms <= 0.020 and v_rms <= 0.050 and not aborted and ex <= 2.10 and ny <= 1.30)
-    print("A1/A2/B1 %s   (A1 %.2f mm <= 20, A2 %.2f mm <= 50, B1 E %.3f <= 2.10, N %.3f <= 1.30, "
-          "aborted %s)" % ("PASS" if verdict else "FAIL", h_rms * 1e3, v_rms * 1e3, ex, ny, aborted))
+    # The verdict must not test a line that does not apply.  MEASURED 2026-10-14 on mission B's first
+    # sortie in its own world: B1 is skipped (the world commands no rectangle), `ex`/`ny` stay NaN, and the
+    # old line `verdict = (... and ex <= 2.10 and ny <= 1.30)` therefore printed
+    # "A1/A2/B1 FAIL (A1 4.47 mm <= 20, A2 6.90 mm <= 50, B1 E nan ...)" on a flight whose A1, A2, A4, C1,
+    # C2 and landing ALL passed.  A verdict that fails on a metric it skipped is a verdict nobody can read.
+    b1_applicable = (not traj_mode) and bool(corners)
+    b1_ok = (ex <= 2.10 and ny <= 1.30) if b1_applicable else True
+    verdict = (h_rms <= 0.020 and v_rms <= 0.050 and not aborted and b1_ok)
+    if b1_applicable:
+        print("A1/A2/B1 %s   (A1 %.2f mm <= 20, A2 %.2f mm <= 50, B1 E %.3f <= 2.10, N %.3f <= 1.30, "
+              "aborted %s)" % ("PASS" if verdict else "FAIL", h_rms * 1e3, v_rms * 1e3, ex, ny, aborted))
+    else:
+        print("A1/A2 %s   (A1 %.2f mm <= 20, A2 %.2f mm <= 50, B1 n/a: %s, aborted %s)"
+              % ("PASS" if verdict else "FAIL", h_rms * 1e3, v_rms * 1e3,
+                 "planner trajectory" if traj_mode else "the world commands no rectangle", aborted))
     return 0 if not aborted else 1
 
 

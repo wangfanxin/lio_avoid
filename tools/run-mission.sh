@@ -80,12 +80,14 @@ SITL=$!
 cd - > /dev/null
 
 cleanup() {
-    for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RX_PID:-}" "${REC_PID:-}"; do
+    for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RX_PID:-}" "${REC_PID:-}" \
+             "${SEQ_PID:-}"; do
         [ -n "$p" ] && kill "$p" 2>/dev/null
     done
     kill "$SITL" 2>/dev/null
     sleep 1
-    for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RX_PID:-}" "${REC_PID:-}"; do
+    for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RX_PID:-}" "${REC_PID:-}" \
+             "${SEQ_PID:-}"; do
         [ -n "$p" ] && kill -9 "$p" 2>/dev/null
     done
     kill -9 "$SITL" 2>/dev/null
@@ -145,20 +147,38 @@ fi
 # the point of the frozen interface -- but a planner's trajectory is ASYNCHRONOUS, so the FSM is switched
 # to path following (with its own wait) and the planner gets the goal from the world file.
 TRAJ_SOURCE="${TRAJ_SOURCE:-rect}"
+# STATIONS > 0 flies a SEQUENCE of stops: planner/goal_sequencer.py publishes them one at a time (the
+# user's division of labour: "ego只需要大概路径规划点吧，然后他会自己规划路径") and the FSM follows one
+# trajectory per stop (`--stations N`).  The stop list comes from the world file through tools/world-circle.py,
+# including the rule that a stop landing inside a pillar moves forward to that pillar's next exit.
+STATIONS="${STATIONS:-0}"
+SEQ_PID=""
 if [ "$TRAJ_SOURCE" = "planner" ]; then
-    # run-planner.sh carries its own world default (worlds/forest_all.yaml, the mission-B forest) and
-    # takes no --world: pass nothing, so the geometry stays in its one documented place.
-    bash "$REPO/tools/run-planner.sh" > "$OUT/planner.log" 2>&1 &
+    # run-planner.sh's world default is now worlds/forest_b.yaml (mission B's own world), and passing
+    # WORLD here keeps the PLANNER's map, its goal and its clearance gate on the SAME file the simulator
+    # renders and the metrics judge -- the "two worlds" bug of STATUS.md row 50.
+    WORLD="$WORLD" bash "$REPO/tools/run-planner.sh" > "$OUT/planner.log" 2>&1 &
+    TRAJ_PID=$!
+    sleep 1
+    if [ "$STATIONS" -gt 0 ]; then
+        python3 "$REPO/planner/goal_sequencer.py" --world "$WORLD" --calib-file "$CALIB" \
+            --arrive "${SEQ_ARRIVE:-0.35}" --timeout "${SEQ_TIMEOUT:-35}" \
+            --log "$OUT/sequencer.log" > "$OUT/sequencer.out" 2>&1 &
+        SEQ_PID=$!
+        echo "   stations   : $STATIONS, fed by planner/goal_sequencer.py (arrive ${SEQ_ARRIVE:-0.35} m)"
+        FSM_ARGS="${FSM_ARGS:-} --stations $STATIONS"
+    fi
 else
     python3 "$REPO/planner/rectangle_source.py" --world "$WORLD" $TRAJ_CALIB_ARG > "$OUT/traj.log" 2>&1 &
+    TRAJ_PID=$!
 fi
-TRAJ_PID=$!sleep 1
 python3 "$REPO/fsm/mission_fsm.py" --nav-source "$NAV_SOURCE" $CALIB_ARG \
     --tap-port 0 --alt "$TAKEOFF_ALT" --hold 3.0 --geofence-m "$GEOFENCE_M" ${FSM_ARGS:-} \
     --phase-log "$OUT/phase.csv" > "$OUT/fsm.log" 2>&1
 FSM_RC=$?
 cat "$OUT/fsm.log"
 
+kill "$SEQ_PID" 2>/dev/null
 kill "$REC_PID" 2>/dev/null
 kill "$RECC_PID" 2>/dev/null
 sleep 1

@@ -597,8 +597,33 @@ class EgoAdapter:
         cl = self.world.clearance(pos)
         info["clr_min"] = float(cl.min())
         if info["clr_min"] < self.args.footprint:
-            return None, "pillar clearance %.3f m < footprint %.2f m (at point %d)" % (
-                info["clr_min"], self.args.footprint, int(np.argmin(cl)))
+            # PUBLISH THE SAFE PREFIX INSTEAD OF NOTHING.  The contract (PLAN.md 4.1) forbids publishing a
+            # path that breaks the clearance, and that is still true -- but withholding the WHOLE path
+            # deadlocks the mission when the violation is in its far half: MEASURED 2026-10-14 on the 12-stop
+            # circle, `PATH WITHHELD (275): pillar clearance -0.096 m < footprint 0.20 m (at point 470)` --
+            # ego planned through a pillar it had not seen yet (unknown space is free to it), the vehicle
+            # never moved, so it never saw it, so the same plan came back, and the FSM waited 90 s and
+            # aborted.  The first `--min-prefix-m` of the path are still verified clear, so they may be
+            # flown; flying them is also what makes the vehicle see more.  A prefix shorter than that is
+            # not worth a setpoint stream and is withheld with the old message.
+            k = int(np.argmax(cl < self.args.footprint))       # first violating sample
+            if k >= 2:
+                seg = float(np.sum(np.linalg.norm(np.diff(pos[:k, :2], axis=0), axis=1)))
+            else:
+                seg = 0.0
+            if seg >= self.args.min_prefix_m:
+                info["prefix_m"] = seg
+                info["prefix_of"] = len(pos)
+                self.n_prefix = getattr(self, "n_prefix", 0) + 1
+                if self.n_prefix <= 3 or self.n_prefix % 20 == 0:
+                    print("ego_adapter: PATH TRUNCATED (%d): flying the first %.3f m of %d points and "
+                          "dropping the rest, which comes within %.3f m of a pillar at point %d "
+                          "(contract %.2f m) -- ego planned through a pillar it has not seen yet"
+                          % (self.n_prefix, seg, k, float(cl[k]), k, self.args.footprint), flush=True)
+                pos, ts = pos[:k], ts[:k]
+            else:
+                return None, "pillar clearance %.3f m < footprint %.2f m (at point %d)" % (
+                    info["clr_min"], self.args.footprint, int(np.argmin(cl)))
 
         ins = self.world.inside(pos)
         if not bool(ins.all()):
@@ -694,6 +719,12 @@ def main():
     ap.add_argument("--odom-topic", default="/lio/robo/odom")
     ap.add_argument("--rate", type=float, default=4.0, help="republish rate, Hz (>= 2 required)")
     ap.add_argument("--dt", type=float, default=0.02, help="trajectory-time sample spacing, s")
+    ap.add_argument("--min-prefix-m", type=float, default=0.30,
+                    help="when a plan breaks the clearance contract in its far half, publish the verified "
+                         "prefix if it is at least this long (m) instead of withholding everything; a "
+                         "shorter prefix is withheld as before.  This is what breaks the deadlock where ego "
+                         "plans through a pillar it has not seen yet and the vehicle therefore never moves "
+                         "to see it")
     ap.add_argument("--footprint", type=float, default=0.20,
                     help="the project's clearance CONTRACT, metres: no point of a published path may come "
                          "closer than this to a TRUE pillar surface in the world file.  It is measured "

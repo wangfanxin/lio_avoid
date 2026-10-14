@@ -28,7 +28,11 @@ ROS_SETUP=/opt/ros/humble/setup.bash
 LIO_WS=/home/fanxin/lio_avoid/lio_ws
 PLANNER_WS=/home/fanxin/lio_avoid/planner_ws
 CALIB=/mnt/d/distill_self/_stage/calib.json
-WORLD="$HERE/worlds/forest_all.yaml"
+# The mission-B world.  It moved from forest_all.yaml (mission A's 12 x 12 m sparse forest) to
+# worlds/forest_b.yaml when the user redefined mission B on 2026-10-14 (x[-6,6] y[-6,6], 64 pillars of
+# r = 0.4 m, the r = 4 m circle).  `WORLD=...` overrides it, and run-mission.sh passes the same file it
+# gave the sensor -- the "two worlds" bug of STATUS.md row 50 was exactly a mismatch here.
+WORLD="${WORLD:-$HERE/worlds/forest_b.yaml}"
 PARAMS="$HERE/params/ego_planner_humble.yaml"
 
 GOAL=""
@@ -55,7 +59,7 @@ cat <<EOF
   params        $PARAMS
   calibration   $CALIB
   world         $WORLD
-  goal          ${GOAL:-from worlds/forest_all.yaml mission_b.goal}
+  goal          ${GOAL:-from $WORLD mission_b.goal}
 
   publishes:
     /planner/traj                 nav_msgs/Path          frame lio_world   >= 2 Hz, points at 50 Hz of
