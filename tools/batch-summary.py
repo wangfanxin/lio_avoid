@@ -39,6 +39,15 @@ def parse(path):
     r["A4_pass"] = (m.group(1) == "PASS") if m else None
     m = re.search(r"horizontal rms\s+([\d.]+) mm\s+\(<= 50, mean removed\)", txt)
     r["A4"] = float(m.group(1)) if m else None
+    # C1/C2 are the lines a PLANNER mission is judged by: B1/B2/B3 are defined against a commanded
+    # rectangle and are skipped when the FSM followed a trajectory instead of visiting corners.
+    m = re.search(r"C1 final point: the aircraft stopped ([\d.]+) m.*?\[(PASS|FAIL)\]", txt)
+    r["C1"] = float(m.group(1)) if m else None
+    r["C1_pass"] = (m.group(2) == "PASS") if m else None
+    m = re.search(r"C2 obstacle clearance.*?minimum pillar-surface distance ([\d.]+) m;\s+(\d+) of (\d+) "
+                  r"samples inside the ([\d.]+) m footprint\s+\[(PASS|FAIL)\]", txt, re.S)
+    r["C2"] = float(m.group(1)) if m else None
+    r["C2_pass"] = (m.group(5) == "PASS") if m else None
     m = re.search(r"B1 truth box extents over the route \([^)]*\): E ([\d.]+) m\s+N ([\d.]+) m", txt)
     r["B1"] = [float(x) for x in m.groups()] if m else None
     m = re.search(r"against the legacy bound 1\.26 on N: (PASS|FAIL)", txt)
@@ -97,6 +106,13 @@ def main() -> int:
     a4 = [r["A4"] for r in rows]
     print("A4 FCU estimate vs truth  <= 50 mm       %d of %d   %s"
           % (*count(a4, lambda v: v <= 50.0), _stats(a4, "mm")))
+    c1 = [r["C1"] for r in rows]
+    if any(v is not None for v in c1):
+        print("C1 final point           <= 0.30 m      %d of %d   %s"
+              % (*count(c1, lambda v: v <= 0.30), _stats(c1, "m")))
+        c2 = [r["C2"] for r in rows]
+        print("C2 obstacle clearance    >= 0.35 m      %d of %d   %s"
+              % (*count(c2, lambda v: v >= 0.35), _stats(c2, "m")))
 
     b1e = [r["B1"][0] for r in rows if r["B1"]]
     b1n = [r["B1"][1] for r in rows if r["B1"]]

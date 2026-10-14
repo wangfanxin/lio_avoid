@@ -28,9 +28,11 @@ def read(world):
     arena = (cfg.get("arena", {}) or {}).get("walls", {}) or {}
     xs = arena.get("x", [-5.0, 5.0])
     ys = arena.get("y", [-5.0, 5.0])
-    # the FSM's geofence gate: inside the walls, with 0.5 m of margin so a wall is never the thing that
-    # stops the mission before the gate does
-    geo = min(max(abs(xs[0]), abs(xs[1])), max(abs(ys[0]), abs(ys[1]))) - 0.5
+    # the FSM's geofence gate: inside the walls, with a SMALL margin.  It is there to catch a runner,
+    # not to be tighter than the world the planner plans in.  MEASURED 2026-10-14: with 0.5 m the
+    # FSM aborted a Mission B flight at N +5.52 m inside a 12 x 12 m arena (walls at +-6.0), i.e. the
+    # gate fired on a legitimate trajectory 0.48 m inside the world.
+    geo = min(max(abs(xs[0]), abs(xs[1])), max(abs(ys[0]), abs(ys[1]))) - 0.2
     return {"corners": corners, "alt": float(mission.get("takeoff_alt", 2.0) or 2.0),
             "geofence_m": float(geo), "arena": {"x": xs, "y": ys}}
 
