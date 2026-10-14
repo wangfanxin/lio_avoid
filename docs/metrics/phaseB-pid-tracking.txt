@@ -1,0 +1,36 @@
+HOW WELL DOES THE AIRCRAFT'S OWN CONTROL LOOP TRACK THE PLAN?  (sortie B11, 50 Hz setpoint trace)
+when 2026-10-14   run /home/fanxin/lio_avoid/logs/missionA-B11-circle-12-latest
+setpoint = SET_POSITION_TARGET_LOCAL_NED, MAV_FRAME_LOCAL_NED, 50 Hz, type_mask = IGNORE_YAW_RATE
+           (position + velocity + acceleration + yaw; yaw-rate is the only ignored field)
+estimate = the LIO's pose as ODOMETRY(331) LOCAL_FRD at ~48 Hz; EK3_SRC1_* = 6 (the EKF eats the LIO)
+
+THE FOUR LINKS, each measured against the one above it:
+  LIO pose vs truth (the SITL tap)          A1  4.5-9.8 mm rms   <- essentially exact
+  FCU EKF estimate vs truth                 A4  18.6-20 mm rms, best-fit lag +38 ms
+  FCU motion vs the setpoint it was streamed (THE PID'S OWN JOB):
+airborne+marked-moving ticks: 2229,  commanded speed median 0.694 m/s
+
+1) magnitudes
+   position |FCU - setpoint|: median 0.134 m, p95 0.597 m, max 1.157 m
+   velocity |FCU - setpoint|: median 0.227 m/s (= 33 % of the commanded 0.694 m/s), p95 0.686 m/s
+   actual speed median 0.673 m/s -> the aircraft delivers 97 % of the planned speed
+
+2) what does the position error correlate with?  (|corr| near 1 = that is the cause)
+   corr(|pos err|, commanded acceleration  ) = -0.155
+   corr(|pos err|, commanded speed         ) = +0.050
+   corr(|pos err|, commanded speed squared ) = +0.061
+
+3) is the error systematic (a lag) or random?  project it on the commanded velocity
+   mean along +0.012 m (negative = behind the plan), mean across +0.018 m, sd along 0.249, sd across 0.128
+   implied time lag = -mean(along)/speed = -0.017 s
+
+4) oscillation or smooth?  autocorrelation of the signed error at 0.1 and 0.5 s
+   autocorr at 0.10 s: +0.946
+   autocorr at 0.50 s: +0.612
+   (a slow decay = bandwidth/lag; a rapid sign flip = the loop is oscillating)
+
+READING: the loop delivers 97 % of the planned speed and shows NO systematic lag (implied -0.017 s),
+NO acceleration limitation (corr with commanded accel -0.16) and NO oscillation (autocorrelation
++0.95 at 0.1 s, +0.61 at 0.5 s).  What is left is a slowly-varying offset: median 0.134 m, whose
+fluctuation is twice as large along the path (sd 0.249 m) as across it (0.128 m).  So the weak link is
+the position loop's transient response -- not the estimator (mm) and not the planner.
