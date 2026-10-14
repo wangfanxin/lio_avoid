@@ -1,0 +1,49 @@
+SORTIE AO1 -- WHAT THE GOAL-TRACE INSTRUMENTATION SETTLED  (2026-10-14, circle, same config as AN1)
+====================================================================================================
+Question this sortie existed to answer: does stop 2's goal REACH ego, and what does ego do with it?
+Two candidate mechanisms were on the table: (a) patch 0005 ("ignore a waypoint within 0.10 m of end_pt_
+while have_target_") swallows the goal, (b) the goal never arrives.
+
+Raw material: logs/missionA-AO1-goaltrace/ (planner.log = ego + adapter, fsm.log, bspline.csv,
+bspline.csv.points.csv, traj.csv, traj.csv.points.csv, tap.csv, ego_map.csv, setpoints.csv).
+
+1. THE GOAL ARRIVES AND BECOMES end_pt_ EXACTLY -- mechanism (a) and (b) are both REFUTED
+   31 GOAL-TRACE lines from ego's own waypointCallback (patch 0006):
+     26 of 31  have_target=1 have_odom=1
+     29 of 31  |end-new| = 0.000        (end_pt_ == the incoming waypoint, to the millimetre)
+      1        |end-new| = 2.700        (the first forward, before end_pt_ existed)
+      1        |end-new| = 5.344        (stop 1 -> stop 2 jump)
+      5        have_target=0            (the pre-odom forwards, before the first odom)
+   Distinct waypoints the trace saw: [2.543 -3.092 1.884] (= stop 2, W[+3.0887 +2.5416 +2.0000]) and
+   [0.000 -4.000 1.884] (= stop 1). The adapter re-forwards the last goal at 1 Hz, which is why the same
+   waypoint repeats -- the trace is dominated by re-forwards, not by new goals.
+   => The adapter's delivery path works and ego stores the goal. The failure is DOWNSTREAM of the goal.
+
+2. THE FAILURE: EGO STOPS PUBLISHING PLANS, THE FSM WEDGES SILENTLY FOR 490 s
+   Last spline ego committed: bspline.csv row traj_id 17 at t = 31.5 s (17 trajectories total, adapter
+   STATUS "bsplines 16" mid-run). The flight lasted 530+ s.
+   FSM:  "follow-spline: 97 points, 1.92 s of trajectory (0.61 m)"  at t = 29.46 s, then NOTHING until
+         "[69.66] sequencer stop index 2" and then one line every 45.2 s (the sequencer's own per-stop
+         timeout) through stop 11 and -1 at t = 521 s. No DIAG, no hold, no abort: the FSM was spinning in
+         the "plan clock is out and the straight pull to the last point is illegal" branch, which was a bare
+         `pump(0.05); continue`.
+   The plan ego did publish was DEGENERATE: traj.csv row n=97, arc 0.611 m, all 97 points within a few cm
+   of (2.574, -3.085) -- a stub sitting AT the goal, not at the vehicle. The FSM's earlier DIAG named the
+   same shape: "36 message(s), arc 0.097 m, 21 points, first point 6.001 m from the vehicle -> refused
+   because: arc 0.097 < 0.10 m". Aircraft never left stop 1 (0.170 m from the plan's end).
+
+3. WHAT WAS CHANGED AS A RESULT (fsm/mission_fsm.py)
+   * The wedge is now LOUD and BOUNDED: 1 Hz DIAG naming plan age, t_rel/dur, the last point, its distance
+     from the vehicle, the straight-line clearance against the 0.20 m contract, and whether a NEWER plan
+     arrived and is also stale; then an ABORT with that mechanism in the reason after --late-plan-abort-s
+     (default 20 s). A 490 s silent wedge becomes a <=20 s attributed failure.
+   * `_hold_clearance()` split out of `_hold_is_legal()` so the verdict can be reported WITH its number.
+
+4. STILL OPEN (the real blocker, next): ego publishes no plan that STARTS AT THE VEHICLE once the vehicle
+   is at stop 1 with stop 2's goal set. ego's committed plans are anchored at the vehicle when
+   |cp0 - odom| is small (traj 15: cp0 = cp1 = (0.082, -4.244) = odom) and are not when the start is taken
+   from the previous plan's end (traj 17: cp0 = (1.916, -3.191) = traj 15's cpN, 2.1 m ahead of the
+   vehicle). Two of the 17 trajectories are of the second kind; the 0.097 m stub is the pathological case of
+   it. NOTE: cp0 is a CONTROL point, and with k0 < 0 it is not the plan's evaluated start -- the start must
+   be read from traj.csv.points.csv row i=0 (first row of the run: (0.027, 0.008, 1.673) = the vehicle),
+   which is why section 2 uses the point list, not cp0.

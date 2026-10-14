@@ -32,7 +32,7 @@ echo "revision   : $(git -C "$EGO_TREE" rev-parse --short HEAD) ($(git -C "$EGO_
 echo
 
 n=0
-for p in patches/000[2345]-*.patch; do
+for p in patches/000[23456]-*.patch; do
     [ -e "$p" ] || { echo "no 0002-*/0003-*/0004-* patches in patches/"; exit 0; }
     echo "== $p"
     git -C "$EGO_TREE" apply --check $REVERT "$HERE/$p"

@@ -1,0 +1,25 @@
+diff --git a/src/planner/plan_manage/src/ego_replan_fsm.cpp b/src/planner/plan_manage/src/ego_replan_fsm.cpp
+index d88aba4..917315d 100755
+--- a/src/planner/plan_manage/src/ego_replan_fsm.cpp
++++ b/src/planner/plan_manage/src/ego_replan_fsm.cpp
+@@ -280,6 +280,20 @@ namespace ego_planner
+     // puts this FSM into WAIT_TARGET by design and only a new goal pulls it out.  So repeats must keep
+     // arriving and must be no-ops while the SAME goal is under pursuit; after an arrival have_target_ is
+     // false and the next repeat re-arms the FSM exactly as before.
++    // PATCH J (patches/0006-ego-goal-trace.patch): SAY WHAT HAPPENS TO EVERY GOAL THAT ARRIVES HERE.
++    // MEASURED 2026-10-14 (sortie AN1, the circle): the adapter delivered stop 2's goal (W 3.0887, 2.5416)
++    // -- its log line is "goal from stop index 2/12: W[+3.0887 +2.5416 +2.0000] (vehicle at 1.83 m)" -- and
++    // this FSM's target stayed on stop 1 (W 4.0, 0.0), 0.09 m from its own odometry, so upstream's
++    // "(start_pt - local_target_pt).norm() < 0.2 -> return false" rule refused to plan while the mission
++    // waited out its 60 s ("ABORT: no new trajectory on /planner/traj within 60 s ... (sequencer at stop 2)").
++    // Whether the goal is ignored below, or never reaches this callback, is the one thing this line settles.
++    RCLCPP_INFO(node_->get_logger(),
++                "GOAL-TRACE: waypoint [%.3f %.3f %.3f] have_target=%d have_odom=%d end_pt=[%.3f %.3f %.3f] "
++                "|end-new|=%.3f odom=[%.3f %.3f %.3f]",
++                end_wp(0), end_wp(1), end_wp(2), (int)have_target_, (int)have_odom_,
++                end_pt_(0), end_pt_(1), end_pt_(2), (end_wp - end_pt_).norm(),
++                odom_pos_(0), odom_pos_(1), odom_pos_(2));
++
+     if (have_target_ && (end_wp - end_pt_).norm() < 0.10)
+     {
+       static long same_goal_count = 0;

@@ -731,6 +731,24 @@ class Mission:
             self.log("could not load the world model (%s) -- the wait-loop hold is disabled" % exc)
             return None
 
+    def _hold_clearance(self, target):
+        """Smallest world clearance on the straight line from the vehicle to `target`, or None.
+
+        Split out of `_hold_is_legal` so the wedge diagnostic can PRINT the number that made the decision
+        instead of only reporting the verdict.
+        """
+        if getattr(self, "_world", None) is None and not getattr(self, "_world_tried", False):
+            self._world_tried = True
+            self._world = self._load_world()
+        if self.path_l is None or getattr(self, "_world", None) is None:
+            return None
+        here = np.array(self.bridge.state().pos)
+        seg = np.linspace(here, np.asarray(target, dtype=float), 24)[:, :3]
+        try:
+            return float(self._world.clearance(seg).min())
+        except Exception:                                     # noqa: BLE001  (never block the flight on this)
+            return None
+
     def _hold_is_legal(self, target):
         """Is pulling straight at `target` legal?  The straight line is the whole question.
 
@@ -750,14 +768,8 @@ class Mission:
         if getattr(self, "_world", None) is None and not getattr(self, "_world_tried", False):
             self._world_tried = True
             self._world = self._load_world()
-        if self.path_l is None or getattr(self, "_world", None) is None:
-            return False
-        here = np.array(self.bridge.state().pos)
-        seg = np.linspace(here, np.asarray(target, dtype=float), 24)[:, :3]
-        try:
-            return float(self._world.clearance(seg).min()) >= self.args.footprint_contract
-        except Exception:                                     # noqa: BLE001  (never block the flight on this)
-            return False
+        clr = self._hold_clearance(target)
+        return clr is not None and clr >= self.args.footprint_contract
 
     def follow_spline_stations(self, n):
         """Fly the mission's stops in sequence, and land when the SEQUENCER says the sequence is over.
@@ -892,6 +904,9 @@ class Mission:
         # that clock, so this is the same rule with no interface change.
         t0_cur = float(self.path_t[0])
         n_switch = 0
+        self._late_since = None                               # when the "plan clock is out and the pull is
+        self._late_log = 0.0                                  # illegal" wedge started, and its 1 Hz clock
+        self._late_plan_t0 = None
         while True:
             if self.abort_reason:
                 return self.abort_reason
@@ -914,8 +929,45 @@ class Mission:
             # clock is out and the straight segment to that end point is not verified clear, hold where we are
             # and wait for a fresh plan instead.
             if t_rel >= dur and not self._hold_is_legal(pos):
+                # NO SILENT WAITING.  This branch used to be a bare `pump(0.05); continue`.  MEASURED sortie
+                # AO1 (2026-10-14): ego accepted stop 2's goal (`GOAL-TRACE ... |end-new|=0.000 have_target=1`
+                # 29 times) but stopped publishing splines at t = 29.5 s, and the FSM then sat IN THIS BRANCH
+                # for 490 s printing NOTHING -- no DIAG, no hold, no abort -- while the sequencer walked the
+                # circle stop by stop on its own timeout (2,3,...,11 at 45.2 s each, then -1) and the aircraft
+                # hovered at stop 1 the whole time.  A wedge that leaves no line in the log is
+                # indistinguishable from a crash, so: name the mechanism at 1 Hz, and give up LOUDLY with the
+                # same attribution every other abort carries, instead of burning the rest of the sortie.
+                if self._late_since is None:
+                    self._late_since = time.monotonic()
+                    self._late_plan_t0 = t0_cur
+                late_s = time.monotonic() - self._late_since
+                if time.monotonic() - self._late_log >= 1.0:
+                    self._late_log = time.monotonic()
+                    clr = self._hold_clearance(pos)
+                    st_l = self.bridge.state()
+                    away = float(np.linalg.norm(np.asarray(st_l.pos)[:3] - np.asarray(pos, dtype=float)[:3]))
+                    self.log("DIAG: no flyable plan -- the newest plan's clock ran out %.2f s ago (t %.2f of "
+                             "%.2f s, plan age %.1f s, %s), its last point [%.2f %.2f %.2f] is %.2f m from the "
+                             "vehicle, straight line to it clearance %s against the %.2f m contract -> "
+                             "refusing to pull, waiting for a plan that starts at the vehicle (%.1f s)"
+                             % (t_rel - dur, t_rel, dur, time.time() - t0_cur,
+                                "no newer plan has arrived"
+                                if self.path_t is not None and float(self.path_t[0]) == self._late_plan_t0
+                                else "a NEWER plan arrived and its clock is out too",
+                                pos[0], pos[1], pos[2], away,
+                                ("%.3f m" % clr) if clr is not None else "unavailable",
+                                self.args.footprint_contract, late_s))
+                if late_s > self.args.late_plan_abort_s:
+                    return ("no plan that starts at the vehicle for %.0f s: the newest plan's clock ran out "
+                            "%.2f s ago and the straight line to its last point [%.2f %.2f %.2f] (%.2f m away) "
+                            "has %s clearance against the %.2f m contract, so the FSM refused to pull and the "
+                            "planner published no replacement that starts here"
+                            % (late_s, t_rel - dur, pos[0], pos[1], pos[2], away,
+                               ("%.3f m" % clr) if clr is not None else "unavailable",
+                               self.args.footprint_contract))
                 self.pump(0.05)
                 continue
+            self._late_since = None
             self.cmd = pos
             st = self.bridge.state()                       # the FCU's own state, read BEFORE the freeze test
             here = np.array(st.pos)
@@ -1368,6 +1420,10 @@ def main() -> int:
     ap.add_argument("--spline-lead", type=float, default=0.0,
                     help="spline mode: start this many seconds into the plan (a small lead hides the"
                          " first setpoint's staleness; 0 = follow the plan from its own t=0)")
+    ap.add_argument("--late-plan-abort-s", type=float, default=20.0,
+                    help="spline mode: abort with a named mechanism if the newest plan's clock has run out "
+                         "and the straight pull to its last point is illegal for this long (sortie AO1 sat "
+                         "in that state for 490 s printing nothing while the sequencer timed out the circle)")
     ap.add_argument("--traj-wait-s", type=float, default=45.0,
                     help="path mode: wait this long for the source to publish a first trajectory "
                          "(a planner needs the map before it can plan)")
