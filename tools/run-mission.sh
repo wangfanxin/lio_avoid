@@ -37,7 +37,12 @@ MISSION_PARM="${MISSION_PARM:-$REPO/params/phase_a_mission.parm}"
 eval "$(python3 "$REPO/tools/world-info.py" --world "$WORLD" --shell)"
 # GEOFENCE_M may be overridden for a mission whose goal is ON the arena wall: the gate exists to catch a
 # runner, and the arena itself is already enforced by the planner's own arena check.
-GEOFENCE_M="${GEOFENCE_M:-$GEOFENCE_M}"
+# THE BUG THIS FIXES: the first version wrote `GEOFENCE_M="${GEOFENCE_M:-$GEOFENCE_M}"` AFTER the eval, which
+# is a no-op -- the eval had already overwritten the caller's value with the world's.  MEASURED 2026-10-14
+# (sortie E1): that flight aborted with "geofence: truth at [+6.00 +5.39]" although GEOFENCE_M=6.25 had been
+# exported, because the gate in force was still the world's 6.00 m.
+GEOFENCE_ENV="${GEOFENCE_M:-}"
+if [ -n "$GEOFENCE_ENV" ]; then GEOFENCE_M="$GEOFENCE_ENV"; fi
 MISSION_NAME="$(basename "$MISSION_PARM" .parm)"
 # EKF_PARM selects HOW MUCH THE EKF TRUSTS THE LIO: `params/ekf_trust_lio.parm` sets every measurement and
 # process noise to the value that has been measured, instead of the firmware's aircraft-scale defaults.

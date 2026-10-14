@@ -141,6 +141,7 @@ fi
 
 python3 "$HERE/planner/ego_adapter.py" \
   ${DUMP_BSPLINE:+--dump-bspline "$DUMP_BSPLINE"} \
+  ${ADAPTER_EXTRA:-} \
   --calib-file "$CALIB" \
   --world "$WORLD" \
   --rate "$RATE" \

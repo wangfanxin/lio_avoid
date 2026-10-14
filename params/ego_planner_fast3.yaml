@@ -1,0 +1,87 @@
+ego_planner_node:
+  ros__parameters:
+    # --- what the FSM plans -------------------------------------------------------------------
+    "fsm/flight_type": 1                 # 1 = MANUAL_TARGET: the goal arrives on /move_base_simple/goal
+    "fsm/thresh_replan_time": 1.0
+    "fsm/thresh_no_replan_meter": 1.0
+    "fsm/planning_horizon": 12.0         # > the A* route length, so getLocalTarget() returns the GOAL
+    "fsm/planning_horizen_time": 3.0     # (upstream's spelling)
+    "fsm/emergency_time": 1.0
+    "fsm/realworld_experiment": false
+    "fsm/fail_safe": true
+    "fsm/waypoint_num": -1
+    # --- the local map, built from /lio/cloud_world -------------------------------------------
+    "grid_map/resolution": 0.10
+    "grid_map/map_size_x": 14.0
+    "grid_map/map_size_y": 14.0
+    "grid_map/map_size_z": 5.0
+    "grid_map/local_update_range_x": 6.0
+    "grid_map/local_update_range_y": 6.0
+    "grid_map/local_update_range_z": 3.0
+    # DECIDED by the user 2026-10-14: "ego膨胀0.1m就够了我觉得".  0.10 m is exactly ONE grid cell
+    # (`inf_step = ceil(0.10 / 0.10) = 1`), and it is also within a thousandth of upstream's own default
+    # (`advanced_param.launch.py`: 0.099) -- ego-planner's inflation is the PLANNER's own margin, not the
+    # project's safety contract.  The contract lives in the adapter's `--footprint` (now 0.20 m, measured
+    # against the TRUE pillar surfaces of the world file) and it is strictly larger, so the adapter is
+    # still the binding gate.
+    # WAS 0.45 (5 cells = 0.50 m).  MEASURED 2026-10-14 (STATUS.md row 50, commit b46a2e4): raising it
+    # 0.2 -> 0.45 "moved the withheld point from 110 to 92 but did NOT change the clearance", so this
+    # number was never what decided how close the plan came.  What it DID decide is whether ego's map has
+    # any free channel at all in a dense forest: a corridor of width g stays passable for ego only while
+    # g > 2 x inflation (1.00 m at 0.45, 0.20 m at 0.10).  The user's 1.5 m / r = 0.4 m forest has
+    # corridors of 0.565-0.640 m, so at 0.45 the whole forest was solid to the planner and at 0.10 it is
+    # threadable (0.365-0.440 m of free channel = 3.6-4.4 cells).
+    "grid_map/obstacles_inflation": 0.10
+    "grid_map/local_map_margin": 10
+    "grid_map/ground_height": 0.0
+    "grid_map/use_depth_filter": false    # there is NO camera in this project
+    "grid_map/p_hit": 0.65
+    "grid_map/p_miss": 0.35
+    "grid_map/p_min": 0.12
+    "grid_map/p_max": 0.90
+    "grid_map/p_occ": 0.80
+    "grid_map/min_ray_length": 0.5
+    "grid_map/max_ray_length": 6.0
+    "grid_map/virtual_ceil_height": 4.0
+    "grid_map/visualization_truncate_height": 4.0
+    "grid_map/show_occ_time": false
+    "grid_map/pose_type": 2               # 2 = ODOMETRY
+    "grid_map/frame_id": "lio_world"
+    # --- the planner ---------------------------------------------------------------------------
+    # THE 3 m/s ARM (the user's instruction, 2026-10-14: "我希望是3m/s的飞行速度！！！").
+    # WHY ALL FOUR NUMBERS MOVE TOGETHER:
+    #   * `bspline/limit_vel` is the cap the refiner enforces on the finished trajectory (measured: the old
+    #     1.0 cap held the flown speed at 0.64-0.74 m/s with peaks 1.13-1.23 = limit_vel x limit_ratio 1.1);
+    #   * `manager/max_vel` is what the control points are SPACED BY in time (`planner_manager.cpp:442,509`:
+    #     `time(i) = |p(i+1)-p(i)| / max_vel`), so leaving it at 2.0 while the cap is 3.0 would build a
+    #     trajectory that is 1.5x too slow and then let the refiner SPEED IT UP, which is the wrong order;
+    #   * `limit_acc`/`max_acc` have to allow reaching 3 m/s inside these legs: at 1.0 m/s^2 it takes 3 s and
+    #     4.5 m to accelerate, longer than most legs here, so the trajectory would never get near 3 m/s;
+    #   * `max_jerk` 4.0 keeps the acceleration profile smooth enough for the attitude loop to follow.
+    # WHAT THIS COSTS, measured before it was changed: the tracking error grows with speed -- 0.12-0.19 m at
+    # 0.36-0.65 m/s against 0.55-0.72 m at 1.0-1.1 m/s -- and the plan rides at the 0.20 m contract.  At
+    # 3 m/s the truth will therefore cut much deeper into the pillar band unless the loops are retuned, and
+    # the sim has no collision physics to stop it.  This arm is flown to MEASURE that, which is why the same
+    # metrics (A1-A4, C1/C2, stations reached) are recorded for it.
+    "manager/max_vel": 3.0
+    "manager/max_acc": 3.0
+    "manager/max_jerk": 4.0
+    "manager/control_points_distance": 0.5
+    "manager/feasibility_tolerance": 0.05
+    "manager/planning_horizon": 12.0
+    "manager/use_distinctive_trajs": false
+    "manager/drone_id": 0
+    "optimization/lambda_smooth": 1.0
+    "optimization/lambda_collision": 0.5
+    "optimization/lambda_feasibility": 0.1
+    "optimization/lambda_fitness": 1.0
+    "optimization/dist0": 0.60
+    "optimization/swarm_clearance": 0.5
+    "optimization/max_vel": 3.0
+    "optimization/max_acc": 3.0
+    "bspline/limit_vel": 3.0
+    "bspline/limit_acc": 3.0
+    "bspline/limit_ratio": 1.1
+    "prediction/obj_num": 0
+    "prediction/lambda": 1.0
+    "prediction/predict_rate": 1.0

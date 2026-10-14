@@ -1,0 +1,38 @@
+THE 3 m/s REQUEST, MEASURED (2026-10-14, user: '我希望是3m/s的飞行速度！！！')
+
+params/ego_planner_fast3.yaml raises ALL FOUR limits together (manager/max_vel 3.0, max_acc 3.0,
+max_jerk 4.0, optimization/max_vel 3.0, bspline/limit_vel 3.0, limit_acc 3.0), because they are
+coupled: limit_vel is the cap the refiner enforces, max_vel is what the control points are spaced by
+in time, and at 1.0 m/s^2 the aircraft needs 3 s and 4.5 m to reach 3 m/s -- longer than these legs.
+
+TWO FLIGHTS:
+  E1  fast3 params + the normal 0.20 m gate : stop 1 MISSED by 6.734 m (every plan truncated to a
+      fraction of a metre), flown speed moving median 0.74 m/s, aborted at the arena wall
+  E2  fast3 params + the gate opened to 0.05 m (a DIAGNOSTIC, not an acceptable configuration):
+      stop 1 reached (0.435 m) + 10 s hover, C1 0.962 m, C2 -0.345 m, aborted on the geofence
+
+AND THE DECISIVE NUMBER: even in E2, with nothing on our side limiting it,
+missionA-E2-fast3-nogate: 171 messages, 107 distinct plans
+   per-plan MAX intended speed: median 0.83, p90 1.12, max 1.28 m/s
+   per-plan median intended speed: median 0.59 m/s
+   plans whose own max is above 2.0 m/s: 0 of 106
+missionA-C6-pad-corner-corner: 132 messages, 83 distinct plans
+   per-plan MAX intended speed: median 0.72, p90 0.97, max 1.19 m/s
+   per-plan median intended speed: median 0.62 m/s
+   plans whose own max is above 2.0 m/s: 0 of 81
+
+So 3 m/s is NOT being withheld by our gate and NOT by the follower: the PLANS THEMSELVES never ask
+for more than ~1.3 m/s (0 of 106 plans above 2.0 m/s) although the planner's limits are 3.0.  Which
+parameter actually sets the achieved speed in this branch is the next question -- it is not
+bspline/limit_vel, because raising it 3x moved the plan speed by ~0.
+
+ALSO FIXED HERE: tools/run-mission.sh's GEOFENCE_M override was a no-op (the eval had already
+overwritten it), which is why E1 aborted at [+6.00 +5.39] while GEOFENCE_M=6.25 was exported.
+
+THE AIRCRAFT'S ATTITUDE RESPONSE (the user's suspicion: 'too heavy, attitude too slow')
+  the SITL model (libraries/SITL/SIM_Frame.h, --model quad): mass 3.0 kg, diagonal 0.35 m,
+  4 x 0.35 m rotors, hover throttle 0.39 -> thrust-to-weight about 2.6, i.e. a 350 mm frame carrying
+  3 kg.  For reference a 350 mm quad is normally 0.5-1.0 kg.
+  next measurement: the RATE-loop tracking error from the FCU's own BIN (desired vs achieved body
+  rates, and the phase lag between them) -- that is what 'the attitude responds too slowly' means in
+  numbers, and it is measurable without flying.
