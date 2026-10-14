@@ -87,27 +87,28 @@ def world_clearance(world, pts):
     return np.asarray(w.clearance(np.atleast_2d(np.asarray(pts, dtype=float))), dtype=float)
 
 
-def slide_points(world, need, res_deg=0.05):
-    """The commanded waypoints: the 24 stops put back ONTO the circle, evenly, in its free arcs.
+def slide_points(world, need, step_deg=0.05, max_deg=90.0):
+    """The commanded stops: a blocked one moves FORWARD along the circle to the next point that is clear.
 
-    The user's rule (2026-10-14): *"目标点如果不可达，就把航点挪出来到圆周上不在圆柱内的地方"* -- the goal
-    moves, the circle does not: a stop keeps radius r and only its angle changes, so the reference is still
-    "a circle of r = 4 m about the pad" and every pillar stays in the world.  A goal inside a pillar is not
-    an obstacle to avoid, it is an unreachable target (MEASURED: commanding one made the adapter withhold
-    81 of 93 paths and left the vehicle 0.7338 m short).
+    The user's rule (2026-10-14): *"如果这个点在圆柱里，那就找这个圆柱和路径的下一个交点，做我们的路径点"* --
+    i.e. walk along the path in the direction of travel until the circle leaves that pillar, and command
+    the exit point.  The stop keeps radius r (only its angle changes), every pillar stays in the world, and
+    the reference is still "a circle of r = 4 m about the pad".  A goal inside a pillar is not an obstacle to
+    avoid: it is an unreachable target (MEASURED 2026-10-14 -- commanding one made the adapter withhold 81
+    of 93 paths and left the vehicle 0.7338 m short).
 
-    WHY NOT "slide each blocked stop to its own nearest free spot" (two measured failures, both in
-    docs/STATUS.md):
-      * nearest-free, one by one: two neighbours converged -- spacing between consecutive stops fell from a
-        nominal 1.047 m to **0.035 m**;
-      * nearest-free, forward only, with a minimum gap: the stops marched and left ONE 22.4 m gap, i.e. one
-        command covering 320 deg of the circle -- and ego plans the SHORTEST path to a goal, so it would cut
-        straight across the interior instead of following the arc.  Even spacing is what keeps the flight on
-        the circle.
-    So: sample the circle finely, mark the samples that are free (>= need), and space the n stops EVENLY IN
-    FREE ARC LENGTH, starting from the circle's own start angle.  Every stop is free, the order is
-    monotone, the spacing is uniform by construction, and the only cost is that stops which were already
-    free also shift a little -- reported, not hidden.
+    `need` is the clearance the exit point must have, so the stop is not exactly ON the surface: it is the
+    intersection of the circle with the pillar grown by `need`.
+
+    History, so the rule that failed is not silently forgotten (all three measured on this world and in
+    docs/STATUS.md row 52):
+      * each blocked stop to its OWN nearest free spot (either direction): two neighbours converged, spacing
+        fell from 1.047 m nominal to 0.035 m;
+      * forward-only with an extra minimum gap: stops marched and left ONE 22.4 m gap (a single command
+        covering 320 deg, which ego answers by cutting straight across the interior);
+      * spacing the stops evenly in the circle's free arc length: correct spacing, but it moves every stop,
+        including the ones that were already fine.
+    This one moves ONLY the blocked stops, which is what the user asked for.
     """
     c = read(world)
     if not c:
@@ -115,38 +116,28 @@ def slide_points(world, need, res_deg=0.05):
     cx, cy = c["centre"]
     r, alt, n = c["radius"], c["altitude"], c["n"]
     sgn = 1.0 if c["direction"] == "ccw" else -1.0
-    N = max(360, int(round(360.0 / res_deg)))
-    # the free mask, walked in the direction of travel starting at start_deg
-    th = [math.radians(c["start_deg"]) + sgn * 2.0 * math.pi * k / N for k in range(N)]
-    pts_all = [[cx + r * math.cos(t), cy + r * math.sin(t), alt] for t in th]
-    clr = world_clearance(world, pts_all)
-    free = clr >= need
-    free_len = float(free.sum()) * (2.0 * math.pi * r / N)
-    if free_len <= 0.0:
-        return [list(q) for q in c["points"]], [float("nan")] * n
-    step_len = free_len / n                       # arc length of free space per stop
-    out, moved = [], []
-    acc = 0.0
-    target = 0.0
-    k = 0
-    placed_k = []
-    while len(placed_k) < n and k < N:
-        if free[k]:
-            acc += 2.0 * math.pi * r / N
-            if acc >= target:
-                placed_k.append(k)
-                target += step_len
-        k += 1
-    while len(placed_k) < n:                      # numerical shortfall: reuse the last free sample
-        placed_k.append(placed_k[-1] if placed_k else 0)
-    for i, ki in enumerate(placed_k):
-        p = pts_all[ki]
-        out.append(p)
-        th_i = math.radians(c["start_deg"]) + sgn * 2.0 * math.pi * i / n
-        d = abs(math.atan2(math.sin(math.atan2(p[1] - cy, p[0] - cx) - th_i),
-                           math.cos(math.atan2(p[1] - cy, p[0] - cx) - th_i))) * r
-        moved.append(d)
-    return out, moved
+    dth = math.radians(step_deg) * sgn
+    steps = int(round(max_deg / step_deg))
+
+    pts, moved = [], []
+    prev_th = None
+    for i in range(n):
+        th0 = math.radians(c["start_deg"]) + sgn * 2.0 * math.pi * i / n
+        found = None
+        for k in range(steps + 1):
+            th = th0 + k * dth
+            p = [cx + r * math.cos(th), cy + r * math.sin(th), alt]
+            if float(world_clearance(world, p)[0]) < need:
+                continue
+            found = (p, r * abs(math.radians(step_deg * k)), th)
+            break
+        if found is None:                     # no exit within max_deg of forward travel
+            th = th0
+            found = ([cx + r * math.cos(th), cy + r * math.sin(th), alt], float("nan"), th)
+        pts.append(found[0])
+        moved.append(found[1])
+        prev_th = found[2]
+    return pts, moved
 
 
 def snapped_points(world, need):
