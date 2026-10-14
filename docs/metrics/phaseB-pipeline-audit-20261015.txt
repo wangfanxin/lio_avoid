@@ -1,0 +1,173 @@
+phaseB pipeline audit -- launch chain, adapter, observer, metrics, liveness, dynamics
+================================================================================
+repo revision 84ec72d (2026-10-15)   audit date 2026-10-15   read-only, nothing committed   F = fatal (a flight can be lost, or the
+evidence is wrong while looking healthy); S = serious.  Evidence: logs/missionA-{AP5,AP4,AP3,AP1,AO2,AO1,AF1,E1}* and each run's own
+BIN; no flight started, no process killed.  CAVEAT 1: fsm/mission_fsm.py and planner/ego_adapter.py were ALREADY modified in the
+working tree when this ran (1591/1274 lines against 1461/1055 at 84ec72d -- uncommitted work on --traj-dyn-topic and the moved Bool
+import); citations are to that tree and each finding quotes its code.  CAVEAT 2: /home/fanxin/lio_avoid/tools is a STALE copy
+(metrics.py 20175 B vs 29901 B in the D tree, and sortie-score.py/plan-vs-truth.py/ego-map-audit.py do not exist there) -- the code
+that flew is /mnt/d/distill_self/lio_avoid, which is what this audit read.
+
+F1 FATAL fsm/mission_fsm.py:705 (also :770, :738) -- FRAME MIX: an F-frame position is compared with an L-frame path point, so
+   --reaccept-m can never be satisfied: `return ... np.linalg.norm(here[:2] - self.path_l[0, :2]) < self.args.reaccept_m` with `here = np.array(st.pos)` (bridge/base.py:33 "What the FCU believes, in F (ENU), z up)"), while the path is converted L->F only later (:930 `q = (R @
+   self.path_l.T).T + t`) and the adapter stamps it FRAME_L (ego_adapter.py:681/:962). With AP5's calib (L->W yaw +90.050 deg, fsm.log:8) the measured "distance" is |F(p)-L(p)| ~ 6 m once the vehicle is ~4 m from the origin: fsm.log:62-120, 59 x "DIAG: 66 message(s), arc 0.312 m, 36 points,
+   first point 6.373..6.281 m from the vehicle, stamp same as the last flown -> refused because: stamp unchanged and the first point is 6.373 m away (need < 0.50)" -- while the producer of that same plan logged "start 0.0251 m from the vehicle" (planner.log:97). Effect: the re-projection
+   fallback that exists to accept a re-published plan never fires, the FSM refuses every copy of the plan it holds, waits out --traj-wait-s and aborts blaming the planner (:1150); the same untransformed point is a setpoint in the wait-loop hold (:738). Fix: convert once -- keep path_l raw,
+   define path_f = (R@path_l.T).T + t, use path_f for every distance, hold point and bridge.state() comparison. Acceptance: the DIAG must read < --reaccept-m whenever the plan starts at the vehicle.
+
+F2 FATAL run-mission.sh:89-94 + _stage/ap5-fly.sh:14-16 -- process ownership by pattern.  The repo preamble kills by unanchored
+   pattern (pkill -f "sim/truth_rx.py", "super_lio_node", "mission_fsm.py", "rectangle_source.py") and the launcher in actual use adds -9 over a wider list INCLUDING the simulator: `for pat in arducopter ego_planner_node ...; do pkill -9 -f "$pat"; done`. That is the documented incident (a
+   concurrent sortie's SITL killed): the "wait for idle" loop above it (ap5-fly.sh:9-13) only breaks when n==0 and otherwise falls through to the pkill after 180 s; -9 also bypasses mission_fsm.py's EXIT trap, so a killed sortie gets no LAND. The repo preamble has the mirror hole: it never
+   kills the PLANNER chain (ego_adapter.py, ego_planner_node, scan_relay.py, goal_sequencer.py), so a stale adapter can keep publishing /planner/traj and nothing notices two publishers (the FSM overwrites self.path_l unconditionally, :262-279). Trace: logs/missionA-AP2-stations/planner.log
+   has no "=== stopping ===" line (run-planner.sh:101's cleanup echo) while every neighbouring sortie does. Fix: one process group per sortie (setsid at the top of run-mission.sh; teardown kills -- -PGID); refuse to start when another run tag is live instead of pkill. Acceptance: two
+   simultaneous launches -> the second exits with a named error and no SITL dies.
+
+F3 FATAL planner death is invisible to the whole stack.  AP5's own planner.log: :6055 `terminate called after throwing an instance of
+   'std::bad_alloc'`, :6065 `[ros2run]: Aborted`; AP4 (:84-85, :91) `what(): can't subtract times with different time sources [2 != 1]` (also AP1, AP3). After the crash the adapter -- a sibling process -- keeps withholding the expired spline ("withheld 306 ... committed 69.8 s ago"), the
+   FSM keeps waiting, and the abort names the TRAJECTORY SOURCE, not the dead planner: fsm.log:122 `[101.47] ABORT: no new trajectory on /planner/traj within 60 s after 3 trajectories (sequencer at stop 6)`. The planner was silent for the FSM's whole 60 s wait (last commit vs fsm.log mtime:
+   AP1 66.7 s, AP3 66.8 s, AP4 67.3 s, AP5 64.8 s). The detector that exists is wired to nothing: the adapter raised the stall (planner.log:6049 "PLANNER STALLED: the same trajectory (start_time 1792018192.939) has been withheld for 2.0 s after 30 refusals") on /planner/stalled
+   (ego_adapter.py:529 publisher, :1059 publish) and NO file in the repo subscribes to it. Fix: (a) the FSM subscribes /planner/stalled and aborts with "the planner reported a stall for N s"; (b) run-planner.sh supervises its children (wait -n, reap, scan stderr) and prints a health line;
+   (c) run-mission.sh requires a planner heartbeat. Acceptance: `kill -9` the planner in flight -> abort within ~2 s naming the planner, non-zero exit.
+
+F4 FATAL "REACHED/MISSED of N" is measured from the OBSERVER'S OWN counter, not from ego's published wp_index.  goal_sequencer.py:225
+   receives ego's index and mirrors it to /mission/stop, but tick() never reads self.ego_index: scoring uses self.i and its own timers (:288 p = stops[self.i]; :298 d = |here - p|; :310-341 the dwell/timeout advancing self.i). AP5, verbatim sequencer.log: `17.601 stop 1/12 REACHED in 4.4 s
+   (0.324 m off) -- holding 5.0 s | 21.301 ego wp_index 2 | 22.601 stop 1/12 dwell complete (3.518 m from it when the dwell ended) | 22.700 stop 2/12 (from 0.810 m away) | 33.229 ego wp_index 6 | 67.707 stop 2/12 MISSED after 45 s: 7.667 m from it -- moving on (goal published 0 time(s) for
+   it)`. So (a) "stop 1 REACHED" is a momentary pass through a 0.45 m gate, appended to self.reached (:315/:328) although the vehicle was 3.5 m away when the dwell ended; (b) by 22.7 s the observer's numbering lags ego's by one (ego already at index 2 = stop 3), so "stop 2 MISSED" is not
+   the stop the tour was on; (c) "(goal published 0 time(s))" (:336) is a dead counter in observer mode (pub_goal returns early at :235-236, so n_pub never increments) and reads like a diagnosis of its own. "REACHED/MISSED of N" exists nowhere else: the FSM has no arrival counter
+   (--stations is "only printed", :1497-1500; `flown` counts completed trajectories, :866/:886). Re-derive it exactly: target timeline from the FSM's own "sequencer stop index N" lines (fsm.log:27/32/41/43/44/46/48 = 0..6) or ego's epoch-stamped "WP-INDEX: N of 12" (planner.log); join to
+   truth via fsm.log[t] + phase.csv t_wall (monotonic) + setpoints.csv (t_wall <-> t_sim_us) + tap.csv (t_sim_us; measured offset 0 us, see P1); reached(i) := ONE CONTIGUOUS interval >= dwell_s (>= 0.5 s when dwell_s==0) with |truth_xy - stop_i| <= arrive_m, inside the window in which i was
+   the current target. Per stop report: reached, min distance and its time, dwell inside the gate, number of gate entries, the index-advance instant and the distance AT that instant -- "the tour advanced while the vehicle was 3.5 m from the station its own log calls current" must be its own
+   line. Fix: in observer mode delete the sequencer's state machine, take the current stop from self.ego_index, and log every index change with the truth distance to that stop.
+
+F5 FATAL tools/sortie-score.py has no liveness or consistency check and prints a crash as a stall count.  :66
+   `out["ego_stall_lines"] = len(re.findall(r"PLANNER-STALL", txt))` counts a string in the PLANNER'S OWN log and :104-107 prints it beside the adapter's counter as if both were health. TWO reasons it is a false negative: the count is capped at 1 by construction (ego_adapter.py:846-863
+   latches _stall_said, so later withheld ticks only re-publish, never re-print: the longer the planner stays dead the fewer lines appear) and the matched string can be the ADAPTER'S OWN prose -- AP4 planner.log:99 is "ego_adapter: PLANNER STALLED: ... (see the PLANNER-STALL lines in the
+   planner's own log)", i.e. the parenthetical. Measured: AP1/AP3/AP4 (all dead) print "ego stall lines 1"; AP5 (alive, then bad_alloc) prints 3. Checks that belong in it, with measured thresholds: (1) crash strings -- `grep -E "terminate called|\[ros2run\]: Aborted|Segmentation
+   fault|std::bad_alloc|what\(\):|NameError:|can't subtract times"` over planner.log *.log: any hit -> "EGO DEAD at <line>, the plan-supply numbers are VOID", mark INVALID; (2) the adapter's own age counter -- `grep -oE "committed [0-9.]+ s ago"`: AP4 72.4 s, AP5 69.8 s vs <= 4.5 s on every
+   clean run (threshold 10 s; mapping-free, the strongest single signal); (3) commits vs the flight's END (not its average) -- 0 commits in the last 30 s while a traj*/leg*/station* phase is in force (AP4: 1 commit / 81.5 s; AF1's whole-flight 0.26 Hz would false-positive); (4)
+   mtime(ego_planner_node) > flight start -> "the binary was rebuilt after this flight" (AP4's binary is 85 s newer than the flight's end; AP5 passes); (5) `NameError:|Traceback` -> the counters are truncated lower bounds, not small values. Acceptance: sortie-score.py missionA-AP4-stations
+   must print DEAD/INVALID for AP4 and AP5.
+
+F6 FATAL _stage/ap5-fly.sh:27 -- the sortie's real FSM configuration is not in its own artifacts.  AP5 ran --min-traj-m 0.10
+   (default 0.50), --traj-wait-s 60 (45), --hold-max-s 2 (20), --hold-at-m 0.25, --yaw-mode velocity, GEOFENCE_M=6.60, PARAMS=.../ego_planner_humble_coll20.yaml, ADAPTER_EXTRA="--min-prefix-m 0.15"; fsm.log:1 prints only arrive/settle/speed/geofence (mission_fsm.py:1580-1584) and no argv is
+   stored. The 0.50 -> 0.10 lowering of the stub gate is exactly what let a 0.312 m stub be flown as "trajectory 3" (fsm.log:55, "0 plan switches"). Fix: write all effective options + argv to $OUT/args.txt. Acceptance: every flag in FSM_ARGS appears in $OUT/args.txt.
+
+F7 FATAL setpoints.csv's acc_* is not what was transmitted: mission_fsm.py:396 `acc = None if mode != "posvelacc" else accel` -- with
+   the default --setpoint-mode posvel (:1468) no acceleration is ever sent -- but :428 writes the ARGUMENT `(accel[0] if accel is not None else 0.0)`. AP5: 647 of 4796 rows have acc != 0 (max |a| 14.90 m/s^2) although the field never left the process, and the bridge masks it anyway
+   (bridge/mavlink_impl.py:55 POS_VEL_YAW_MASK = IGNORE_AFX|AFY|AFZ|...); a row is also written when nothing is sent at all (the send chain from :397 has no else), with a stale self.cmd, so "commanded zero velocity" and "sent nothing" are indistinguishable. Fix: log the transmitted vel/acc
+   plus a `sent` flag and the mode. Acceptance: a posvel run has acc_* all 0.
+
+F8 FATAL the residue of the class of bug that killed the stall reporter is still in the flight record, and it cost AP1/AP3 their
+   evidence. In AP1 and AP3 the ADAPTER ITSELF died reporting the stall: planner.log:118-121 File "/mnt/d/distill_self/lio_avoid/planner/ego_adapter.py", line 850, in _note_stall self.stall_pub.publish(Bool(data=True)) NameError: name 'Bool' is not defined. Did you mean: 'bool'? ('Bool' was
+   imported inside another function while the method that publishes it is called by name.) Consequence: those two runs' withheld/age counters stop at "committed 4.4 / 4.5 s ago" while AP4's (same crash, adapter alive) reach 72.4 s -- the diagnostic that exists to make a stall visible
+   truncated the very evidence the scorer needs, and the scorer reads the truncation as health (F5.2). Committed 84ec72d fixed the scope by importing at module level (7a00430) and the working tree has since moved the import into the two publishing functions (ego_adapter.py:1056, :1065) to
+   keep the module importable without ROS -- both are in scope, but nothing TESTS the stall path: the adapter's --selftest never constructs a Node and _note_stall/_clear_stall are only reachable live. Fix: a unit test that calls _note_stall with a stub publisher and asserts the Bool reaches
+   it (the same pattern for every message class published by name), and log the exception type in main()'s handler instead of letting the process die silently. Acceptance: `python3 planner/ego_adapter.py --selftest` plus a stub-publisher test must exercise both stall publishers.
+
+METRICS THAT CANNOT BE TRUSTED AS WRITTEN
+   M1 metrics.py:175 -- in trajectory mode the route window is a POINT: `t_route0 = t_route1 = float([r for r in phases if r["phase"]=="traj"][0]["t_wall"])`, printed as AP5 metrics.txt "route window: 40057.41 .. 40057.41 s (wall) = 1 traj phases" although 3 trajectories were marked
+   (phase.csv dedups repeated phase names, mission_fsm.py:518). The window is used for nothing else, so A1/A2 are silently computed over the WHOLE above-0.5 m flight (metrics.py:186-192). M2 there is NO commanded-vs-flown tracking metric. A1/A2 are the LIO's error against the truth after a
+   free yaw+translation fit (metrics.py:194 `R, t = fit_yaw_translation(pl, pw)`) -- an ESTIMATOR metric that absorbs any constant rigid error; C1 (:502) is one final sample; C2 is the safety metric and the only one that saw AP5's excursion. The only commanded-vs-achieved record
+   (setpoints.csv cmd_*/fcu_*) is scored by nothing. M3 provenance of each headline number. TRUTH-TAP-DERIVED (independent of the process judged): C2 (truth x world file -- the number that failed AP5: min -0.296 m, 6107 of 107926 = 5.66 % inside the 0.20 m footprint); A1/A2 (truth +
+   lio.csv); A4 (truth + the FCU's own BIN XKF1 -- the only independent check of what the FCU believed); B1/B2/B3 (truth, with the window from phase.csv). SELF-REPORTED: C1 (:497-503 takes BOTH the commanded point and the aircraft from the FSM's own last phase.csv row -- it never touches
+   tap.csv, so a broken FSM can print an arbitrarily small C1); A3 (the delivered-odometry stream, i.e. the bridge/recorder path -- AP5's FAIL, worst gap 2014 ms, attributed to nobody); B4; the phase list; and bspline.csv, traj.csv, ego_map.csv, sequencer.out, planner.log = the process
+   under judgement, never sole evidence (F5, M5). M4 the headline verdict ignores most of the file: metrics.py:512 tests only h_rms, v_rms, `not aborted` and b1_ok, so AP5's C2 FAIL (5.66 % of samples inside a pillar) and A3 FAIL do not enter "A1/A2 FAIL (...)" -- the reader is told the
+   flight failed for estimator reasons while the safety line that failed is not part of the verdict. M5 NOTHING measures station progress: metrics.py contains no reference to the sequencer at all (grep: zero matches), sortie-score.py:35 only counts the "stop N/M REACHED" strings, and the
+   3.518 m of F4 exists only inside the observer's own log line. So "the vehicle is 3.5 m from the station its own log calls current" would have been flagged by NOTHING; the check that must exist is F4's per-stop join. Today the mission is scored with the observer's broken counter: "1 of 12
+   stops REACHED, 1 MISSED" for AP1/AP3/AP4/AP5 alike, including the sortie whose tour reached 6. M6 plan-vs-truth.py's "the PLAN's own clearance" and ego-map-audit.py's entire output (refusals, penetration, "the pillar IS in ego's map") are computed from ego's own traj.csv clr_m / bspline
+   control points / ego_map.csv: "the plan held the contract in MY geometry", not "the aircraft stayed outside the pillars". Keep them, label them self-reported; only C2 is aircraft-side.
+
+LIVENESS CHECKS THAT ARE MISSING (all implementable offline)
+   L1 planner death: no reader of terminate/Aborted anywhere (F3, F5.1, F8). L2 no "age of the newest plan" gate while airborne (F5.2). L3 /planner/stalled: published, subscribed by nobody (F3). L4 MAVLink heartbeat: bridge/mavlink_impl.py:108 records last_heartbeat_us and nothing reads it.
+   L5 LIO sample age: the rate gate cannot decay (mission_fsm.py:278-279 updates rate_slow only inside the callback, :492 gates on it) and lio_timeout_s/lio_jump_max_m/lio_speed_max_mps (:39-41) are declared and never used. L6 /mission/stop age: none (:208, volatile, no age test) -- AP4
+   fsm.log:102 aborted "(sequencer at stop None)". L7 recorder health before take-off (S2). L8 planner readiness: nothing proves ego_planner_node ever started or ever planned (S3). L9 two publishers on /planner/traj (F2). L10 the FSM exit code vs the mission outcome (S7). L11 truth-sample
+   age: the geofence can be blind for the 617 ms gap measured in AP5's t_sim_us (S5). L12 no reconciliation of the four counts AP5 carries at once: 44 committed / 66 published paths / 3 "trajectories flown" / 41 plan switches (fsm.log:51) / index 6.
+
+ S1 run-mission.sh:204-214 vs :259/:292 -- with NAV_SOURCE=truth CALIB is never assigned and both uses run under `set -u` (:11, :86),
+    so NAV_SOURCE=truth + (STATIONS>0 or STATION_MODE=ego) dies with "CALIB: unbound variable"; the EXIT trap kills SITL and the run
+    dir ends up with no metrics.txt -- a launch failure that looks like missing numbers.  Fix: CALIB="${CALIB:-$REPO/../_stage/calib.json}"
+    before the branch.  Acceptance: NAV_SOURCE=truth with 12 stations reaches "== flying ==" and writes metrics.txt.
+ S2 run-mission.sh:184 `python3 record-bspline.py --help > /dev/null 2>&1 || true` checks nothing (and would fail if it mattered:
+    traj_utils is not on that environment), and :185-188 starts the bspline recorder in a subshell whose failure is visible only in
+    recbspline.log -- the very defect the comment at :179-183 records.  Nothing verifies tap.csv/lio.csv/setpoints.csv/bspline.csv/
+    phase.csv exist and grow before take-off.  Fix: require each recorder's CSV to exist, be non-empty and fresh before arming; seven
+    old runs have a 0-row bspline.csv (AP2, B9, B11, C5, C6, D1, F1).  Acceptance: break the traj_utils import -> named refusal.
+ S3 run-mission.sh:282-285 starts the whole planner chain with `> planner.log 2>&1 &` and never checks TRAJ_PID; run-planner.sh:87
+    `set -e` covers only its own body, so a `ros2 run` that exits at once (unbuilt planner, bad params, DDS mismatch) leaves the FSM
+    waiting on an empty topic for 60 s and then printing "a planner that never plans looks exactly like this" (:1150) without ever
+    proving it started.  Fix: run-planner.sh prints a readiness line (pid + params file) and run-mission.sh requires it plus a first
+    planning/bspline within a bound.  Acceptance: PARAMS=nonexistent -> refusal within 5 s.
+ S4 run-mission.sh:311-315/:325/:335 -- recorders are SIGTERMed but never waited for; MET_RC is computed and only printed and
+    `exit $FSM_RC` propagates the FSM's code alone, so a metrics crash or a missing artifact still exits 0 when the FSM had no
+    abort_reason (the "fsm rc=0, metrics rc=1" line is the only trace).  The planner chain's children are reached only through
+    run-planner.sh:99-105's INT/TERM trap, with no verification that they exited.  Fix: track and wait each recorder, verify every
+    artifact, propagate non-zero when metrics fails.  Acceptance: kill record-traj.py mid-run -> non-zero exit, named artifact.
+ S5 zero-margin gates (the [L5] finding, confirmed): mission_fsm.py:843 `clr >= self.args.footprint_contract` accepts the pull AT the
+    0.20 m contract, with the line sampled by only 24 points (:817, ~0.26 m spacing on a 6 m pull) while the adapter samples its own
+    paths every 0.10 m (ego_adapter.py:763), so the gate can step over a 0.40 m pillar's surface.  Live and marginal: fsm.log:42
+    "clearance 0.186 m against the 0.20 m contract -> refusing to pull".  The geofence is the same shape on truth, no margin and no age
+    test (:495-497).  Fix: require contract + margin (e.g. 0.30 m), sample every 0.05 m, refuse to stream when the truth sample is
+    older than 0.20 s.  Acceptance: a synthetic 0.19 m graze refused by both gates; frozen truth stops the stream within 0.2 s.
+ S6 exit code 0 does not mean the mission succeeded: mission_fsm.py:869/:874 return success when the external index reads -1 and :870
+    prints "sequence complete: %d trajectories flown, the sequencer reports every stop done" on that alone; run-mission.sh:335
+    propagates only that code (:1346 `return 0 if self.abort_reason is None else 1`).  Measured (mission_fsm.py:828-830 records it):
+    AF1 exited 0 with 4 of 12 stops MISSED and 14.03 % of samples inside a pillar.  Fix: exit non-zero unless every stop is REACHED by
+    F4's truth-based test.  Acceptance: any MISSED stop => non-zero exit.
+ S7 a parameter set in the frozen phase_a files is SILENTLY INEFFECTIVE: params/phase_a_mission_fast.parm:28 (and
+    phase_a_mission.parm:21) set `PSC_ACCZ_P 0.5`, a name that does not exist in ArduPilot 4.7.1 (renamed PSC_D_ACC_P; the run's own
+    BIN has 1328 parameter names, no PSC_ACCZ_*, and PSC_D_ACC_P stayed 0.05).  The intended vertical accel-gain change never reached
+    the vehicle -- the same class as the GOAL=none and EGO_MAX_VEL traps, a knob written where nothing reads it.  Fix: before a
+    flight, diff the intended parameter names against the firmware's own PARM list (the previous sortie's BIN is enough).
+    Acceptance: that diff reports zero unknown names.
+
+DYNAMICS CONTRACT (does the aircraft have the dynamics ego assumes?)
+   D1 ego's assumptions, params/ego_planner_humble_coll20.yaml (AP5's PARAMS; dynamics-identical to the default ego_planner_humble.yaml -- they differ only in grid_map/resolution and lambda_collision): manager/max_vel 2.0 (:51), max_acc 1.0 (:52), max_jerk 2.0 (:53), feasibility_tolerance
+   0.05 (:55), optimization/max_vel 2.0 (:65), max_acc 1.0 (:66), bspline/limit_vel 1.0 (:67), limit_acc 1.0 (:68), limit_ratio 1.1 (:69). WHICH BIND: only manager/max_vel and manager/max_acc are read (planner_manager.cpp:300 `pos.setPhysicalLimits(max_vel_, max_acc_,
+   feasibility_tolerance_)` -> uniform_bspline.cpp:144/:166, which widen them by the 5 % tolerance: effective 2.1001 m/s and 1.0501 m/s^2). bspline/limit_vel, bspline/limit_acc, bspline/limit_ratio and manager/max_jerk are read by NO C++ (uniform_bspline.cpp:131 hard-codes ratio 1.1; the
+   max_jerk member has zero reads), optimization/max_{vel,acc} are SOFT costs (bspline_optimizer.cpp:1236/:1267), and the REFINED spline is never re-checked (planner_manager.cpp:315-317 accepts it on flag_step_2_success alone). EGO_MAX_VEL was empty for AP5 (run-planner.sh:48/:135), so the
+   file's 2.0 was in force. D2 what the plans ACTUALLY contain (analytic, from bspline.csv control points + knots; 44 AP5 plans): |v|max median 1.44 max 2.123 m/s -> 3/44 exceed 2.0 and 29/44 exceed the (dead) yaml limit_vel 1.0; |a|max median 1.89 max 7.785 m/s^2 -> 32/44 exceed 1.0, i.e.
+   7.4x ego's own effective limit and 3.1x the FCU's WP_ACC 2.5; knot interval median 0.302 s (range 0.0927-1.0 s); analytic |jerk|max median 5.6 max 97.6 m/s^3. PHYSICS, CORRECTLY STATED (a first version of this audit said it wrong): a cubic uniform B-spline is C2, so the ACCELERATION is
+   CONTINUOUS and piecewise LINEAR -- measured worst acceleration jump across a knot 4.1e-6 m/s^2 (numerical zero) -- and it is the JERK that STEPS at every knot: measured worst jerk jump 88.24 m/s^3 on the same 44 plans. The defect is an unbounded, discontinuous JERK on a continuous
+   acceleration ramp: no jerk limit exists in the local spline pipeline (jerk is only a soft smoothness cost, bspline_optimizer.cpp:1046), and the only jerk limit in the loop is the FCU's own shaper, PSC_NE_JERK 5.0 m/s^3 -- 19x below the largest jerk the plan hands it. D3 what we send:
+   --setpoint-mode default posvel (:1468) = position + velocity only (F7); ego_adapter.py publishes nav_msgs/Path (poses + per-point stamps only), so the FSM rebuilds velocity/acceleration by finite differences of the 20 ms Path samples (:993 `vel = (pos[k+1]-pos[k])/h`; :995 the second
+   difference). Measured against the plan's analytic derivatives at the same instants: |v_fd-v_an| median 0.0098 p95 0.0248 max 0.0594 m/s; |a_fd-a_an| median 0.0331 p95 0.2386 max 1.9522 m/s^2 AT the sample instant but median 0.0000 p95 0.0011 max 0.1748 against the instant the difference
+   really represents (t+dt): the whole error is a 20 ms LEAD. (In progress, uncommitted, not yet flown: the adapter fills --traj-dyn-topic /planner/traj_dyn with ego's EXACT velocity/acceleration for the same stamps -- ego_adapter.py:519/:1139, mission_fsm.py:1437 -- which removes this
+   reconstruction once validated in flight.) D4 the aircraft's limits, from AP5's FCU log (logs/00000001.BIN) and the defaults it loaded (sitl.log: apm_lio_only, sitl_basics, phase_a_posz_lio, phase_a_mission_fast, ekf_trust_lio): WP_SPD 2.0, WP_ACC 2.5, WP_ACC_Z 1.0, WP_JERK 2.0,
+   LOIT_SPEED_MS 2.0, LOIT_ACC_MAX_M 3.0, LOIT_BRK_ACC_M 3.0, LOIT_BRK_JRK_M 3.0 (phase_a_mission_fast.parm:20-28), ATC_ANGLE_MAX 30 (apm_lio_only.parm:144), and the 4.7 gains PSC_NE_VEL_P/I/D 2.0/1.0/0.25, PSC_NE_JERK 5.0, PSC_D_ACC_P 0.05, PSC_D_JERK 5.0. WPNAV_*, ANGLE_MAX, PSC_POSXY_P,
+   PSC_VELXY_*, PSC_ACCZ_* do not exist in this firmware (4.7 renamed them). D5 which side binds, measured rather than on paper. PAPER: ego's effective caps are 2.1001 m/s and 1.0501 m/s^2 against the FCU's WP_SPD 2.0 / WP_ACC 2.5 -- equal to 5 % on speed and 2.4x LOOSER on acceleration.
+   FACT: ego bounds neither (D2), and the FCU's acceleration clamp is inert on this path (mode_guided.cpp:943 passes limit_output=false). The only thing bounding the flown acceleration is the FCU's shaping jerk PSC_NE_JERK 5.0 m/s^3: the acceleration contract is enforced by NOBODY and the
+   plans ask for ~3x what WP_ACC says the aircraft can do. D6 the measurement (truth = tap.csv joined on t_sim_us, 1200.5 Hz). AP5, 24-50 s: |v_cmd| median 0.544 p95 1.725 max 2.013 m/s vs |v_ach| median 1.077 p95 2.489 max 2.984; |v_ach|/|v_cmd| median 1.29 (p10 0.44, p90 3.64); achieved
+   |a| median 1.72 p95 3.44 max 3.87 m/s^2 -- 1.7x ego's assumed 1.0 and close to the FCU's 3.0 brake limit; achieved |jerk| median 4.8 p95 8.8 max 44.5 m/s^3; position error |truth-cmd| median 0.074 p95 1.220 max 2.833 m; 23 % of the samples with |v_ach| > 0.5 m/s had |v_cmd| < 0.05 m/s.
+   AP3 (crashed planner, one plan): 77 % of the moving samples had |v_cmd| < 0.05 m/s -- the command was a station while the aircraft flew; achieved |a| median 0.75 p95 3.18 max 3.94. Lag: the shift minimising RMS(|v_ach|-|v_cmd|) hits the search boundary (+0.40 s AP5, -0.38 s AP3) and
+   improves the RMS only ~20 % over zero lag (0.781 vs 0.966 m/s): there is NO clean constant delay -- the residual is dominated by the command itself being near zero while the vehicle moves, i.e. the aircraft is flown by the POSITION error term, not by the feedforward. So "the tracking
+   does not keep up" is: the reference is mostly empty (23-77 % of the moving time) and where it is not empty the demanded acceleration is 2-3x the FCU's authority. D7 implied fixes: (a) make the plan hold its own numbers -- re-run checkFeasibility on the REFINED spline, or refuse in
+   ego_adapter.py's gate, whose :25-30 obligations are geometric only; (b) allocate duration from manager/max_vel + max_acc AND the FCU's WP_ACC 2.5 / PSC_NE_JERK 5.0, not from the dead yaml keys; (c) THEN transmit acceleration -- the firmware does honour an acceleration feed-forward on
+   this path (control.cpp:403 `accel_target += accel_desired` after the accel clamp, and it escapes that clamp because mode_guided.cpp:943 passes limit_output=false) but always slew-limits it to PSC_NE_JERK 5.0 m/s^3, and the bridge must stop masking the field (bridge/mavlink_impl.py:55).
+   So "can streaming acceleration help at all" = mechanically yes, and it has never been tried.
+
+PER-FRAME TRACKING SPEC (per phase, per stop, with plan-switch marking) -- specification only, nothing implemented here
+   P1 join: setpoints.csv (47.4 Hz measured; t_wall,t_sim_us,cmd_*,vel_*,acc_*,fcu_*,lio_*,yaw_cmd) JOIN tap.csv (1200.5 Hz; t_us,inst,pn,pe,pd,vn,ve,vd,...) ON setpoints.t_sim_us == tap.t_us, E=pe, N=pn, U=-pd. MEASURED, not assumed: the offset is 0 us (median and p95 of |t_tap[nearest] -
+   t_sim_us| are 0 us over 3851 rows in AP4 and 4796 in AP5, and each phase row's truth_* matches the tap within 0.0001 m), and rtf 0.9985-1.0009 leaves no drift to fit -- do NOT fit a per-phase offset. Trap: rows written before the first truth arrive carry t_sim_us = 0 (exactly one per
+   run, plus the preflight row, 12.04 s from its true sim time) -- drop them, never join them to tap time 0. PHASES from phase.csv via t_sim_us (monotonic t_wall only as a cross-check), because t_sim_us repeats (0.2-0.4 % exact duplicates; collapse keeping the LAST command value and count
+   them). STOPS from stations.yaml / the world circle (W) plus the FSM's "sequencer stop index N" lines (fsm.log; [t] = monotonic - t_wall0, recoverable against phase.csv t_wall to ~0.1 s). Do not use lio_* against truth: it is the L frame (measured median 5.34 m from tap_ENU vs 0.110 m for
+   fcu_*) and needs the +90.05 deg calib. P2 base and alignment: the COMMAND is the reference base (each commanded sample is a step the FCU holds until the next, ZOH), so move the dense truth onto the setpoint stamps -- never resample the command. Lookup = nearest tap sample within 5 ms,
+   else mark UNALIGNED and exclude+count (this drops exactly the stale row). Report every statistic with its base ([cmd-base] one error per commanded sample, or [truth-base] ZOH over the gap-free intervals). Achieved velocity from tap's own vn/ve/vd; achieved acceleration as a central
+   difference of the velocity smoothed over a STATED 50 ms window. P3 per phase and per stop report: count; median/p90/p95/max of the horizontal error; fraction over 0.10 m and over 0.30 m; per-axis (E,N,U) bias and RMS; along/cross/vertical split; commanded vs achieved speed
+   (median/p95/max) and their ratio; achieved acceleration p95/max; implied jerk. Along/cross: take v_cmd from vel_x/vel_y when |v_cmd| >= 0.05 m/s, ELSE derive it from the commanded path by central difference -- this fallback is required, because vel_x/vel_y are non-zero in only 2.2 % of
+   AP3's and AP4's ticks (17.6 % AP5); e_along = e.v_hat, e_cross = (-e_N_hat, e_E_hat, 0) (+90 deg CCW, to the left). If |v_cmd| < 0.05 m/s the decomposition is UNDEFINED: report it as a "hover" class, count those ticks, never divide and never take the direction from the truth's own
+   velocity. Per stop additionally: min distance to the stop, its time, the index-advance instant and the distance at that instant (F4), and the arrival transient kept in / idle tail kept out. P4 guard rails: score a segment only with >= 50 commanded samples, >= 50 truth samples and >= 95 %
+   joined, else print "INSUFFICIENT DATA (n=, gap=)" and NO number (never NaN, never 0); report per phase the gap count and total gap time (> 0.20 s gaps = stale command; measured max 1127.8 ms in AP5), excluding them from p95/max and printing the excluded count; count command steps
+   |d(cmd)| > 0.10 m (37 ticks in AP4, worst 2.000 m) and exclude the step tick plus the next 0.2 s; exclude takeoff/hold/land/abort by PHASE NAME (allowlist), not by an altitude heuristic; exit non-zero if any tracking segment was INSUFFICIENT. Cross-check the station segmentation two ways
+   and print both: command-derived (a maximal run of ticks with |d(cmd)| < 1 mm for >= 0.5 s preceded by a step >= 0.10 m -- measured on AP5 this finds FOUR station holds against the three stops the sequencer announced) and sequencer-derived, printing "STOP SEGMENTATION DISAGREES" rather
+   than silently preferring either. P5 plan-switch marking (the regime AP5 flew): do NOT infer it from geometry. Add to setpoints.csv plan_t0_epoch, t_rel, plan_age_s, plan_id (a counter incremented in the --follow-latest branch, mission_fsm.py:1020-1028), mode and sent, plus t_unix beside
+   t_wall so epoch<->monotonic becomes recoverable offline (today the planner's logs are epoch, the FSM's are monotonic, and nothing records the mapping). Report every P3 statistic twice: over all samples and grouped by plan age (<0.05 s, 0.05-0.30 s, >0.30 s). P6 acceptance: the
+   implementation must reproduce the numbers measured here (AP5 position error median 0.074 / p95 1.220 m over 24-50 s; 23 % zero-feedforward moving samples; achieved |a| p95 3.44 m/s^2), print them per phase and per stop, and emit only "command = station, n=..., not a tracking sample" for
+   the 60 s hover.
+
+COULD NOT ESTABLISH
+   C1 whether the shipped ego_planner binary matches the sources these line numbers come from (the source reading resolved D1/D2; the binary's mtime was not compared with the sources' -- F5.4 would make that routine). C2 any runtime instance of the F1 wrong-frame setpoint (hold_pt) actually
+   being streamed: that branch has no log line and _hold_is_legal refused in every logged attempt. The frame error is certain from the code; its use as a setpoint is not. C3 per-sortie FSM exit codes: FSM_RC is captured (run-mission.sh:308) and never persisted in $OUT. C4 whether two
+   processes ever published /planner/traj simultaneously: the code risk (F2) is verified, an occurrence is not. C5 why the naive "last planner activity vs run end" gap also reads 54-190 s on four runs with NO crash line (AF1, AO1, C5, F1): whether those planners were genuinely idle or their
+   recorders died early is unresolved, which is why F5.2 uses the adapter's own age counter and F5.1 the crash strings rather than that gap. C6 the cause of AP4's missing stop index ("sequencer at stop None"): its sequencer.out has no "ego wp_index" line at all, unlike AP5's; that build was
+   not inspected. C7 an exact monotonic<->epoch mapping (t_wall vs the logs' epoch stamps): no artifact records both, which is why F5 compares epoch-to-epoch via file mtimes and P1 joins t_sim_us only.
+================================================================================

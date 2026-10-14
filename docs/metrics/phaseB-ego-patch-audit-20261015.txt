@@ -1,0 +1,224 @@
+================================================================================
+PHASE B -- READ-ONLY AUDIT OF OUR PATCHES TO THE ZJU EGO-PLANNER
+================================================================================
+REPO REVIEWED : lio_avoid HEAD 84ec72d  (git -C /mnt/d/distill_self/lio_avoid rev-parse --short HEAD)
+EGO TREE      : /home/fanxin/lio_avoid/src/ego-planner-swarm @ 23a8d5a, DIRTY; the working-tree diff IS
+                our change (ego_replan_fsm.cpp +413, ego_replan_fsm.h +322, planner_manager.cpp +9).
+                DATE 2026-10-15. METHOD: patches + live source read verbatim; no edit, no commit, no
+                flight. SORTIES READ: logs/missionA-AP5-stations (the 0011 sortie) + the AP1/AP3/AP4
+                evidence quoted in patch 0011.
+--------------------------------------------------------------------------------
+PER-PATCH TABLE   (UP = upstream; REVEAL = the line that tells you it fired)
+--------------------------------------------------------------------------------
+P0002 ros2-humble | UP: planNextWaypoint busy-waits `while(exec_state_!=EXEC_TRAJ){spin_some;sleep(1ms)}`;
+ goal z hard-coded 1.0; no odom guard. OURS: busy-wait removed (it re-adds a node the executor owns ->
+ "already been added to an executor" abort, and it could never end); z honoured; a goal before odom is
+ dropped. HAZARD MINOR: the guard tests have_odom_, not "a trajectory exists" -- in MANUAL mode a goal
+ landing between INIT and the first WAIT_TARGET tick still reaches REPLAN_TRAJ with an empty B-spline
+ (the original segfault). The ctor's SAME spin_some busy-wait was NOT removed (.cpp:167,175).
+ REVEAL "waypoint ignored: no odometry yet" (.cpp:357). TEST MANUAL mode, goal in the first odom tick,
+ must survive; grep spin_some == 0.
+P0003 escalation | UP: REPLAN_TRAJ retries for ever in silence; GEN_NEW_TRAJ's failure silent; no t_cur
+ clamp; "Close to goal" = two words. OURS: ERROR every 20 local failures + escalation to GEN_NEW_TRAJ at
+ 100; ERROR every 100 global failures; t_cur clamped in planFromCurrentTraj with a 1-in-100 WARN.
+ HAZARD ***FATAL***: the clamp is LOCAL. The same quantity is recomputed UNCLAMPED at
+ planner_manager.cpp:151 and used as a loop start at :156. When the FSM clamp fires (.cpp:1012-1021) the
+ sibling is past duration_ too -> the loop body runs zero times -> segment_point empty while
+ pseudo_arc_length has one element -> :203-204 index an empty vector, :218 sizes the control points from
+ garbage. AP5 died exactly there: "replanning from an EXPIRED trajectory (t_cur 0.861 > duration 0.851)"
+ -> `[drone 0 replan 537]` -> `terminate ... std::bad_alloc` -> `[ros2run]: Aborted`, 35 s into a 101 s
+ sortie. SERIOUS 2nd: the thresholds count FSM TICKS but print "0.01*N s", and one failing GEN_NEW_TRAJ
+ tick costs 10 replan calls (:721): AP5 had 45 consecutive global failures over ~19 s and the counter
+ never reached 100, so "NO trajectory for ... s" NEVER PRINTED. REVEAL the expired-trajectory WARN
+ (.cpp:1016) then a replan banner then bad_alloc; absence of "NO trajectory for" during a long failure.
+ TEST hold a plan expired for 60 s: the node must survive and the global alarm appear within ~2 s.
+P0004 replan-from-odom (H2) | UP: replan starts from the previous spline at t_cur. OURS: ALWAYS from
+ odom_pos_/odom_vel_, acc=0. HAZARD SERIOUS/latent: the spline state is discarded even while the vehicle
+ follows it, so a plan can start from a 2 s-old position (A3 FAIL: 2014 ms odom gap), and two DIFFERENT
+ plans now share a first point, which breaks the consumer's only freshness key (see BORROWING RISK).
+ REVEAL "PLAN-START: replanning from the odometry (the trajectory put the start N m away)" (:1050) --
+ AP5 0.287/0.602/0.067 m. TEST freeze odom for 1 s offline; the FSM must not commit from a frozen start.
+P0005/0006 repeat+goal-trace | OURS: ignore a goal <0.10 m from end_pt_ (:398); print GOAL-TRACE per goal
+ (:391). HAZARD SERIOUS: 0.10 m is smaller than the 0.30 m advance tolerance and than the odom error, so
+ a re-sent goal for the PREVIOUS station is accepted and drags end_pt_ BACKWARD while wp_id_ stays put
+ (target and published index point at different stations). GOAL-TRACE lives in waypointCallback, only
+ subscribed under MANUAL_TARGET (:143-152) -> under our PRESET_TARGET it is DEAD CODE (0 lines in AP5).
+ REVEAL "WAYPOINT-REPEAT: ignoring a goal" (:403) vs a GOAL-TRACE accepted 0.1-3 m from end_pt_.
+ TEST one startup line naming the mode (ecosystem review [L4]); unit: send the previous station back and
+ require wp_id_/end_pt_ consistency.
+P0007 arrival-is-the-vehicle | UP: the plan's clock out + local_target==end_pt_ declares the GOAL REACHED
+ (have_target_=have_trigger_=false, WAIT_TARGET, unrecoverable: nobody publishes /traj_start_trigger).
+ OURS: if the vehicle is > no_replan_thresh_ (0.20 m) away it is a STALL -> warn, REPLAN_TRAJ, keep the
+ target. HAZARD SERIOUS: SHADOWED. It is the `else if` of the advance test, so while wp_id_<N-1 and
+ 0010's near_wp is true the odom test is never evaluated -- the guard only exists at the LAST waypoint.
+ AP5: near_wp was true at every tick until the final one; the 0007 line printed once (planner.log:6045,
+ wp_id_ 6/12, 0.92 m from the goal). Its escalation path is the one that killed AP5 (P0003 sibling).
+ REVEAL "PLANNER-STALL: the plan's clock is out ... a stalled plan, NOT an arrival" (:882).
+ TEST vehicle held 1 m short of a MID-tour station with the clock forced out: the odom branch must fire.
+P0008 waypoint-sequence | UP: ctor-built tour, advance on no_replan_thresh_ using the PLAN's end, loops
+ to 0 for ever, index invisible. OURS: fsm/waypoint_advance_m 0.300, dwell, loop=false, PUBLISHED
+ wp_index, start-altitude gate 1.28 m armed from WAIT_TARGET. HAZARD ***FATAL/SERIOUS*** in three parts:
+ (i) wp_id_++ happens BEFORE the new global plan is confirmed (:853) and the index is published anyway
+ (:856): if planNextWaypoint fails (0010's early return) the index moves while end_pt_ still points at the
+ OLD station; the next tick sees near_wp true (the vehicle is at the old station) and advances AGAIN,
+ burning the rest of the tour in 10 ms ticks with no plan; on the FIRST arming the same failure leaves
+ have_target_=true (:240-242, before :246) with end_pt_ and GlobalTrajData NEVER SET (default-constructed,
+ filled only by setGlobalTraj on success: plan_container.hpp:16-30,:36-50), so getLocalTarget loops on
+ indeterminate globals. (ii) waypoint_arrived_ is never cleared when the vehicle leaves (reset only AFTER
+ an advance, :854) -> the dwell ACCRUES IN TRANSIT and fires on the first later tick where near_wp is
+ true: a BANKED dwell, not a hold. (iii) waypoint_dwell_s_[wp_id_] (:851,:906) and waypoints_[i][*]
+ (:40-49) are indexed to waypoint_num_ with no 50-bound. ALSO the committed 0008 CANNOT REBUILD THE TREE
+ (ecosystem review [L6]): it carries only the start-altitude gate, its context names post-0008 lines,
+ ego-apply-patch.sh aborts at it. REVEAL "WP-INDEX: k of N" (:268) moving with no retraction; "waypoint k
+ of N finished -- tour complete" (:919) while wp_id_ < N-1. TEST series applies clean (536/155 over 3
+ files); force planNextWaypoint to fail and require the index NOT to move.
+P0010 advance+loud-failure | UP: a failed global plan falls through silently; advance only on the plan's
+ end. OURS: ERROR + early return on global failure; advance on EITHER evidence; 1 Hz TOUR-ADVANCE.
+ HAZARD ***FATAL/SERIOUS***: (1) the FIRST disjunct has NO vehicle term. pos = evaluateDeBoorT(t_cur) with
+ t_cur clamped to duration_ (:805-807) and getLocalTarget sets local_target_pt_=end_pt_ when the horizon
+ passes the target (:1349); planning_horizon 12.0 vs 2.7-3.1 m spacing means the spline's terminal point
+ IS end_pt_, so wp_d_plan -> 0 as the plan's clock runs out and near_wp becomes TRUE wherever the
+ aircraft is. YES: the tour can advance on a plan the vehicle is no longer following, and it bypasses
+ 0007's odom guard. (2) the TOUR-ADVANCE diagnostic is UNREACHABLE BY CONSTRUCTION: its gate
+ `(now - wp_index_pub_time_) >= 1.0` (:829) is the same condition that (:811-815) uses 20 lines earlier to
+ call publishWaypointIndex(), which sets that time to now (:266) -- every tick that could print it first
+ resets the gate. AP5: 0 of 6083 lines. (3) the early return leaves the FSM armed with a stale target and
+ a stale/never-set global trajectory (P0008 i). REVEAL the ABSENCE of TOUR-ADVANCE while WP-INDEX
+ repeats; "GLOBAL plan FAILED" (:283) never printed in AP5. TEST with the clock out and the vehicle 3 m
+ away the index must NOT advance; a 60 s stall must print at least one TOUR-ADVANCE (it cannot today).
+P0011 one-clock-source | UP (pre-fix): wp_index_pub_time_/waypoint_advance_log_time_ from node_->now()
+ (RCL_ROS_TIME, 1) subtracted from rclcpp::Clock().now() (RCL_SYSTEM_TIME, 2) -> throw -> abort on the
+ FIRST EXEC_TRAJ tick; AP1/AP3/AP4 = one committed plan then a dead node. OURS: both from
+ rclcpp::Clock(). HAZARD MINOR today / FATAL on a refactor: INCOMPLETE. .cpp:71 still assigns
+ `waypoint_arrive_time_ = node_->now()` (source 1) while both uses subtract time_now from rclcpp::Clock()
+ (:851,:906, source 2); it does not throw only because each subtraction is immediately preceded by an
+ assignment from time_now (:848,:903). REVEAL `grep -n 'node_->now()' ego_replan_fsm.cpp` -> exactly one
+ line (:71); if it fires, "can't subtract times with different time sources [2 != 1]" + Aborted.
+ TEST add `grep -c 'node_->now()' == 0` to the series test; or use_sim_time on with /clock offset.
+P0009 does not exist (the series jumps 0008 -> 0010); not investigated, recorded so it is not assumed.
+--------------------------------------------------------------------------------
+AP5 (THE 0011 SORTIE): WHAT IT SETTLES, WHAT IT HIDES
+--------------------------------------------------------------------------------
+FIXED: 0011 stops the clock throw. AP5: 44 committed trajectories, WP-INDEX 0->1->2->3->4->5->6 between
+ wall 1792018174.22 and :190.68. HIDDEN: ego died ANYWAY, ~35 s into a 101 s sortie, of std::bad_alloc
+ (mechanism = P0003's unclamped sibling, planner_manager.cpp:151-156). Nothing noticed: the adapter waited
+ 60 s ("PLANNER STALLED: the same trajectory (start_time 1792018192.939) withheld for 2.0 s after 30
+ refusals", then "paths 66, withheld 306") and the score blamed "no new trajectory within 60 s after 3
+ trajectories". The AP1/AP3/AP4 MIS-ATTRIBUTION CLASS IS NOT FIXED -- only its clock instance is.
+(1) CAN 0010 ADVANCE ON A PLAN THE VEHICLE IS NOT FOLLOWING? YES -- P0010 (1). The test is computed on the
+ committed plan's own timeline, and because the spline's terminal point is end_pt_, it becomes true when
+ the plan's clock runs out, regardless of odom; with AP5's median commit gap 0.47 s it fires about one
+ plan-duration after each commit. AP5 evidence: TOUR-ADVANCE never printed (dead code); the sequencer
+ logged "stop 1/12 dwell complete (3.518 m from it when the dwell ended)"; only stop 1 was ever scored
+ REACHED (0.324 m off), stop 2 was scored MISSED after its 45 s timeout, and the sequencer's counter had
+ reached stop 6 when the mission aborted -- i.e. the observer's own 0.45 m arrival test kept failing while
+ ego's index marched on. That is the audience and the flown plan coming apart.
+(2) DOES THE DWELL INTERACT? YES, it makes it worse: same trigger, and waypoint_arrived_ is never cleared
+ when the vehicle leaves, so the dwell accrues in transit and fires on the first later tick where near_wp
+ is true. It cannot hard-deadlock the advance (when near_wp is false the 0007 stall path still runs), but
+ if near_wp is false for ever the dwell never fires and the index freezes -- with waypoint_arrived_ stuck
+ true and NO line anywhere saying "dwelling".
+(3) WHICH C2 MECHANISM DOES THIS RE-OPEN? NOT AF1's. AF1 (verified hold) = 46.62 % of samples inside the
+ 0.20 m footprint, min -0.376 m, sustained; AP5 = 5.66 % (6107/107926), min -0.296 m == ~5.1 s at the
+ tap's 1200 Hz, i.e. a TRANSIT. Decisive: the last 60 s were a hover on a LEGAL point -- setpoints.csv cmd
+ frozen at (-4.28, 0.18) in W from t_wall 40080 to 40142 with 0.07 m tracking error, and 60 s inside the
+ footprint would have been ~72000 samples. So AP5 re-opens the OTHER mechanism: plans that are each legal
+ but abandoned mid-flight because the target moved. Code paths: (a) 0010 moves the target every ~3 s;
+ (b) the adapter switched plans 41 times in 19.7 s; (c) each switch steps the command to the NEW spline's
+ own timeline, and the step from the tracked point to the new one is exactly an ungated connector -- the
+ gate was deleted by design (ego_adapter.py:675-694, "NO START/CONNECTOR GATE ... published anyway,
+ upstream-style"), its note firing at "the plan's nearest point is 0.895/1.789 m from the vehicle
+ (> 0.50 m)"; (d) the vehicle closes that step with its own PSC in a straight line, and AP5's measured
+ cmd-vs-odom lag was 0.1-0.7 m (setpoints.csv, cmd mapped to L by L=(W_y,-W_x)) -- enough in a
+ 0.565-0.640 m corridor to put a 0.20 m-footprint vehicle 0.3 m inside a pillar. LOG LINE THAT
+ DISTINGUISHES THEM: AF1's hold = setpoints streaming at a FROZEN cmd while "PATH WITHHELD ... committed
+ N s ago" grows (present in AP5's tail, harmless only because that endpoint was legal); the
+ abandoned-plan chase = repeated "switched to a newer plan" + "PLAN-START ... start N m away" with no
+ withheld line at the violation. In AP5 the violation window coincides with ego's own map saying
+ "[ERROR] check_collision_and_rebound: ERROR! the drone is in obstacle. This should not happen." from
+ wall 1792018178.75 onward, repeatedly -- while the aircraft was moving under switches.
+--------------------------------------------------------------------------------
+SILENT-FAILURE INVENTORY  (a failure with no line, or a line that cannot print)
+--------------------------------------------------------------------------------
+ 1. TOUR-ADVANCE cannot print (:828-830 vs :811-815 + :266) -- the advance decision is unexplained by
+    construction; AP5 0 of 6083 lines.
+ 2. P0003's global alarm needs 100 ticks = 1000 replan attempts; AP5 stopped at 45 (~19 s) -> a global
+    replan can fail for tens of seconds in silence.
+ 3. The local alarm prints at 20, 40, ... but the FSM can leave REPLAN_TRAJ before 20.
+ 4. changeFSMExecState/printFSMExecState use `cout`, not the logger (:613,:625): every state transition,
+    and the 1 Hz "wait for goal or trigger." heartbeat (misleading whenever have_target_ is false), is
+    invisible to a timestamped/severity-filtered monitor.
+ 5. WAIT_TARGET entered mid-sequence (:892,:926) is TERMINAL under PRESET_TARGET: have_trigger_ is
+    cleared, only triggerCallback (:337) or armTour (:242) can set it, nobody publishes
+    /traj_start_trigger, and the re-arm branch needs !waypoint_armed_ (:672).
+ 6. EMERGENCY_STOP with enable_fail_safe_==false (:951, set at :1096 by the depth-loss path) never
+    changes state: no replan, no target, one line at the loss and silence for ever.
+ 7. callEmergencyStop republishes the stale spline with its ORIGINAL start_time (:1280) and says nothing.
+ 8. checkCollisionCallback returns immediately in WAIT_TARGET (:1088): collision + depth-loss protection
+    is OFF while parked, with no line saying the guard is disabled.
+ 9. "WP-INDEX: waypoint k of N finished -- tour complete" (:919) is an INFO success message and is also
+    what a mid-sequence :892 arrival prints -- a failure that looks like success.
+10. planNextWaypoint's failure ERROR changes no state (:283); on the first arming nothing says end_pt_ and
+    the global trajectory were never set.
+11. planner_manager.cpp:60-63 prints a deliberate planning refusal with bare `cout`, untimestamped.
+12. THE META-SILENCE: nothing in the sortie's scoring path watches whether the planner PROCESS is alive.
+    AP5 repeated the AP1/AP3/AP4 pattern end-to-end; a liveness check (bsplines received in the last N s)
+    belongs in sortie-score.
+--------------------------------------------------------------------------------
+BORROWING RISK -- guarantees given up by not using traj_server.cpp (275 lines, UNUSED here)
+--------------------------------------------------------------------------------
+G1 ANALYTIC vel/acc on the plan's own timeline (:63-64,:180-182). Ours: the adapter re-samples and the
+ mission FSM differences stamps (ego_adapter.py:641-694, mission_fsm.py:869-892,922). Cost: the
+ feed-forward velocity carries an O(a*dt) bias that ArduPilot's GUIDED pos+vel loop mixes into tracking
+ -> a systematic offset eating the 0.20 m footprint in a 0.565-0.640 m corridor. LATENT.
+G2 `trajectory_id` (:212), which px4ctrl uses to detect a NEW plan. Ours: "path_t[0] != t0_cur"
+ (mission_fsm.py:913-914). Cost: two plans with the same first point are indistinguishable, and P0004-H2
+ makes every plan start at the odometry -> unsound BY CONSTRUCTION. ALREADY BITTEN: AP5's tail = 66
+ identical-stamp messages over 60 s ("stamp same as the last flown") re-decided 306 times; only the AGE
+ check stopped a stale plan being flown.
+G3 PAST-THE-END HOVER at the last point, vel/acc zero (:191-202). Ours: WITHHOLD (argued divergence).
+ Cost: abort after 60 s instead of holding. ALREADY BITTEN: AP5 101.47 "ABORT: no new trajectory within
+ 60 s"; same in AO2.
+G4 YAW OWNERSHIP: PI rad/s slew, LPF, 1.0 s look-ahead (:73-74,:80-81). Ours: mission_fsm.py:254-294 whose
+ DEFAULT is --yaw-mode fixed (2.09 rad/s, nose pinned). ALREADY BITTEN: 83 % of the circle flown >30 deg
+ off the velocity vector -- a direct tracking-error amplifier for the C2 line above.
+G5 100 Hz position command (:248-250). Ours: 50 Hz setpoints + a 4 Hz Path republish (--rate 4.0,
+ --dt 0.02). Cost: a 4 Hz staircase interpolated at 50 Hz; with G1 it is not C1 and its kinks are what the
+ PSC chases. LATENT.
+G6 Not inherited: traj_server's invalid-time branch publishes pos=(0,0,0) with READY status (:203-216).
+G7 kx/kv are zero upstream (:12-13,:253-259): no feedback in the command; our divergence is forced by the
+ airframe (ArduPilot GUIDED accepts pos+vel and runs its own PSC).
+--------------------------------------------------------------------------------
+COULD NOT ESTABLISH
+--------------------------------------------------------------------------------
+* The geometric cause of AP5's C2 penetration (which pillar, which second, whether the published plan was
+  itself legal then): I did not re-derive the tap frame vs the world-file cylinders, and AP5 has no
+  per-sample plan-vs-truth artifact (only circle-12-0x do). The 5.66 %/~5 s/legal-60 s-hover argument
+  excludes AF1's hold mechanism; it does not separate "abandoned plan chased by the PSC" from "ungated
+  switch step".
+* Whether the 2014 ms delivered-odometry gap (A3 FAIL, 73.00 s) affected commands: by then the mission FSM
+  had stopped streaming, so I could not link it to C2.
+* patches/0009 does not exist; why the series skips it is not investigated.
+* px4ctrl's own file:line (also open in the ecosystem review); not needed here.
+DOES THE FLOWN BINARY MATCH THE SOURCE?  Proof would be a content hash of the built node recorded in the
+ sortie directory, a git describe/--version line, or a build receipt. NONE EXISTS: tools/run-planner.sh
+ has no build step and runs planner_ws/install/.../ego_planner_node, a --symlink-install SYMLINK to
+ planner_ws/build/ego_planner/ego_planner_node. What exists is (a) mtimes -- source 06:48:09 -> object
+ 06:48:46 -> binary 06:48:47 -> AP5 files 06:49-06:51 -- and (b) patch-unique log strings ("start-altitude
+ gate ON"=0008, "a stalled plan, NOT an arrival"=0007, "replanning from an EXPIRED trajectory"=0003,
+ "WP-INDEX"=0008/0011), so the binary came from a tree containing those patches. That is a content
+ fingerprint, not identity: an edit after 06:48:47 with no rebuild is invisible and nothing forbids it.
+ The 0008 defect does NOT change this answer for AP5 (it concerns rebuilding the tree, not the binary
+ flown) -- but it removes the fallback: the series cannot reproduce the source of record, so the live
+ dirty tree + mtimes are all a third party would have.
+--------------------------------------------------------------------------------
+PRIORITY (by evidence)
+--------------------------------------------------------------------------------
+ 1. planner_manager.cpp:151 -- clamp t_cur there too, or make the empty-segment_point path return false.
+    This is what killed AP5 and it is one condition.
+ 2. ego_replan_fsm.cpp:826 -- put the VEHICLE into the first disjunct (or make the test odom-only), and
+    clear waypoint_arrived_ when the vehicle leaves.
+ 3. ego_replan_fsm.cpp:853-856 -- confirm the new plan before moving wp_id_, or roll the index back.
+ 4. ego_replan_fsm.cpp:829 -- TOUR-ADVANCE is dead; separate it from the index-publish gate.
+ 5. sortie-score -- a planner liveness check, so a dead node is never again scored as a planning failure.
+================================================================================
