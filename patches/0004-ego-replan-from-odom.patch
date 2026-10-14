@@ -1,0 +1,38 @@
+diff --git a/src/planner/plan_manage/src/ego_replan_fsm.cpp b/src/planner/plan_manage/src/ego_replan_fsm.cpp
+index 9823311..4c61092 100755
+--- a/src/planner/plan_manage/src/ego_replan_fsm.cpp
++++ b/src/planner/plan_manage/src/ego_replan_fsm.cpp
+@@ -771,6 +771,33 @@ namespace ego_planner
+     start_vel_ = info->velocity_traj_.evaluateDeBoorT(t_cur);
+     start_acc_ = info->acceleration_traj_.evaluateDeBoorT(t_cur);
+ 
++    // PATCH H (patches/0004-ego-replan-from-odom.patch): THE REPLAN MUST START WHERE THE VEHICLE IS.
++    // The three lines above are a proxy for the vehicle's state, and they are only a good proxy while the
++    // vehicle is following that trajectory.  MEASURED 2026-10-14 (sortie I1, the circle): after stop 1 was
++    // REACHED and its dwell completed, every plan offered for stop 2 was withheld with
++    // "starts 1.136 / 1.266 / 2.431 m from the vehicle (> 0.50 m)" and what did get published was degenerate
++    // ("n=2 arc=0.000226 m", then "n=151 arc=0.000000 m" -- 151 samples at one point), so the plan stream
++    // starved and the FSM aborted after 60 s while the aircraft hovered 0.012 m from its command.  Sortie F1
++    // shows the same signature at 5.871 m.  When the proxy has drifted further than this threshold from the
++    // odometry, the odometry wins; the acceleration is zeroed because ego never fills odom_acc_ (it is
++    // commented out in odometryCallback).
++    {
++      const double start_dev = (start_pt_ - odom_pos_).norm();
++      if (start_dev > 0.30)
++      {
++        static long replan_from_odom_count = 0;
++        if ((replan_from_odom_count++ % 20) == 0)
++        {
++          RCLCPP_WARN(node_->get_logger(),
++                      "PLAN-START: the trajectory put the start %.3f m from the odometry; using the odometry "
++                      "(%ld times so far)", start_dev, replan_from_odom_count);
++        }
++        start_pt_ = odom_pos_;
++        start_vel_ = odom_vel_;
++        start_acc_.setZero();
++      }
++    }
++
+     bool success = callReboundReplan(false, false);
+ 
+     if (!success)

@@ -232,19 +232,35 @@ def main() -> int:
                             "%.3f m away" % np.linalg.norm(self.here_w[:2] - np.array(p[:2]))
                             if self.here_w is not None else "no odom yet"))
             d = float(np.linalg.norm(self.here_w[:2] - np.array(p[:2])))
-            if d <= args.arrive:
-                if self.t_reached is None:
-                    self.t_reached = now
-                    if args.dwell_s > 0:
-                        self.log("stop %d/%d REACHED in %.1f s (%.3f m off) -- holding %.1f s"
-                                 % (self.i + 1, len(stops), now - self.t_stop, d, args.dwell_s))
+            # ALREADY REACHED: FINISH THE DWELL WHEREVER THE VEHICLE DRIFTS TO.  This is tested BEFORE the
+            # arrival gate again, and that order is the whole fix.  MEASURED 2026-10-14 (sortie H-posvel, the
+            # circle): the same stop was logged "REACHED in 4.4 s (0.237 m off) -- holding 5.0 s" and then,
+            # 60 s later, "MISSED after 60 s: 0.606 m from it -- moving on" -- because the dwell was coded as
+            # `if d <= arrive: ... return` and the FSM's station hold holds the PUBLISHED PLAN'S END, which
+            # sits ~0.6 m PAST the stop.  The moment the vehicle drifted out of the 0.45 m gate the dwell
+            # branch could never be entered again, so the arrival that had already happened was re-judged by
+            # the timeout.  The mission then lost 60 s at the first stop (the next stop was published at
+            # 74.7 s instead of ~28 s), and the FSM's own 60 s wait for a plan expired first:
+            # "ABORT: no new trajectory on /planner/traj within 60 s after 2 trajectories (sequencer at
+            # stop 1)" -- with the aircraft hovering 0.041 m from the stop for the whole minute.
+            if self.t_reached is not None:
                 if now - self.t_reached < args.dwell_s:
                     return                      # THE DWELL: stay on this stop, keep republishing it
-                if args.dwell_s <= 0:
-                    self.log("stop %d/%d REACHED in %.1f s (%.3f m off)"
-                             % (self.i + 1, len(stops), now - self.t_stop, d))
-                else:
-                    self.log("stop %d/%d dwell complete" % (self.i + 1, len(stops)))
+                self.log("stop %d/%d dwell complete (%.3f m from it when the dwell ended)"
+                         % (self.i + 1, len(stops), d))
+                self.reached.append((self.i, now - self.t_stop))
+                self.i += 1
+                self.t_stop = None
+                self.t_reached = None
+                return
+            if d <= args.arrive:
+                self.t_reached = now
+                if args.dwell_s > 0:
+                    self.log("stop %d/%d REACHED in %.1f s (%.3f m off) -- holding %.1f s"
+                             % (self.i + 1, len(stops), now - self.t_stop, d, args.dwell_s))
+                    return
+                self.log("stop %d/%d REACHED in %.1f s (%.3f m off)"
+                         % (self.i + 1, len(stops), now - self.t_stop, d))
                 self.reached.append((self.i, now - self.t_stop))
                 self.i += 1
                 self.t_stop = None
