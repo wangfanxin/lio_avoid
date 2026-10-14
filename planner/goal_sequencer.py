@@ -70,12 +70,23 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--world", default=os.path.join(ROOT, "worlds", "forest_b.yaml"))
     ap.add_argument("--calib-file", default="/mnt/d/distill_self/_stage/calib.json")
-    ap.add_argument("--goal-topic", default="/goal_pose")
+    ap.add_argument("--stops", default="",
+                    help="explicit stop list 'E,N;E,N;...' overriding the world's mission_b.circle, with "
+                         "--alt as their height.  WHY: a mission is not always a circle -- the user asked "
+                         "for 'pad -> (-5,-5), hover 10 s, then (6,6)', and the stops then have to be "
+                         "command-line data rather than a world-file geometry")
+    ap.add_argument("--alt", type=float, default=2.0, help="height for --stops, m")
+    ap.add_argument("--dwell-s", type=float, default=0.0,
+                    help="seconds to HOLD at each stop after arriving, before commanding the next one "
+                         "(the user's 'hover 10 s')")
     ap.add_argument("--stop-topic", default="/mission/stop",
                     help="publish the current stop index here as std_msgs/Int32 (0-based, -1 = the sequence "
                          "is complete).  The FSM follows trajectories until it reads -1, which is what keeps "
                          "its state and the mission's from drifting apart")
     ap.add_argument("--odom-topic", default="/lio/robo/odom")
+    ap.add_argument("--goal-topic", default="/goal_pose",
+                    help="where the stops are published (W); planner/ego_adapter.py subscribes to this and "
+                         "converts to L with the same calibration the FSM uses")
     ap.add_argument("--arrive", type=float, default=0.35,
                     help="horizontal distance to the stop that counts as reached, m")
     ap.add_argument("--timeout", type=float, default=30.0,
@@ -97,9 +108,19 @@ def main() -> int:
     args = ap.parse_args()
 
     wc = load_circle_module()
-    stops = wc.commanded_points(args.world)
+    if args.stops:
+        stops = []
+        for spec in args.stops.split(";"):
+            if not spec.strip():
+                continue
+            v = [float(x) for x in spec.split(",")]
+            stops.append([v[0], v[1], v[2] if len(v) > 2 else args.alt])
+        print("goal_sequencer: %d stops from the command line: %s"
+              % (len(stops), " -> ".join("(%.2f,%.2f,%.2f)" % tuple(s) for s in stops)), flush=True)
+    else:
+        stops = wc.commanded_points(args.world)
     if not stops:
-        print("no mission_b.circle in %s" % args.world, file=sys.stderr)
+        print("no mission_b.circle in %s and no --stops given" % args.world, file=sys.stderr)
         return 1
     if args.dry_run:
         for i, p in enumerate(stops):
@@ -139,6 +160,7 @@ def main() -> int:
                             else float(max(s[2] for s in stops)) - 0.60)
             self.told_waiting = False
             self.done_logged = False
+            self.t_reached = None                # the moment the current stop was first reached (dwell)
             self.fh = open(args.log, "w") if args.log else None
             self.create_timer(1.0 / max(args.rate, 1.0), self.tick)
             print("goal_sequencer: %d stops from %s, arrive %.2f m, timeout %.0f s, calib %s"
@@ -211,11 +233,22 @@ def main() -> int:
                             if self.here_w is not None else "no odom yet"))
             d = float(np.linalg.norm(self.here_w[:2] - np.array(p[:2])))
             if d <= args.arrive:
+                if self.t_reached is None:
+                    self.t_reached = now
+                    if args.dwell_s > 0:
+                        self.log("stop %d/%d REACHED in %.1f s (%.3f m off) -- holding %.1f s"
+                                 % (self.i + 1, len(stops), now - self.t_stop, d, args.dwell_s))
+                if now - self.t_reached < args.dwell_s:
+                    return                      # THE DWELL: stay on this stop, keep republishing it
+                if args.dwell_s <= 0:
+                    self.log("stop %d/%d REACHED in %.1f s (%.3f m off)"
+                             % (self.i + 1, len(stops), now - self.t_stop, d))
+                else:
+                    self.log("stop %d/%d dwell complete" % (self.i + 1, len(stops)))
                 self.reached.append((self.i, now - self.t_stop))
-                self.log("stop %d/%d REACHED in %.1f s (%.3f m off)"
-                         % (self.i + 1, len(stops), now - self.t_stop, d))
                 self.i += 1
                 self.t_stop = None
+                self.t_reached = None
                 return
             if now - self.t_stop > args.timeout:
                 self.missed.append((self.i + 1, d))

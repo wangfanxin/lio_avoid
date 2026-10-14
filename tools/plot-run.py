@@ -42,6 +42,9 @@ def main() -> int:
                          "of inside a 2 x 1.2 m box (the plot used to hard-code both)")
     ap.add_argument("--out", default="")
     ap.add_argument("--tag", default="")
+    ap.add_argument("--goals", default="",
+                    help="mark these goals on the top view, 'E,N;E,N;...' -- for a mission whose stops are "
+                         "not the world's own circle (e.g. pad -> (-5,-5), hover, -> (6,6))")
     args = ap.parse_args()
     tag = args.tag or os.path.basename(args.run.rstrip("/")).replace("missionA-", "")
     out = args.out or os.path.dirname(os.path.abspath(args.run))
@@ -192,6 +195,14 @@ def main() -> int:
                             color="#006000")
         ax.plot([0], [0], "k^", ms=8)
         ax.annotate("pad", (0, 0), textcoords="offset points", xytext=(6, -12), fontsize=9)
+        # the mission's own goals, when they are not the world's circle
+        if args.goals:
+            g = [[float(v) for v in s.split(",")] for s in args.goals.split(";") if s.strip()]
+            ax.plot([q[0] for q in g], [q[1] for q in g], "o", mfc="#00c000", mec="#006000", ms=8,
+                    zorder=9, label="mission goals (%d)" % len(g))
+            for i, q in enumerate(g):
+                ax.annotate("g%d" % i, (q[0], q[1]), textcoords="offset points", xytext=(6, 5), fontsize=9,
+                            color="#006000")
         ax.set_xlabel("E [m]")
         ax.set_ylabel("N [m]")
         ax.set_aspect("equal")

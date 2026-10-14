@@ -97,6 +97,7 @@ class Mission:
         self.yaw_last = float(args.yaw)          # the heading actually streamed (velocity mode slews it)
         self.yaw_track_err = 0.0
         self.yaw_hold = False                    # set by the follower near a station: freeze the heading
+        self.last_end_dist = float("nan")        # how far the vehicle was from the plan's end at completion
         self.stop_index = None                   # the sequencer's stop index (-1 = sequence complete)
         self.log_fh = open(args.phase_log, "w")
         self.log_fh.write("t_wall,t_sim_us,phase,cmd_x,cmd_y,cmd_z,lio_x,lio_y,lio_z,truth_x,truth_y,"
@@ -654,6 +655,7 @@ class Mission:
                         % (self.args.traj_topic, self.args.traj_wait_s, flown, self.stop_index))
             last_t0 = float(self.path_t[0]) if self.path_t is not None else None
             t_stop = time.monotonic()
+            stop_at_start = self.stop_index
             rc = self._spline_once()
             flown += 1
             if rc:
@@ -661,6 +663,36 @@ class Mission:
             self.log("trajectory %d done in %.1f s (sequencer now at stop %s)"
                      % (flown, time.monotonic() - t_stop, self.stop_index))
             self.phase_mark("traj%d" % flown)
+            # HOLD THE STATION WHILE THE SEQUENCER DWELLS.  MEASURED 2026-10-14 (sortie C3, the user's
+            # "hover 10 s" mission): with nothing streamed between trajectories the FCU kept flying to the
+            # LAST TARGET, ego kept replanning to the same stop, this loop kept following each new plan, and
+            # the aircraft DRIFTED out of the arena -- 12.2 % of the truth samples were outside the walls
+            # (N down to -6.89 against a wall at -6.00) while 0 of 3480 published plan points were.  A dwell
+            # means standing still, so hold the position the vehicle is at NOW, at 50 Hz, until the
+            # sequencer moves on.
+            #
+            # AND ONLY ON A REAL ARRIVAL.  MEASURED 2026-10-14 (sortie C4): gating the hold on "the stop
+            # index did not change" alone froze the aircraft 4.808 m short of the stop, because ego had
+            # published a short hop (5.8 s) and the index had simply not advanced yet.  The hold therefore
+            # also requires that the trajectory ended where the VEHICLE is -- `last_end_dist`, the distance
+            # from the vehicle to the plan's last point at the moment the trajectory completed.
+            if self.stop_index is not None and self.stop_index == stop_at_start \
+                    and self.last_end_dist < self.args.hold_at_m:
+                t_hold = time.monotonic()
+                st_h = self.bridge.state()
+                hold_pt = np.array(st_h.pos)                 # hold where it ARRIVED, not where it drifts to
+                self.log("holding the station (%.3f m from the plan's end) until the sequencer moves on "
+                         "(up to %.0f s)" % (self.last_end_dist, self.args.hold_max_s))
+                while self.stop_index == stop_at_start:
+                    if self.abort_reason:
+                        return self.abort_reason
+                    self.pump(0.05, setpoint=hold_pt, velocity=np.zeros(3))
+                    if time.monotonic() - t_hold > self.args.hold_max_s:
+                        self.log("the sequencer did not move on within %.0f s; continuing"
+                                 % self.args.hold_max_s)
+                        break
+                self.log("station hold ended after %.1f s (sequencer at stop %s)"
+                         % (time.monotonic() - t_hold, self.stop_index))
 
     def _spline_once(self):
         """Follow the trajectory currently in `self.path_l` / `self.path_t` in TIME, to its end."""
@@ -740,10 +772,11 @@ class Mission:
                                               float(np.linalg.norm(here[:2] - p[-1, :2])), n_switch))
             if left < self.args.arrive_m / max(self.args.follow_speed, 0.1) and \
                     float(np.linalg.norm(np.array(st.vel)[:2])) < self.args.settle_speed:
+                self.last_end_dist = float(np.linalg.norm(here[:2] - p[-1, :2]))
                 self.log("trajectory complete (spline): %.2f s of plan, final speed %.3f m/s, "
                          "%.3f m from the last point, %d plan switches"
                          % (dur, float(np.linalg.norm(np.array(st.vel)[:2])),
-                            float(np.linalg.norm(here[:2] - p[-1, :2])), n_switch))
+                            self.last_end_dist, n_switch))
                 return None
 
     def follow_path(self):
@@ -1115,6 +1148,12 @@ def main() -> int:
     ap.add_argument("--stop-topic", default="/mission/stop",
                     help="spline mode with >1 stop: the sequencer's current stop index (std_msgs/Int32, "
                          "-1 = sequence complete).  The FSM follows trajectories until it reads -1")
+    ap.add_argument("--hold-max-s", type=float, default=20.0,
+                    help="spline mode: how long to HOLD the current position while the sequencer dwells on "
+                         "a stop before giving up and waiting for the next trajectory")
+    ap.add_argument("--hold-at-m", type=float, default=0.50,
+                    help="spline mode: only hold the station if the trajectory ended within this distance of "
+                         "the vehicle -- otherwise the plan was a short hop and the mission is still moving")
     ap.add_argument("--min-traj-m", type=float, default=0.50,                    help="spline mode: ignore a published trajectory whose horizontal arc length is below "
                          "this (m).  The adapter republishes the current spline at 4 Hz from t_cur, so an "
                          "almost-exhausted plan arrives as a 0.17 m stub, and a station must not be burned "

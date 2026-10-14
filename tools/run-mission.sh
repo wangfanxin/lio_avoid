@@ -35,6 +35,9 @@ WORLD="${WORLD:-$REPO/worlds/pillars.yaml}"
 MISSION_PARM="${MISSION_PARM:-$REPO/params/phase_a_mission.parm}"
 [ -f "$WORLD" ] || { echo "no world file at $WORLD" >&2; exit 1; }
 eval "$(python3 "$REPO/tools/world-info.py" --world "$WORLD" --shell)"
+# GEOFENCE_M may be overridden for a mission whose goal is ON the arena wall: the gate exists to catch a
+# runner, and the arena itself is already enforced by the planner's own arena check.
+GEOFENCE_M="${GEOFENCE_M:-$GEOFENCE_M}"
 MISSION_NAME="$(basename "$MISSION_PARM" .parm)"
 # EKF_PARM selects HOW MUCH THE EKF TRUSTS THE LIO: `params/ekf_trust_lio.parm` sets every measurement and
 # process noise to the value that has been measured, instead of the firmware's aircraft-scale defaults.
@@ -168,8 +171,13 @@ if [ "$TRAJ_SOURCE" = "planner" ]; then
     TRAJ_PID=$!
     sleep 1
     if [ "$STATIONS" -gt 0 ]; then
+        # `--stops=VALUE`, not `--stops VALUE`: a stop list starts with a coordinate, and argparse reads a
+        # leading "-5,..." as another option -- exactly the trap that made `--corners=` necessary in
+        # tools/metrics.py.  MEASURED 2026-10-14: with the space form the sequencer died on
+        # "argument --stops: expected one argument" and the flight silently flew the world's circle instead.
         python3 "$REPO/planner/goal_sequencer.py" --world "$WORLD" --calib-file "$CALIB" \
             --arrive "${SEQ_ARRIVE:-0.35}" --timeout "${SEQ_TIMEOUT:-35}" \
+            ${SEQ_STOPS:+--stops="$SEQ_STOPS"} ${SEQ_DWELL:+--dwell-s="$SEQ_DWELL"} \
             --log "$OUT/sequencer.log" > "$OUT/sequencer.out" 2>&1 &
         SEQ_PID=$!
         echo "   stations   : $STATIONS, fed by planner/goal_sequencer.py (arrive ${SEQ_ARRIVE:-0.35} m)"

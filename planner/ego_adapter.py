@@ -596,6 +596,27 @@ class EgoAdapter:
 
         cl = self.world.clearance(pos)
         info["clr_min"] = float(cl.min())
+        # THE ALTITUDE BAND.  MEASURED 2026-10-14 across sorties: ego's B-spline wanders in z -- plans were
+        # seen at 1.21 m and at 3.74 m for a goal at 2.00 m (B7 dipped, C3 climbed), because this forest is
+        # uniform in z and the optimiser has no altitude-keeping term.  The vehicle then follows the plan up
+        # or down, which trips the FSM's own gates (sortie B12 aborted with the FCU at 3.43 m) and silently
+        # spends the clearance the plan was verified with (B10's slow arm wandered to 4.10 m).  The pillars
+        # span z 0..4.2 m and are vertical, so moving a plan in z inside that band does NOT change its
+        # horizontal clearance -- and the gate below re-checks the clamped path anyway -- so clamping z to
+        # the goal's own altitude is safe, and it is what the mission means.
+        if self.args.z_band > 0.0:
+            z_goal = float(pos[-1, 2])
+            zc = np.clip(pos[:, 2], z_goal - self.args.z_band, z_goal + self.args.z_band)
+            dz = float(np.max(np.abs(zc - pos[:, 2])))
+            if dz > 1e-9:
+                self.n_zclip = getattr(self, "n_zclip", 0) + 1
+                if self.n_zclip <= 3 or self.n_zclip % 20 == 0:
+                    print("ego_adapter: Z CLAMPED (%d): the plan's z was up to %.3f m away from the goal's "
+                          "%.3f m; clamped to +-%.2f m" % (self.n_zclip, dz, z_goal, self.args.z_band),
+                          flush=True)
+                pos[:, 2] = zc
+                cl = self.world.clearance(pos)              # re-check: the clamp must not create a collision
+                info["clr_min"] = float(cl.min())
         if info["clr_min"] < self.args.footprint:
             # PUBLISH THE SAFE PREFIX INSTEAD OF NOTHING.  The contract (PLAN.md 4.1) forbids publishing a
             # path that breaks the clearance, and that is still true -- but withholding the WHOLE path
@@ -719,12 +740,17 @@ def main():
     ap.add_argument("--odom-topic", default="/lio/robo/odom")
     ap.add_argument("--rate", type=float, default=4.0, help="republish rate, Hz (>= 2 required)")
     ap.add_argument("--dt", type=float, default=0.02, help="trajectory-time sample spacing, s")
-    ap.add_argument("--min-prefix-m", type=float, default=0.30,
-                    help="when a plan breaks the clearance contract in its far half, publish the verified "
+    ap.add_argument("--min-prefix-m", type=float, default=0.30,                    help="when a plan breaks the clearance contract in its far half, publish the verified "
                          "prefix if it is at least this long (m) instead of withholding everything; a "
                          "shorter prefix is withheld as before.  This is what breaks the deadlock where ego "
                          "plans through a pillar it has not seen yet and the vehicle therefore never moves "
                          "to see it")
+    ap.add_argument("--z-band", type=float, default=0.30,
+                    help="clamp the published plan's altitude to the goal's own altitude +- this many metres "
+                         "(0 = do not touch the plan).  Ego's B-spline has no altitude-keeping term, so plans "
+                         "were measured 1.21-3.74 m for a 2.00 m goal; the pillars are vertical, so a z move "
+                         "inside their height does not change the horizontal clearance, and the gate re-checks "
+                         "the clamped path")
     ap.add_argument("--footprint", type=float, default=0.20,
                     help="the project's clearance CONTRACT, metres: no point of a published path may come "
                          "closer than this to a TRUE pillar surface in the world file.  It is measured "
