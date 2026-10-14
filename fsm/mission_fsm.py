@@ -660,23 +660,28 @@ class Mission:
                     % ("none" if self.path_t is None else "%d stamps for %d points"
                        % (len(self.path_t), len(self.path_l))))
         R, t = self.calib.R_WL, self.calib.t_WL
-        p = (R @ self.path_l.T).T + t
-        tt = self.path_t - self.path_t[0]                 # seconds from the trajectory's start
-        if tt[-1] <= 1e-6:
-            return "the Path's stamps span %.6f s -- not a trajectory" % tt[-1]
-        dur = float(tt[-1])
+
+        def snapshot():
+            """The plan in hand, in F, with its time base: (points, times, duration)."""
+            q = (R @ self.path_l.T).T + t
+            ts = self.path_t - self.path_t[0]             # seconds from this trajectory's start
+            return q, ts, float(ts[-1])
+
+        p, tt, dur = snapshot()
+        if dur <= 1e-6:
+            return "the Path's stamps span %.6f s -- not a trajectory" % dur
         self.log("follow-spline: %d points, %.2f s of trajectory (%.2f m), stamps in the system clock"
                  % (len(p), dur, float(np.sum(np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1)))))
 
-        def ref_at(t_rel):
+        def ref_at(pos_p, times, t_rel):
             """(position, velocity, acceleration) of the plan at t_rel seconds from its start."""
-            k = int(np.clip(np.searchsorted(tt, t_rel, side="right") - 1, 0, len(tt) - 2))
-            h = max(tt[k + 1] - tt[k], 1e-6)
-            w = float(np.clip((t_rel - tt[k]) / h, 0.0, 1.0))
-            pos = p[k] + w * (p[k + 1] - p[k])
-            vel = (p[k + 1] - p[k]) / h
-            if 0 < k < len(tt) - 2:
-                acc = ((p[k + 2] - p[k + 1]) / max(tt[k + 2] - tt[k + 1], 1e-6) - vel) / h
+            k = int(np.clip(np.searchsorted(times, t_rel, side="right") - 1, 0, len(times) - 2))
+            h = max(times[k + 1] - times[k], 1e-6)
+            w = float(np.clip((t_rel - times[k]) / h, 0.0, 1.0))
+            pos = pos_p[k] + w * (pos_p[k + 1] - pos_p[k])
+            vel = (pos_p[k + 1] - pos_p[k]) / h
+            if 0 < k < len(times) - 2:
+                acc = ((pos_p[k + 2] - pos_p[k + 1]) / max(times[k + 2] - times[k + 1], 1e-6) - vel) / h
             else:
                 acc = np.zeros(3)
             return pos, vel, acc
@@ -684,26 +689,46 @@ class Mission:
         self.set_phase("traj")
         t_start = time.monotonic()
         t_wall0 = time.time()                              # the stamps are wall-clock seconds
+        t0_cur = float(self.path_t[0])
+        n_switch = 0
         while True:
             if self.abort_reason:
                 return self.abort_reason
+            # FOLLOW THE LATEST PLAN, not the first one seen.  MEASURED 2026-10-14 (B9, the completed 12-stop
+            # sortie): the deviation from the plan grows with the plan's AGE (0.200 m at <= 0.05 s old, 0.368 m
+            # at 0.30-0.50 s) and the truth then breaks the 0.20 m contract in 20 % of the samples even though
+            # every published plan HOLDS it -- because ego replans continuously (4 Hz, 2.6 Hz of genuinely new
+            # plans) and bends the path around pillars it has just seen, while this loop kept flying the copy it
+            # started with.  Upstream's traj_server does the other thing: it evaluates the NEWEST B-spline at
+            # the current time.  Switching rebases the time origin, which is exactly what the new plan's own
+            # stamps mean (its first point is the vehicle's current state).
+            if self.args.follow_latest and self.path_t is not None \
+                    and float(self.path_t[0]) != t0_cur and self._traj_usable():
+                p, tt, dur = snapshot()
+                t0_cur = float(self.path_t[0])
+                t_wall0 = time.time()
+                n_switch += 1
+                if n_switch <= 3 or n_switch % 20 == 0:
+                    self.log("switched to a newer plan (%d so far): %d points, %.2f s, %.2f m"
+                             % (n_switch, len(p), dur,
+                                float(np.sum(np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1)))))
             t_rel = (time.time() - t_wall0) + self.args.spline_lead
-            pos, vel, acc = ref_at(t_rel)
+            pos, vel, acc = ref_at(p, tt, t_rel)
             self.cmd = pos
             self.pump(0.05, setpoint=pos, velocity=vel, accel=acc)
             st = self.bridge.state()
             here = np.array(st.pos)
             left = dur - t_rel
             if time.monotonic() - t_start > self.args.traj_timeout_s:
-                return ("trajectory timed out after %.0f s: t %.2f of %.2f s, %.2f m from the end"
-                        % (self.args.traj_timeout_s, t_rel, dur,
-                           float(np.linalg.norm(here[:2] - p[-1, :2]))))
+                return ("trajectory timed out after %.0f s: t %.2f of %.2f s, %.2f m from the end, "
+                        "%d plan switches" % (self.args.traj_timeout_s, t_rel, dur,
+                                              float(np.linalg.norm(here[:2] - p[-1, :2])), n_switch))
             if left < self.args.arrive_m / max(self.args.follow_speed, 0.1) and \
                     float(np.linalg.norm(np.array(st.vel)[:2])) < self.args.settle_speed:
                 self.log("trajectory complete (spline): %.2f s of plan, final speed %.3f m/s, "
-                         "%.3f m from the last point"
+                         "%.3f m from the last point, %d plan switches"
                          % (dur, float(np.linalg.norm(np.array(st.vel)[:2])),
-                            float(np.linalg.norm(here[:2] - p[-1, :2]))))
+                            float(np.linalg.norm(here[:2] - p[-1, :2])), n_switch))
                 return None
 
     def follow_path(self):
@@ -1071,11 +1096,19 @@ def main() -> int:
     ap.add_argument("--stop-topic", default="/mission/stop",
                     help="spline mode with >1 stop: the sequencer's current stop index (std_msgs/Int32, "
                          "-1 = sequence complete).  The FSM follows trajectories until it reads -1")
-    ap.add_argument("--min-traj-m", type=float, default=0.50,
-                    help="spline mode: ignore a published trajectory whose horizontal arc length is below "
+    ap.add_argument("--min-traj-m", type=float, default=0.50,                    help="spline mode: ignore a published trajectory whose horizontal arc length is below "
                          "this (m).  The adapter republishes the current spline at 4 Hz from t_cur, so an "
                          "almost-exhausted plan arrives as a 0.17 m stub, and a station must not be burned "
                          "on one")
+    ap.add_argument("--follow-latest", dest="follow_latest", action="store_true", default=True,
+                    help="spline mode: switch to a NEWER published plan the moment one arrives, rebasing the "
+                         "trajectory clock (this is what upstream's traj_server does).  Default ON: MEASURED "
+                         "2026-10-14, following the plan the FSM happened to start with let ego's 4 Hz "
+                         "replans accumulate as deviation -- 0.200 m at <= 0.05 s of plan age against 0.368 m "
+                         "at 0.30-0.50 s, which is what pushed the truth below the 0.20 m contract")
+    ap.add_argument("--no-follow-latest", dest="follow_latest", action="store_false",
+                    help="keep the historical behaviour: follow the plan that was in hand when the "
+                         "trajectory started, to its end")
     ap.add_argument("--lookahead-base", type=float, default=0.45,
                     help="path mode: look-ahead distance at zero speed, m")
     ap.add_argument("--lookahead-gain", type=float, default=0.60,

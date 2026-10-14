@@ -1,0 +1,28 @@
+A/B: following the LATEST published plan vs the plan the FSM started with
+when   2026-10-14       mission B, 12-stop circle, worlds/forest_b.yaml, yaw-mode velocity
+
+  B9  --no-follow-latest : stops 12/12, C1 0.086 m, A1 9.84 mm, A2 5.76 mm, B4 landed
+  B11 --follow-latest    : stops 11/12 (stop 5 missed by 1.61 m), C1 0.014 m, A1 7.95 mm, A2 4.37 mm, B4 landed
+
+  metric (both from tools/metrics.py, same world and contract)      B9        B11
+  ---------------------------------------------------------------------------------
+  C2 truth min pillar clearance                                  -0.342 m   -0.006 m
+  C2 airborne samples below the 0.20 m contract                    27.8 %      5.6 %
+  C2 airborne samples INSIDE a pillar                               5.86 %     0.15 %
+  fresh-plan samples below the contract                             20.3 %     7.7 %
+  fresh-plan samples inside a pillar                                1.54 %     0.00 %
+  |truth - plan| lateral median (fresh plans)                     0.232 m    0.142 m
+  |truth - plan| lateral p95    (fresh plans)                     0.852 m    0.512 m
+  the PLAN's own worst clearance over all published messages        0.200 m    0.200 m
+  plan switches performed by the FSM                                    0         14
+
+WHY: the deviation from the plan grows with the plan's AGE, because ego replans at 4 Hz (2.6 Hz of
+genuinely new plans) and bends the path around pillars it has just seen, while the old follower kept
+flying the copy it started with.  Age bins on B9: 0.200 m at <= 0.05 s old against 0.368 m at
+0.30-0.50 s.  Switching to the newest plan (what upstream's traj_server does) is what removed most of
+the contract violation -- 27.8 % -> 5.6 % of the flight below 0.20 m, and inside-a-pillar 5.86 % ->
+0.15 %.  C2 is still formally FAIL: 6 mm inside at the worst sample.
+
+What C2 still needs: the remaining 5.6 % is the follower's own error (lateral p95 0.512 m) against a
+plan that rides at 0.200-0.35 m, in corridors of 0.568 m.  The follower's median error is 0.142 m and
+the plan's median clearance 0.351 m, so the median margin is ~0.2 m -- the tail is what breaks it.
