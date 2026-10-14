@@ -55,12 +55,14 @@ orphans -- a parameter file that nothing loads is a bug (verifiable by grep).
                 ├──────────────────────────────┬───────────────────────────────┘
                 │                              ▼
                 │            ┌═════════════════════════════════════════════════════════════┐
-                │            ║ BOX 4   planner/   ego-planner                              ║
-                │            ║   in : /odom 200 Hz (L)   <- state, same source as the map  ║
-                │            ║        /cloud_registered 10 Hz (L)  <- local map input      ║
-                │            ║        /planner/goal (L, on demand, W->L by the FSM)        ║
-                │            ║   out: /planner/traj 10-50 Hz (L)  B-spline horizon        ║
-                │            ║        /planner/status 1-10 Hz, /planner/vis/* 10 Hz        ║
+║ BOX 4   planner/  = ego-planner (planner_ws) + planner/ego_adapter.py                    ║
+║   in : /lio/robo/odom 200 Hz (L)    <- state + map centre                                ║
+║        /cloud_registered 10 Hz (L)  <- RELAYED by tools/scan_relay.py from /livox/lidar   ║
+║              + /lio/robo/odom: RAW registered points, publisher QoS RELIABLE              ║
+║        /goal_pose (W) -> the adapter converts to L (same calib as the FSM) and forwards   ║
+║   out: planning/bspline (L) -> the adapter -> /planner/traj (nav_msgs/Path, L, >= 2 Hz)   ║
+║        the adapter REFUSES a path that breaks PLAN 4.1 (arena / 0.35 m footprint / start   ║
+║        distance) and prints which check failed with its number                            ║
                 │            ╚═══════════════════════════════════╪═════════════════════════╝
                 │                                             │ /planner/traj (L)
                 ▼                                             ▼
