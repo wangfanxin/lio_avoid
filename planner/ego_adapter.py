@@ -355,7 +355,7 @@ class EgoAdapter:
         from nav_msgs.msg import Path, Odometry
         from geometry_msgs.msg import PoseStamped
         from sensor_msgs.msg import PointCloud2  # noqa: F401  (only for the type check below)
-        from std_msgs.msg import Bool
+        from std_msgs.msg import Bool, Int32
 
         self.args = args
         self.rclpy = rclpy
@@ -396,6 +396,9 @@ class EgoAdapter:
         # clearance check over every published path), and with a depth-1 queue an overflowing subscription
         # simply drops.  Depth 10 costs nothing and covers ~10 s of a 1 Hz goal.
         self.node.create_subscription(PoseStamped, args.goal_topic, self.on_goal, 10)
+        # THE STOP INDEX, which arrives reliably where the goal stream does not (see _stops).  The goal for
+        # each stop is derived from this index and the world file, so the lossy hop stops mattering.
+        self.node.create_subscription(Int32, args.stop_topic, self.on_stop_index, 10)
         self.node.create_subscription(Odometry, args.odom_topic, self.on_odom, sensor)
 
         self.bspline = None
@@ -441,9 +444,75 @@ class EgoAdapter:
               % (args.footprint, args.start_max, "on", args.roundtrip_mm))
 
     # ---------------------------------------------------------------- goal W -> L
+    def _stops(self):
+        """The mission's stop list, from the SAME world file the sequencer and the sensor use.
+
+        Why the adapter needs it: the sequencer -> adapter goal hop was MEASURED to lose most of its messages
+        in every QoS setting tried (2026-10-14: 42 published -> 16 received VOLATILE depth 1, -> 6 depth 10,
+        -> 9 TRANSIENT_LOCAL), while the small /mission/stop index message arrives reliably (the FSM has been
+        driven by it for many sorties).  So the goal is derived HERE from the index plus this list, and the
+        world file stays the single source of truth for the geometry -- the same rule the rest of the project
+        follows.
+        """
+        if getattr(self, "_stops_cache", None) is None:
+            try:
+                import importlib.util
+                p = os.path.join(HERE, "..", "tools", "world-circle.py")
+                spec = importlib.util.spec_from_file_location("world_circle_adapter", p)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                self._stops_cache = mod.commanded_points(self.args.world)
+                print("ego_adapter: %d stops read from %s -- the goal is derived from the stop index"
+                      % (len(self._stops_cache), os.path.basename(self.args.world)), flush=True)
+            except Exception as exc:                                  # noqa: BLE001
+                print("ego_adapter: could not read the stop list (%s) -- falling back to /goal_pose only"
+                      % exc, flush=True)
+                self._stops_cache = []
+        return self._stops_cache
+
+    def on_stop_index(self, msg):
+        """Remember the stop index; the goal is forwarded once the vehicle is airborne (see tick)."""
+        i = int(msg.data)
+        if i < 0:
+            self.last_stop_index = -1
+            return
+        stops = self._stops()
+        if not stops or i >= len(stops) or i == getattr(self, "last_stop_index", None):
+            return
+        # NOT YET: the index is published from the first tick, while the vehicle is still on the ground, and a
+        # goal sent then is planned from the pad and dropped by the time the FSM starts following.  MEASURED
+        # (sortie AL1): "ABORT: no new trajectory ... after 0 trajectories (sequencer at stop 1)" with stop 1
+        # missed by 4.008 m.  The sequencer applies the same rule for the same reason ("holding the first stop
+        # until the vehicle is above 1.40 m ... a goal sent from the ground puts the planner into GEN_NEW_TRAJ
+        # for good"); this is that rule on the adapter's side, and it needs no new message.
+        self.pending_index = i
+        if self.odom_l is not None and float(self.odom_l[2]) >= self.args.goal_min_alt:
+            self._forward_index_goal()
+
+    def _forward_index_goal(self):
+        i = getattr(self, "pending_index", None)
+        if i is None:
+            return
+        stops = self._stops()
+        if not stops or i >= len(stops):
+            return
+        self.pending_index = None
+        self.last_stop_index = i
+        p_w = np.asarray(stops[i], dtype=float)
+        self.n_goal_from_index = getattr(self, "n_goal_from_index", 0) + 1
+        print("ego_adapter: goal from stop index %d/%d: W[%+.4f %+.4f %+.4f] (vehicle at %.2f m)"
+              % (i + 1, len(stops), p_w[0], p_w[1], p_w[2],
+                 float(self.odom_l[2]) if self.odom_l is not None else float("nan")), flush=True)
+        self._goal_src = "stop index %d/%d + the world file" % (i + 1, len(stops))
+        self._forward_goal(p_w)
+
     def on_goal(self, msg):
         p_w = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
         self.n_goal_in += 1
+        self._goal_src = "the %s frame '%s'" % (self.args.goal_topic, msg.header.frame_id)
+        self._forward_goal(p_w)
+
+    def _forward_goal(self, p_w):
         # A goal forwarded before the planner has ever seen an odometry drives its FSM from INIT into
         # REPLAN_TRAJ, which evaluates a B-spline that does not exist yet.  MEASURED 2026-10-14: the
         # node segfaulted 7 s after start, the instant the first goal arrived.  patches/0002 makes the
@@ -489,9 +558,9 @@ class EgoAdapter:
         self.goal_pub.publish(out)
         self.goal_l, self.goal_w = p_l, p_w
         self.n_goal_out += 1
-        print("ego_adapter: goal  W[%+.4f %+.4f %+.4f] (in frame '%s') -> L[%+.4f %+.4f %+.4f]"
+        print("ego_adapter: goal  W[%+.4f %+.4f %+.4f] (from %s) -> L[%+.4f %+.4f %+.4f]"
               "  round trip %.6f mm"
-              % (p_w[0], p_w[1], p_w[2], msg.header.frame_id,
+              % (p_w[0], p_w[1], p_w[2], self._goal_src,
                  p_l[0], p_l[1], p_l[2], err_mm), flush=True)
 
     def maybe_auto_goal(self):
@@ -787,6 +856,9 @@ class EgoAdapter:
             m.pose.orientation.w = 1.0
             self.goal_pub.publish(m)
             self.n_reforward = getattr(self, "n_reforward", 0) + 1
+        if getattr(self, "pending_index", None) is not None and self.odom_l is not None \
+                and float(self.odom_l[2]) >= self.args.goal_min_alt:
+            self._forward_index_goal()          # the stop's goal, once the vehicle is airborne
         if now - getattr(self, "_last_status", 0.0) >= 5.0:
             self._last_status = now
             print("ego_adapter STATUS: goals in %d, forwarded %d, dedup %d, deferred %d, rejected %d | "
@@ -849,6 +921,17 @@ def main():
                          "(MEASURED: F1 withheld one plan ~250 times over 50 s while the aircraft hovered)")
     ap.add_argument("--stall-s", type=float, default=2.0,
                     help="how long the same trajectory must be withheld before it counts as a stall, s")
+    ap.add_argument("--stop-topic", default="/mission/stop",
+                    help="std_msgs/Int32: the mission's current stop index (0-based, -1 = done).  The goal for "
+                         "each stop is derived from this index plus the world file's stop list, because the "
+                         "sequencer -> adapter goal hop was MEASURED to lose most of its messages in every QoS "
+                         "setting (2026-10-14: 42 published -> 16 / 6 / 9 received for VOLATILE depth 1 / "
+                         "depth 10 / TRANSIENT_LOCAL) while this small index message arrives reliably")
+    ap.add_argument("--goal-min-alt", type=float, default=1.40,
+                    help="do not forward a stop's goal until the vehicle is this high (m, in L).  MEASURED "
+                         "(sortie AL1): forwarding it from the ground gave \"no new trajectory ... after 0 "
+                         "trajectories (sequencer at stop 1)\" with stop 1 missed by 4.008 m; the sequencer "
+                         "applies the same rule for the same reason")
     ap.add_argument("--reforward-hz", type=float, default=1.0,
                     help="re-publish the last goal to the planner at this rate (0 = off).  MEASURED "
                          "2026-10-14: sequencer->adapter loses 75-85 %% of the goals (Y1: 42 published, 12 "
