@@ -1,0 +1,1032 @@
+diff --git a/src/planner/plan_manage/include/ego_planner/ego_replan_fsm.h b/src/planner/plan_manage/include/ego_planner/ego_replan_fsm.h
+index ed91462..70f36b3 100755
+--- a/src/planner/plan_manage/include/ego_planner/ego_replan_fsm.h
++++ b/src/planner/plan_manage/include/ego_planner/ego_replan_fsm.h
+@@ -1,142 +1,185 @@
+-#ifndef _REBO_REPLAN_FSM_H_
+-#define _REBO_REPLAN_FSM_H_
+-
+-#include <Eigen/Eigen>
+-#include <algorithm>
+-#include <iostream>
+-#include "nav_msgs/msg/path.hpp"
+-#include "nav_msgs/msg/odometry.hpp"
+-#include "sensor_msgs/msg/imu.hpp"
+-#include "rclcpp/rclcpp.hpp"
+-#include "std_msgs/msg/empty.hpp"
+-#include <vector>
+-#include "visualization_msgs/msg/marker.hpp"
+-
+-#include "bspline_opt/bspline_optimizer.h"
+-#include "plan_env/grid_map.h"
+-#include "traj_utils/msg/bspline.hpp"
+-#include "traj_utils/msg/multi_bsplines.hpp"
+-#include "geometry_msgs/msg/pose_stamped.hpp"
+-#include "traj_utils/msg/data_disp.hpp"
+-#include "ego_planner/planner_manager.h"
+-#include "traj_utils/planning_visualization.h"
+-
+-using std::vector;
+-
+-namespace ego_planner
+-{
+-
+-  class EGOReplanFSM
+-  {
+-
+-  private:
+-    /* ---------- flag ---------- */
+-    enum FSM_EXEC_STATE
+-    {
+-      INIT,
+-      WAIT_TARGET,
+-      GEN_NEW_TRAJ,
+-      REPLAN_TRAJ,
+-      EXEC_TRAJ,
+-      EMERGENCY_STOP,
+-      SEQUENTIAL_START
+-    };
+-    enum TARGET_TYPE
+-    {
+-      MANUAL_TARGET = 1,
+-      PRESET_TARGET = 2,
+-      REFENCE_PATH = 3
+-    };
+-
+-    /* planning utils */
+-    EGOPlannerManager::Ptr planner_manager_;
+-    PlanningVisualization::Ptr visualization_;
+-    traj_utils::msg::DataDisp data_disp_;
+-    traj_utils::msg::MultiBsplines multi_bspline_msgs_buf_;
+-
+-    /* parameters */
+-    int target_type_; // 1 mannual select, 2 hard code
+-    double no_replan_thresh_, replan_thresh_;
+-    double waypoints_[50][3];
+-    int waypoint_num_, wp_id_;
+-    double planning_horizen_, planning_horizen_time_;
+-    double emergency_time_;
+-    bool flag_realworld_experiment_;
+-    bool enable_fail_safe_;
+-
+-    /* planning data */
+-    bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_;
+-    FSM_EXEC_STATE exec_state_;
+-    int continously_called_times_{0};
+-
+-    Eigen::Vector3d odom_pos_, odom_vel_, odom_acc_; // odometry state
+-    Eigen::Quaterniond odom_orient_;
+-
+-    Eigen::Vector3d init_pt_, start_pt_, start_vel_, start_acc_, start_yaw_; // start state
+-    Eigen::Vector3d end_pt_, end_vel_;                                       // goal state
+-    Eigen::Vector3d local_target_pt_, local_target_vel_;                     // local target state
+-    std::vector<Eigen::Vector3d> wps_;
+-    int current_wp_;
+-
+-    bool flag_escape_emergency_;
+-
+-    /* ROS utils */
+-    rclcpp::Node::SharedPtr node_;
+-    rclcpp::TimerBase::SharedPtr exec_timer_, safety_timer_;
+-
+-    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr waypoint_sub_;
+-    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+-    rclcpp::Subscription<traj_utils::msg::MultiBsplines>::SharedPtr swarm_trajs_sub_;
+-    rclcpp::Subscription<traj_utils::msg::Bspline>::SharedPtr broadcast_bspline_sub_;
+-    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr trigger_sub_;
+-
+-    // rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr replan_pub_;
+-    // rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr new_pub_;
+-    rclcpp::Publisher<traj_utils::msg::Bspline>::SharedPtr bspline_pub_;
+-    rclcpp::Publisher<traj_utils::msg::DataDisp>::SharedPtr data_disp_pub_;
+-    rclcpp::Publisher<traj_utils::msg::MultiBsplines>::SharedPtr swarm_trajs_pub_;
+-    rclcpp::Publisher<traj_utils::msg::Bspline>::SharedPtr broadcast_bspline_pub_;
+-
+-    /* helper functions */
+-    bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj); // front-end and back-end method
+-    bool callEmergencyStop(Eigen::Vector3d stop_pos);                          // front-end and back-end method
+-    bool planFromGlobalTraj(const int trial_times = 1);
+-    bool planFromCurrentTraj(const int trial_times = 1);
+-
+-    /* return value: std::pair< Times of the same state be continuously called, current continuously called state > */
+-    void changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call);
+-    std::pair<int, EGOReplanFSM::FSM_EXEC_STATE> timesOfConsecutiveStateCalls();
+-    void printFSMExecState();
+-
+-    void readGivenWps();
+-    void planNextWaypoint(const Eigen::Vector3d next_wp);
+-    void getLocalTarget();
+-
+-    /* ROS functions */
+-    void execFSMCallback();
+-    void checkCollisionCallback();
+-    void waypointCallback(const std::shared_ptr<const geometry_msgs::msg::PoseStamped> &msg);
+-    void triggerCallback(const std::shared_ptr<const geometry_msgs::msg::PoseStamped> &msg);
+-    void odometryCallback(const std::shared_ptr<const nav_msgs::msg::Odometry> &msg);
+-    void swarmTrajsCallback(const std::shared_ptr<const traj_utils::msg::MultiBsplines> &msg);
+-    void BroadcastBsplineCallback(const std::shared_ptr<const traj_utils::msg::Bspline> &msg);
+-
+-    bool checkCollision();
+-    void publishSwarmTrajs(bool startup_pub);
+-
+-  public:
+-    EGOReplanFSM(/* args */)
+-    {
+-    }
+-    ~EGOReplanFSM()
+-    {
+-    }
+-
+-    void init(rclcpp::Node::SharedPtr &node);
+-
+-    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
+-  };
+-
+-} // namespace ego_planner
+-
++#ifndef _REBO_REPLAN_FSM_H_
++#define _REBO_REPLAN_FSM_H_
++
++#include <Eigen/Eigen>
++#include <algorithm>
++#include <iostream>
++#include "nav_msgs/msg/path.hpp"
++#include "nav_msgs/msg/odometry.hpp"
++#include "sensor_msgs/msg/imu.hpp"
++#include "rclcpp/rclcpp.hpp"
++#include "std_msgs/msg/empty.hpp"
++// PATCH 0008 (patches/0008-ego-waypoint-sequence.patch): the stop index is published.
++#include "std_msgs/msg/int32.hpp"
++#include <vector>
++#include "visualization_msgs/msg/marker.hpp"
++
++#include "bspline_opt/bspline_optimizer.h"
++#include "plan_env/grid_map.h"
++#include "traj_utils/msg/bspline.hpp"
++#include "traj_utils/msg/multi_bsplines.hpp"
++#include "geometry_msgs/msg/pose_stamped.hpp"
++#include "traj_utils/msg/data_disp.hpp"
++#include "ego_planner/planner_manager.h"
++#include "traj_utils/planning_visualization.h"
++
++using std::vector;
++
++namespace ego_planner
++{
++
++  class EGOReplanFSM
++  {
++
++  private:
++    /* ---------- flag ---------- */
++    enum FSM_EXEC_STATE
++    {
++      INIT,
++      WAIT_TARGET,
++      GEN_NEW_TRAJ,
++      REPLAN_TRAJ,
++      EXEC_TRAJ,
++      EMERGENCY_STOP,
++      SEQUENTIAL_START
++    };
++    enum TARGET_TYPE
++    {
++      MANUAL_TARGET = 1,
++      PRESET_TARGET = 2,
++      REFENCE_PATH = 3
++    };
++
++    /* planning utils */
++    EGOPlannerManager::Ptr planner_manager_;
++    PlanningVisualization::Ptr visualization_;
++    traj_utils::msg::DataDisp data_disp_;
++    traj_utils::msg::MultiBsplines multi_bspline_msgs_buf_;
++
++    /* parameters */
++    int target_type_; // 1 mannual select, 2 hard code
++    double no_replan_thresh_, replan_thresh_;
++    double waypoints_[50][3];
++    int waypoint_num_, wp_id_;
++    // PATCH 0008 (patches/0008-ego-waypoint-sequence.patch): THE WAYPOINT SEQUENCE IS EGO'S OWN, with the
++    // three things upstream's version lacks for our missions and one thing it never had:
++    //   waypoint_advance_m_  an EXPLICIT advance tolerance (upstream reuses no_replan_thresh_, which is also
++    //                        the replan-suppression threshold; MEASURED AO2: the aircraft settled 0.273 m
++    //                        from the commanded stop, so a 0.15 m rule never advances);
++    //   waypoint_dwell_s_    hover this long at a waypoint before advancing (the diagonal mission hovers
++    //                        10 s at (-5,-5); upstream's tour is continuous and cannot express a dwell);
++    //   waypoint_loop_       false = after the LAST waypoint the tour is DONE (upstream loops to 0 for ever,
++    //                        which no mission can observe as "finished");
++    //   wp_index_pub_        the index is PUBLISHED, so the scoring layer observes the sequence instead of
++    //                        driving it -- nothing outside ego can run ahead of the vehicle any more.
++    double waypoint_advance_m_;
++    double waypoint_dwell_s_[50];
++    bool waypoint_loop_;
++    // PATCH 0008, START-ALTITUDE GATE (patches/0008-ego-waypoint-sequence.patch).  MEASURED earlier: ego
++    // asked to plan its FIRST trajectory while the vehicle was still on the pad answered GEN_NEW_TRAJ for
++    // ever -- 599 replans, 0 successes, and the sortie had to be killed (the external sequencer worked
++    // around it by delaying the first goal until odom z >= max_stop_z - 0.60 = 1.28 m).  With
++    // flight_type 2 the tour starts in THIS constructor, so the workaround has to live here:
++    //   waypoint_start_alt_  > 0 = do not plan the first waypoint at construction; arm the tour from the
++    //                        FSM loop once odom_pos_.z() >= waypoint_start_alt_ (-1.0 = disabled = the
++    //                        behaviour every patch-0008 sortie has flown so far);
++    //   waypoint_armed_      the gate fired and the FIRST waypoint has been planned at altitude, so the
++    //                        arming branch can never run twice.
++    double waypoint_start_alt_;
++    bool waypoint_armed_;
++    bool waypoint_arrived_;
++    int waypoint_done_;
++    rclcpp::Time waypoint_arrive_time_;
++    rclcpp::Time wp_index_pub_time_;
++    rclcpp::Time waypoint_advance_log_time_;     // PATCH 0010: 1 Hz for the TOUR-ADVANCE diagnostic
++    rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr wp_index_pub_;
++    double planning_horizen_, planning_horizen_time_;
++    double emergency_time_;
++    bool flag_realworld_experiment_;
++    bool enable_fail_safe_;
++
++    /* planning data */
++    bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_;
++    FSM_EXEC_STATE exec_state_;
++    int continously_called_times_{0};
++
++    Eigen::Vector3d odom_pos_, odom_vel_, odom_acc_; // odometry state
++    Eigen::Quaterniond odom_orient_;
++
++    Eigen::Vector3d init_pt_, start_pt_, start_vel_, start_acc_, start_yaw_; // start state
++    Eigen::Vector3d end_pt_, end_vel_;                                       // goal state
++    Eigen::Vector3d local_target_pt_, local_target_vel_;                     // local target state
++    std::vector<Eigen::Vector3d> wps_;
++    int current_wp_;
++
++    bool flag_escape_emergency_;
++
++    /* ROS utils */
++    rclcpp::Node::SharedPtr node_;
++    rclcpp::TimerBase::SharedPtr exec_timer_, safety_timer_;
++
++    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr waypoint_sub_;
++    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
++    rclcpp::Subscription<traj_utils::msg::MultiBsplines>::SharedPtr swarm_trajs_sub_;
++    rclcpp::Subscription<traj_utils::msg::Bspline>::SharedPtr broadcast_bspline_sub_;
++    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr trigger_sub_;
++
++    // rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr replan_pub_;
++    // rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr new_pub_;
++    rclcpp::Publisher<traj_utils::msg::Bspline>::SharedPtr bspline_pub_;
++    rclcpp::Publisher<traj_utils::msg::DataDisp>::SharedPtr data_disp_pub_;
++    rclcpp::Publisher<traj_utils::msg::MultiBsplines>::SharedPtr swarm_trajs_pub_;
++    rclcpp::Publisher<traj_utils::msg::Bspline>::SharedPtr broadcast_bspline_pub_;
++
++    /* helper functions */
++    bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj); // front-end and back-end method
++    bool callEmergencyStop(Eigen::Vector3d stop_pos);                          // front-end and back-end method
++    bool planFromGlobalTraj(const int trial_times = 1);
++    bool planFromCurrentTraj(const int trial_times = 1);
++
++    /* return value: std::pair< Times of the same state be continuously called, current continuously called state > */
++    void changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call);
++    std::pair<int, EGOReplanFSM::FSM_EXEC_STATE> timesOfConsecutiveStateCalls();
++    void printFSMExecState();
++
++    void readGivenWps();
++    // PATCH 0012: returns FALSE when the global plan failed, so a caller can refuse to
++    // advance the tour (the function already computes `success`; upstream throws the
++    // answer away).
++    bool planNextWaypoint(const Eigen::Vector3d next_wp);
++    // PATCH 0008, START-ALTITUDE GATE: start the tour from the FSM loop, with the same two flags and the
++    // same log line the zero-altitude path prints (so the gate is visible in the log, not inferred).
++    void armTour();
++    void getLocalTarget();
++
++    /* ROS functions */
++    void execFSMCallback();
++    void checkCollisionCallback();
++    void waypointCallback(const std::shared_ptr<const geometry_msgs::msg::PoseStamped> &msg);
++
++    // PATCH 0008: publish which waypoint the mission is on (-1 = the tour is finished).
++    void publishWaypointIndex();
++    void triggerCallback(const std::shared_ptr<const geometry_msgs::msg::PoseStamped> &msg);
++    void odometryCallback(const std::shared_ptr<const nav_msgs::msg::Odometry> &msg);
++    void swarmTrajsCallback(const std::shared_ptr<const traj_utils::msg::MultiBsplines> &msg);
++    void BroadcastBsplineCallback(const std::shared_ptr<const traj_utils::msg::Bspline> &msg);
++
++    bool checkCollision();
++    void publishSwarmTrajs(bool startup_pub);
++
++  public:
++    EGOReplanFSM(/* args */)
++    {
++    }
++    ~EGOReplanFSM()
++    {
++    }
++
++    void init(rclcpp::Node::SharedPtr &node);
++
++    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
++  };
++
++} // namespace ego_planner
++
+ #endif
+\ No newline at end of file
+diff --git a/src/planner/plan_manage/src/ego_replan_fsm.cpp b/src/planner/plan_manage/src/ego_replan_fsm.cpp
+index 78d5eee..8f077ca 100755
+--- a/src/planner/plan_manage/src/ego_replan_fsm.cpp
++++ b/src/planner/plan_manage/src/ego_replan_fsm.cpp
+@@ -48,6 +48,41 @@ namespace ego_planner
+       node_->get_parameter("fsm/waypoint" + to_string(i) + "_z", waypoints_[i][2]);
+     }
+ 
++    /* PATCH 0008: advance rule, dwell and end-of-tour for the waypoint sequence. */
++    node_->declare_parameter("fsm/waypoint_advance_m", -1.0);
++    node_->get_parameter("fsm/waypoint_advance_m", waypoint_advance_m_);
++    if (waypoint_advance_m_ <= 0.0)
++      waypoint_advance_m_ = no_replan_thresh_;            // upstream's rule when unset
++    node_->declare_parameter("fsm/waypoint_loop", false);
++    node_->get_parameter("fsm/waypoint_loop", waypoint_loop_);
++    /* PATCH 0008, START-ALTITUDE GATE: never plan the first waypoint from the pad (see the .h comment). */
++    node_->declare_parameter("fsm/waypoint_start_alt", -1.0);
++    node_->get_parameter("fsm/waypoint_start_alt", waypoint_start_alt_);
++    waypoint_armed_ = false;
++    for (int i = 0; i < 50; i++)
++      waypoint_dwell_s_[i] = 0.0;
++    for (int i = 0; i < waypoint_num_ && i < 50; i++)
++    {
++      node_->declare_parameter("fsm/waypoint" + to_string(i) + "_dwell_s", 0.0);
++      node_->get_parameter("fsm/waypoint" + to_string(i) + "_dwell_s", waypoint_dwell_s_[i]);
++    }
++    waypoint_arrived_ = false;
++    waypoint_done_ = 0;
++    // PATCH 0012 (cleanup of 0011): ONE CLOCK SOURCE, THIRD SITE.  patch 0011 converted
++    // wp_index_pub_time_/waypoint_advance_log_time_ but left this one assigning node_->now()
++    // (RCL_ROS_TIME, source 1) while BOTH subtractions use rclcpp::Clock().now() (RCL_SYSTEM_TIME,
++    // source 2) -- it does not throw today only because each subtraction is immediately preceded by an
++    // assignment from time_now (eg. `waypoint_arrive_time_ = time_now;`), so the mismatched value is
++    // overwritten before it is read.  That is a latent `can't subtract times with different time
++    // sources [2 != 1]` abort (the AP1/AP3/AP4 class) on any refactor that removes the reassignment.
++    waypoint_arrive_time_ = rclcpp::Clock().now();
++    wp_index_pub_time_ = rclcpp::Clock().now();
++    waypoint_advance_log_time_ = rclcpp::Clock().now();   // PATCH 0010
++    wp_index_pub_ = node_->create_publisher<std_msgs::msg::Int32>("wp_index", 10);
++    RCLCPP_INFO(node_->get_logger(),
++                "WP-INDEX: sequence armed: %d waypoints, advance %.3f m, loop %d",
++                waypoint_num_, waypoint_advance_m_, (int)waypoint_loop_);
++
+     /* initialize main modules */
+     visualization_.reset(new PlanningVisualization(node_));
+ 
+@@ -180,14 +215,103 @@ namespace ego_planner
+ 
+     // plan first global waypoint
+     wp_id_ = 0;
+-    planNextWaypoint(wps_[wp_id_]);
++    /* PATCH 0008, START-ALTITUDE GATE (patches/0008-ego-waypoint-sequence.patch).  MEASURED earlier: a
++     * first trajectory planned while the vehicle is still on the pad leaves ego in GEN_NEW_TRAJ with 599
++     * replans and 0 successes (the sortie was killed), which is why the external sequencer used to delay
++     * its first goal until odom z >= max_stop_z - 0.60 = 1.28 m.  With flight_type 2 the tour starts HERE,
++     * so the gate has to be here too: with fsm/waypoint_start_alt > 0 the tour is armed by the FSM loop
++     * instead (armTour(), from case WAIT_TARGET), and this line is the ONLY thing that changes --
++     * flight_type 1 (MANUAL) never reaches it, so that behaviour stays byte-identical. */
++    if (target_type_ == TARGET_TYPE::PRESET_TARGET && waypoint_start_alt_ > 0.0)
++    {
++      RCLCPP_INFO(node_->get_logger(),
++                  "WP-INDEX: start-altitude gate ON (%.2f m): the tour is NOT armed here -- ego waits for "
++                  "the vehicle to leave the pad, odom z=%.2f m now",
++                  waypoint_start_alt_, odom_pos_.z());
++    }
++    else
++    {
++      planNextWaypoint(wps_[wp_id_]);
++    }
++  }
++
++  void EGOReplanFSM::armTour()
++  {
++    // PATCH 0008, START-ALTITUDE GATE: the SAME two flags construct-time planNextWaypoint() would set
++    // (have_target_ + have_new_target_, both inside planNextWaypoint), set at altitude instead of on the
++    // pad.  have_odom_/have_trigger_ are the conditions that held for the constructor to have reached its
++    // last line at all, so the FSM is left in exactly the state it would have been in; triggerCallback()
++    // additionally records the take-off point, and this is the same moment.
++    waypoint_armed_ = true;
++    init_pt_ = odom_pos_;
++    RCLCPP_INFO(node_->get_logger(),
++                "WP-INDEX: sequence armed, starting the tour at z=%.2f m (gate %.2f m, %d waypoints)",
++                odom_pos_.z(), waypoint_start_alt_, waypoint_num_);
++    // PATCH 0012 (cleanup of 0008): THE TARGET FLAGS MUST NOT OUTLIVE A FAILED FIRST PLAN.
++    // 0008 set have_target_/have_new_target_/have_trigger_ FIRST and then called planNextWaypoint, which on
++    // failure returns without setting end_pt_ or GlobalTrajData (default-constructed; filled only by
++    // setGlobalTraj on success) -- the FSM is then armed with a target that does not exist and
++    // getLocalTarget() runs on indeterminate globals.  Arm the flags only when the leg exists.
++    if (!planNextWaypoint(wps_[wp_id_]))
++    {
++      have_target_ = false;
++      have_new_target_ = false;
++      have_trigger_ = false;
++      waypoint_armed_ = false;
++      RCLCPP_ERROR(node_->get_logger(),
++                   "TOUR-STALL: the tour could NOT be armed: the GLOBAL plan to waypoint 0 of %d failed -- the "
++                   "target flags are left CLEAR (an armed FSM with no end_pt_ and no global trajectory is how "
++                   "the tour gets stuck with nothing in the log)", waypoint_num_);
++      return;
++    }
++    have_target_ = true;
++    have_new_target_ = true;
++    have_trigger_ = true;
+   }
+ 
+-  void EGOReplanFSM::planNextWaypoint(const Eigen::Vector3d next_wp)
++  void EGOReplanFSM::publishWaypointIndex()
++  {
++    // PATCH 0011: ONE CLOCK SOURCE.  This function stores a time that the EXEC_TRAJ tick subtracts from
++    // `rclcpp::Clock().now()`.  MEASURED sorties AP1/AP3/AP4: with `node_->now()` (RCL_ROS_TIME, source 1) on
++    // one side and `rclcpp::Clock()` (RCL_SYSTEM_TIME, source 2) on the other, the node threw on its FIRST
++    // tick in EXEC_TRAJ --
++    //     terminate called after throwing an instance of 'std::runtime_error'
++    //       what():  can't subtract times with different time sources [2 != 1]
++    //     [ros2run]: Aborted
++    // -- i.e. ego committed exactly one trajectory and then died, which is why `WP-INDEX` never advanced,
++    // why no TOUR-ADVANCE line and no "GLOBAL plan FAILED" line ever appeared (a dead node prints nothing),
++    // and why the consumer aborted 60 s later on a stale plan.  The same clock as the consumer side: system.
++
++    // PATCH 0008: the stop the mission is actually on, PUBLISHED rather than inferred.  -1 = finished.
++    std_msgs::msg::Int32 msg;
++    msg.data = (waypoint_done_ == 1) ? -1 : wp_id_;
++    wp_index_pub_->publish(msg);
++    wp_index_pub_time_ = rclcpp::Clock().now();
++    const int safe_id = (wp_id_ >= 0 && wp_id_ < 50) ? wp_id_ : 0;
++    RCLCPP_INFO(node_->get_logger(), "WP-INDEX: %d of %d (dwell %.1f s, done %d, have_target %d)",
++                msg.data, waypoint_num_, waypoint_dwell_s_[safe_id], waypoint_done_, (int)have_target_);
++  }
++
++  bool EGOReplanFSM::planNextWaypoint(const Eigen::Vector3d next_wp)
+   {
+     bool success = false;
+     success = planner_manager_->planGlobalTraj(odom_pos_, odom_vel_, Eigen::Vector3d::Zero(), next_wp, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+ 
++    if (!success)
++    {
++      // PATCH 0010: A GLOBAL PLAN THAT FAILED MUST NOT BE SILENT.  Upstream falls through here with no else,
++      // no log and no state change, so the FSM keeps the OLD target -- the waypoint it has already reached --
++      // and the whole tour stops with nothing in the log to say why (MEASURED AP1/AP3: one committed spline
++      // for the whole sortie, then ABORT at t = 81 s with the consumer complaining about a stale plan).
++      RCLCPP_ERROR(node_->get_logger(),
++                   "PLANNER-STALL: planNextWaypoint: the GLOBAL plan FAILED for waypoint %d/%d "
++                   "(odom [%.2f %.2f %.2f] -> wp [%.2f %.2f %.2f], %.2f m apart): the target is left "
++                   "unchanged, so the tour cannot advance",
++                   wp_id_, waypoint_num_, odom_pos_.x(), odom_pos_.y(), odom_pos_.z(),
++                   next_wp.x(), next_wp.y(), next_wp.z(), (odom_pos_ - next_wp).norm());
++      return false;                       // PATCH 0012: the caller must NOT advance the index on this
++    }
++
+     if (success)
+     {
+       end_pt_ = next_wp;
+@@ -209,11 +333,17 @@ namespace ego_planner
+         changeFSMExecState(GEN_NEW_TRAJ, "TRIG");
+       else
+       {
+-        while (exec_state_ != EXEC_TRAJ)
+-        {
+-          rclcpp::spin_some(node_);
+-          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+-        }
++        // PATCH B/3 (patches/0002-ego-planner-ros2-humble.patch).
++        // Upstream busy-waits here with
++        //     while (exec_state_ != EXEC_TRAJ) { rclcpp::spin_some(node_); sleep(1 ms); }
++        // which has two independent defects:
++        //   (a) rclcpp::spin_some(node_) adds a node that rclcpp::spin() in main() already owns to a
++        //       SECOND executor, which throws "Node '/ego_planner_node' has already been added to an
++        //       executor" and ABORTS the process.  Observed 2026-10-14: the node died ~1 s into the
++        //       run, on the second goal message.
++        //   (b) the wait could not have terminated on a single-threaded executor in any case: the
++        //       10 ms FSM timer that performs the EXEC_TRAJ transition runs on this very thread.
++        // Setting the state is what the wait was for; the normal FSM loop takes it from here.
+         changeFSMExecState(REPLAN_TRAJ, "TRIG");
+       }
+ 
+@@ -223,6 +353,7 @@ namespace ego_planner
+     {
+       RCLCPP_ERROR(node_->get_logger(), "Unable to generate global trajectory!");
+     }
++    return true;                          // PATCH 0012: the leg exists -- the caller may advance the index
+   }
+ 
+   void EGOReplanFSM::triggerCallback(const std::shared_ptr<const geometry_msgs::msg::PoseStamped> &msg)
+@@ -237,11 +368,68 @@ namespace ego_planner
+     if (msg->pose.position.z < -0.1)
+       return;
+ 
++    // PATCH C/3 (patches/0002-ego-planner-ros2-humble.patch).
++    // A waypoint that arrives before the first odometry drives the FSM from INIT straight to
++    // REPLAN_TRAJ, whose planFromCurrentTraj() evaluates `local_data_.position_traj_` -- a B-spline
++    // that has never been built, i.e. an empty control_points_ -- and SEGFAULTS.
++    // MEASURED 2026-10-14: the node died with "Segmentation fault" after logging "no odom." for 7 s,
++    // the moment the first goal arrived.  The goal is DROPPED rather than queued because every
++    // sender repeats it: planner/ego_adapter.py forwards /goal_pose at 1 Hz and does not forward the
++    // first one until it has seen odometry itself.
++    if (!have_odom_)
++    {
++      RCLCPP_WARN(node_->get_logger(),
++                  "waypoint ignored: no odometry yet (REPLAN_TRAJ with no trajectory segfaults)");
++      return;
++    }
++
+     cout << "Triggered!" << endl;
+ 
+     init_pt_ = odom_pos_;
+ 
+-    Eigen::Vector3d end_wp(msg->pose.position.x, msg->pose.position.y, 1.0);
++    // PATCH A/3 (patches/0002-ego-planner-ros2-humble.patch).
++    // Upstream DISCARDS the goal's altitude here and hard-codes z = 1.0 m, so a goal commanded at
++    // 2.0 m is planned to 1.0 m.  MEASURED 2026-10-14 with the unpatched node: the published path
++    // ended at W U = +1.1615 m for a goal commanded at U = +2.000 m.  A message with z <= 0 keeps
++    // the old 1.0 m default, so PRESET_TARGET behaviour is unchanged.
++    Eigen::Vector3d end_wp(msg->pose.position.x, msg->pose.position.y,
++                           msg->pose.position.z > 0.0 ? msg->pose.position.z : 1.0);
++
++    // PATCH I (patches/0005-ego-ignore-repeated-waypoint.patch): IGNORE A WAYPOINT ALREADY BEING PURSUED.
++    // MEASURED 2026-10-14 (sortie R1, the circle): the sender repeats the goal at 1 Hz, and every repeat
++    // rebuilt the GLOBAL trajectory and pushed this FSM into REPLAN_TRAJ -- 106 REPLAN_TRAJ->EXEC_TRAJ and
++    // 47 EXEC_TRAJ->REPLAN_TRAJ transitions, 145 committed trajectories at ~1 Hz whose start alternated
++    // between two pipelines, and a vehicle that never followed one plan long enough to move (the truth never
++    // left E <= 4.69 for the whole stall).  Suppressing the repeats is NOT the answer either: MEASURED
++    // (sortie S1) it left 6 committed trajectories and the aircraft stopped dead, because reaching a goal
++    // puts this FSM into WAIT_TARGET by design and only a new goal pulls it out.  So repeats must keep
++    // arriving and must be no-ops while the SAME goal is under pursuit; after an arrival have_target_ is
++    // false and the next repeat re-arms the FSM exactly as before.
++    // PATCH J (patches/0006-ego-goal-trace.patch): SAY WHAT HAPPENS TO EVERY GOAL THAT ARRIVES HERE.
++    // MEASURED 2026-10-14 (sortie AN1, the circle): the adapter delivered stop 2's goal (W 3.0887, 2.5416)
++    // -- its log line is "goal from stop index 2/12: W[+3.0887 +2.5416 +2.0000] (vehicle at 1.83 m)" -- and
++    // this FSM's target stayed on stop 1 (W 4.0, 0.0), 0.09 m from its own odometry, so upstream's
++    // "(start_pt - local_target_pt).norm() < 0.2 -> return false" rule refused to plan while the mission
++    // waited out its 60 s ("ABORT: no new trajectory on /planner/traj within 60 s ... (sequencer at stop 2)").
++    // Whether the goal is ignored below, or never reaches this callback, is the one thing this line settles.
++    RCLCPP_INFO(node_->get_logger(),
++                "GOAL-TRACE: waypoint [%.3f %.3f %.3f] have_target=%d have_odom=%d end_pt=[%.3f %.3f %.3f] "
++                "|end-new|=%.3f odom=[%.3f %.3f %.3f]",
++                end_wp(0), end_wp(1), end_wp(2), (int)have_target_, (int)have_odom_,
++                end_pt_(0), end_pt_(1), end_pt_(2), (end_wp - end_pt_).norm(),
++                odom_pos_(0), odom_pos_(1), odom_pos_(2));
++
++    if (have_target_ && (end_wp - end_pt_).norm() < 0.10)
++    {
++      static long same_goal_count = 0;
++      if ((same_goal_count++ % 50) == 0)
++      {
++        RCLCPP_INFO(node_->get_logger(),
++                    "WAYPOINT-REPEAT: ignoring a goal %.3f m from the one already being pursued (%ld times)",
++                    (end_wp - end_pt_).norm(), same_goal_count);
++      }
++      return;
++    }
+ 
+     planNextWaypoint(end_wp);
+   }
+@@ -472,8 +660,18 @@ namespace ego_planner
+       printFSMExecState();
+       if (!have_odom_)
+         cout << "no odom." << endl;
++      // PATCH 0008, START-ALTITUDE GATE: without this the 1 Hz heartbeat prints "wait for goal or
++      // trigger." for the whole climb, which is not what ego is waiting for (and there is no trigger
++      // process in this mission).  MEASURED earlier: that misleading half of the log is what made the
++      // pad-time planning failure of the AO-series sorties hard to read.
+       if (!have_target_)
+-        cout << "wait for goal or trigger." << endl;
++      {
++        if (target_type_ == TARGET_TYPE::PRESET_TARGET && waypoint_start_alt_ > 0.0 && !waypoint_armed_)
++          cout << "start-altitude gate: waiting for odom z >= " << waypoint_start_alt_ << " m (z="
++               << odom_pos_.z() << ")." << endl;
++        else
++          cout << "wait for goal or trigger." << endl;
++      }
+       fsm_num = 0;
+     }
+ 
+@@ -491,6 +689,16 @@ namespace ego_planner
+ 
+     case WAIT_TARGET:
+     {
++      /* PATCH 0008, START-ALTITUDE GATE: the tour is armed HERE for flight_type 2 when
++       * fsm/waypoint_start_alt > 0 -- i.e. once the vehicle has actually climbed off the pad, instead of
++       * in the constructor.  Placed before the trigger test on purpose: this gate IS the trigger, so
++       * have_trigger_ (still false at this point) must not send the FSM back to the top of the loop. */
++      if (target_type_ == TARGET_TYPE::PRESET_TARGET && waypoint_start_alt_ > 0.0 && !waypoint_armed_ &&
++          have_odom_ && odom_pos_.z() >= waypoint_start_alt_)
++      {
++        armTour();
++      }
++
+       if (!have_target_ || !have_trigger_)
+         goto force_return;
+       else
+@@ -531,15 +739,50 @@ namespace ego_planner
+     case GEN_NEW_TRAJ:
+     {
+ 
++      // PATCH F (patches/0003-ego-replan-escalation.patch) -- counter at case scope (see PATCH E).
++      static int consecutive_global_failures = 0;
++      // PATCH 0012 (cleanup of 0003): THE NUMBER PRINTED MUST BE THE NUMBER THAT ELAPSED.
++      // MEASURED sortie AP5-stations: this alarm gated on `consecutive_global_failures % 100` and printed
++      // `0.01 * consecutive_global_failures` as SECONDS, i.e. it assumed one failure per 10 ms FSM tick.  The
++      // audit counted ~45 consecutive global failures spread over ~19 s in AP5 (6083 log lines): the counter
++      // never reached 100 and "PLANNER-STALL: NO trajectory for" NEVER PRINTED while the planner was failing
++      // for tens of seconds.  The gate is now the CLOCK (1 Hz) and the number is measured from the first
++      // failure of the run of failures.
++      static rclcpp::Time global_fail_since(0, 0, RCL_SYSTEM_TIME);
++      static rclcpp::Time global_fail_log_time(0, 0, RCL_SYSTEM_TIME);
++
+       bool success = planFromGlobalTraj(10); // zx-todo
+       if (success)
+       {
++        consecutive_global_failures = 0;
+         changeFSMExecState(EXEC_TRAJ, "FSM");
+         flag_escape_emergency_ = true;
+         publishSwarmTrajs(false);
+       }
+       else
+       {
++        // PATCH F (patches/0003-ego-replan-escalation.patch): this failure path is silent upstream too.  A
++        // global replan that keeps failing is the END OF THE LINE -- no state below it produces a trajectory
++        // -- so it is the one place that must be loud: after 1 s of consecutive failures the log says so every
++        // second, with the target and the odometry position.  The vehicle keeps hovering, which is the safe
++        // behaviour (our FSM flies only plans that passed the 0.20 m clearance gate).
++        consecutive_global_failures++;
++        const rclcpp::Time global_fail_now = rclcpp::Clock().now();
++        if (consecutive_global_failures == 1)
++        {
++          global_fail_since = global_fail_now;
++          global_fail_log_time = global_fail_now;
++        }
++        else if ((global_fail_now - global_fail_log_time).seconds() >= 1.0)
++        {
++          global_fail_log_time = global_fail_now;
++          RCLCPP_ERROR(node_->get_logger(),
++                       "PLANNER-STALL: NO trajectory for %.1f s (%d consecutive global replan failures in "
++                       "%.1f s of FSM time; target [%.2f %.2f %.2f], odom [%.2f %.2f %.2f])",
++                       (global_fail_now - global_fail_since).seconds(), consecutive_global_failures,
++                       (global_fail_now - global_fail_since).seconds(),
++                       end_pt_(0), end_pt_(1), end_pt_(2), odom_pos_(0), odom_pos_(1), odom_pos_(2));
++        }
+         changeFSMExecState(GEN_NEW_TRAJ, "FSM");
+       }
+       break;
+@@ -548,14 +791,48 @@ namespace ego_planner
+     case REPLAN_TRAJ:
+     {
+ 
++      // PATCH E (patches/0003-ego-replan-escalation.patch) -- the counter lives at CASE scope, not inside
++      // the failure branch, because the success branch resets it (declaring it inside `else` does not
++      // compile: MEASURED 21:03, "error: 'consecutive_replan_failures' was not declared in this scope").
++      static int consecutive_replan_failures = 0;
++
+       if (planFromCurrentTraj(1))
+       {
++        consecutive_replan_failures = 0;
+         changeFSMExecState(EXEC_TRAJ, "FSM");
+         publishSwarmTrajs(false);
+       }
+       else
+       {
+-        changeFSMExecState(REPLAN_TRAJ, "FSM");
++        // PATCH E (patches/0003-ego-replan-escalation.patch).
++        // UPSTREAM RETRIES THIS STATE FOREVER AND SILENTLY: on failure it just calls
++        // changeFSMExecState(REPLAN_TRAJ, ...) again.  MEASURED 2026-10-14 (sortie F1): ego's own log holds
++        // 5031 consecutive "from REPLAN_TRAJ to REPLAN_TRAJ" lines, and this callback runs every 10 ms
++        // (ego_replan_fsm.cpp:62), so the planner spent 50.3 s failing to produce a trajectory while the
++        // aircraft hovered, the adapter refused the one stale plan ~600 times, and the mission lost its first
++        // stop to the sequencer's 60 s timeout.  Nothing in the log said the planner was stuck.
++        // Now: every 20th consecutive failure is an ERROR, and 1 s of consecutive failures escalates to a
++        // GLOBAL replan, which starts from the ODOMETRY state (planGlobalTraj(odom_pos_, odom_vel_, ...))
++        // instead of from the tail of an expired local spline -- the escape hatch this state never took.
++        // `static` because there is exactly one EGOReplanFSM per node; a member would mean patching the header.
++        consecutive_replan_failures++;
++        if ((consecutive_replan_failures % 20) == 0)
++        {
++          RCLCPP_ERROR(node_->get_logger(),
++                       "PLANNER-STALL: local replan failed %d times in a row (%.1f s at the 10 ms FSM tick)",
++                       consecutive_replan_failures, 0.01 * consecutive_replan_failures);
++        }
++        if (consecutive_replan_failures >= 100)
++        {
++          consecutive_replan_failures = 0;
++          RCLCPP_WARN(node_->get_logger(),
++                      "PLANNER-STALL: escalating to a GLOBAL replan (GEN_NEW_TRAJ) after 1 s of local failures");
++          changeFSMExecState(GEN_NEW_TRAJ, "FSM");
++        }
++        else
++        {
++          changeFSMExecState(REPLAN_TRAJ, "FSM");
++        }
+       }
+ 
+       break;
+@@ -571,25 +848,175 @@ namespace ego_planner
+ 
+       Eigen::Vector3d pos = info->position_traj_.evaluateDeBoorT(t_cur);
+ 
++      // PATCH 0008: keep the stop index observable at 1 Hz (a late subscriber then sees the real index
++      // instead of guessing it).
++      if (target_type_ == TARGET_TYPE::PRESET_TARGET &&
++          (time_now - wp_index_pub_time_).seconds() >= 1.0)
++      {
++        publishWaypointIndex();
++      }
++
+       /* && (end_pt_ - pos).norm() < 0.5 */
+-      if ((target_type_ == TARGET_TYPE::PRESET_TARGET) &&
+-          (wp_id_ < waypoint_num_ - 1) &&
+-          (end_pt_ - pos).norm() < no_replan_thresh_)
++      // PATCH 0010: WHEN MAY THE TOUR ADVANCE?  `pos` below is the PLAN's own end, not the vehicle, so a plan
++      // that stops short of the waypoint makes the old test unpassable however close the AIRCRAFT gets
++      // (MEASURED AP3: the aircraft settled 0.014 m from its last commanded point, the next station was
++      // exactly the inter-station 2.70 m away, and `WP-INDEX` never left "starting the tour").  So accept
++      // EITHER evidence, and say at 1 Hz which one is missing when neither holds.
++      const double wp_d_plan = (end_pt_ - pos).norm();
++      const double wp_d_veh = (odom_pos_ - end_pt_).norm();
++      const bool plan_done = (t_cur >= info->duration_ - 1e-2);
++      // PATCH 0012 (cleanup of 0010): THE ADVANCE TEST ALWAYS CONTAINS THE VEHICLE.
++      // The first disjunct used to be `wp_d_plan < waypoint_advance_m_` with NO vehicle term, and the audit
++      // (docs/metrics/phaseB-ego-patch-audit-20261015.txt, P0010(1)) proved it is true regardless of where the
++      // aircraft is: `pos` is the COMMITTED PLAN's own end (evaluateDeBoorT at t_cur, clamped to duration_),
++      // fsm/planning_horizon 12.0 exceeds the station spacing, so getLocalTarget() returns end_pt_ and the
++      // spline's terminal point IS the station -- wp_d_plan therefore falls to ~0 as the plan's clock runs
++      // out, whether or not the vehicle followed it.  MEASURED AP5: the index walked 0->6 while only stop 1
++      // was ever scored REACHED and stop 2 was scored MISSED, and the sequencer's own observer (a 0.45 m
++      // arrival test on the VEHICLE) never advanced with it -- the audience and the flown plan came apart.
++      // With the vehicle term the rule is 0008's original one: the tour advances when the AIRCRAFT is at the
++      // waypoint AND the plan that was to carry it there has finished.
++      const bool near_wp = plan_done && (wp_d_veh < waypoint_advance_m_);
++      // ... AND THE VEHICLE LEAVING CANCELS A BANKED DWELL.  `waypoint_arrived_` was cleared only AFTER an
++      // advance, so the dwell accrued IN TRANSIT and fired on the first later tick where the test held -- a
++      // banked dwell, not a hold.  (Audit P0008(ii).)
++      if (waypoint_arrived_ && wp_d_veh > waypoint_advance_m_)
+       {
+-        wp_id_++;
+-        planNextWaypoint(wps_[wp_id_]);
++        waypoint_arrived_ = false;
++        RCLCPP_WARN(node_->get_logger(),
++                    "DWELL-CANCELLED: the vehicle left waypoint %d/%d (%.3f m away, tolerance %.3f m) before "
++                    "its %.1f s dwell elapsed -- the dwell restarts on the next arrival",
++                    wp_id_, waypoint_num_, wp_d_veh, waypoint_advance_m_, waypoint_dwell_s_[wp_id_]);
++      }
++      // (1d) THIS DIAGNOSTIC WAS UNREACHABLE BY CONSTRUCTION.  Its gate used to include
++      // `(time_now - wp_index_pub_time_).seconds() >= 1.0` -- the SAME condition that publishes the index 20
++      // lines above, which sets wp_index_pub_time_ = now and therefore resets this gate on every tick that
++      // could have printed.  AP5: 0 TOUR-ADVANCE lines in 6083.  It has its own time member (0010 added it);
++      // only that one is used now.
++      if (target_type_ == TARGET_TYPE::PRESET_TARGET && wp_id_ < waypoint_num_ - 1 && !near_wp &&
++          (time_now - waypoint_advance_log_time_).seconds() >= 1.0)
++      {
++        waypoint_advance_log_time_ = time_now;
++          RCLCPP_WARN(node_->get_logger(),
++                      "TOUR-ADVANCE: waypoint %d/%d NOT reached: plan end is %.3f m from it, "
++                      "vehicle is %.3f m from it, plan clock %s (t %.2f of %.2f s), tolerance %.3f m",
++                      wp_id_, waypoint_num_, wp_d_plan, wp_d_veh,
++                      plan_done ? "OUT" : "running", t_cur, info->duration_, waypoint_advance_m_);
++      }
++      if (target_type_ == TARGET_TYPE::PRESET_TARGET &&
++          wp_id_ < waypoint_num_ - 1 &&
++          near_wp)
++      {
++        // PATCH 0008: arrive -> DWELL -> advance, and say which waypoint we are on.  Upstream advances on
++        // no_replan_thresh_ with no dwell; our missions need both, and the index has to be visible outside.
++        if (!waypoint_arrived_)
++        {
++          waypoint_arrived_ = true;
++          waypoint_arrive_time_ = time_now;
++          publishWaypointIndex();
++        }
++        if ((time_now - waypoint_arrive_time_).seconds() >= waypoint_dwell_s_[wp_id_])
++        {
++          // PATCH 0012 (cleanup of 0008/0010): THE INDEX MOVES ONLY WHEN THE NEW LEG EXISTS.
++          // The order was `wp_id_++; planNextWaypoint(wps_[wp_id_]); publishWaypointIndex();` -- the index
++          // advanced BEFORE the new global plan was confirmed and was published unconditionally.  MEASURED
++          // (audit P0008(i), AP5's WP-INDEX walk): when planNextWaypoint fails (0010's early return) `end_pt_`
++          // still points at the OLD station while wp_id_ says the new one, the next 10 ms tick finds the
++          // vehicle at the old station and advances AGAIN -- the remaining stations can burn inside a few
++          // ticks with no plan at all, and on the first arming the same failure leaves have_target_ = true
++          // with end_pt_ and GlobalTrajData never set.
++          const int next_id = wp_id_ + 1;
++          if (planNextWaypoint(wps_[next_id]))
++          {
++            wp_id_ = next_id;
++            waypoint_arrived_ = false;
++            publishWaypointIndex();
++          }
++          else
++          {
++            RCLCPP_ERROR(node_->get_logger(),
++                         "TOUR-STALL: waypoint %d/%d is reached but the leg to %d/%d could NOT be planned "
++                         "(the GLOBAL plan failed): the index STAYS at %d and no new index is published -- the "
++                         "tour must not advance on a leg that does not exist",
++                         wp_id_, waypoint_num_, next_id, waypoint_num_, wp_id_);
++          }
++          publishWaypointIndex();
++        }
+       }
+       else if ((local_target_pt_ - end_pt_).norm() < 1e-3) // close to the global target
+       {
+         if (t_cur > info->duration_ - 1e-2)
+         {
++          // PATCH 0007 (patches/0007-ego-arrival-is-the-vehicle.patch): ARRIVAL IS ABOUT THE VEHICLE, NOT
++          // ABOUT THE PLAN'S CLOCK.  Upstream's exit from EXEC_TRAJ fires on "the local target has caught up
++          // with the global target" (always true here, because fsm/planning_horizon 12.0 makes
++          // local_target_pt_ == end_pt_) AND "this plan's clock has run out" -- and then declares the GOAL
++          // REACHED: have_target_ = false, have_trigger_ = false, WAIT_TARGET.  MEASURED sortie AO1
++          // (2026-10-14, circle): stop 1 was reached, the plan offered for stop 2 was refused/degenerate, the
++          // last committed spline (t = 31.5 s) ran out while the vehicle sat 0.170 m from stop 1, and ego
++          // declared STOP 2 REACHED at 2.8 m away -- then parked in WAIT_TARGET for the remaining 500 s and
++          // answered every one of the adapter's 1 Hz goal re-forwards ("GOAL-TRACE ... have_target=1
++          // |end-new|=0.000", 29 of them) with nothing, because the arrival had also cleared have_trigger_.
++          // A plan whose clock is out while the vehicle is nowhere near the goal is a STALLED plan: keep
++          // planning (REPLAN_TRAJ, whose own failure counter escalates loudly to GEN_NEW_TRAJ after 1 s) and
++          // leave the target alone.
++          const double goal_dist = (odom_pos_ - end_pt_).norm();
++          if (goal_dist > no_replan_thresh_)
++          {
++            static long stalled_arrival_count = 0;
++            if ((stalled_arrival_count++ % 20) == 0)
++            {
++              RCLCPP_WARN(node_->get_logger(),
++                          "PLANNER-STALL: the plan's clock is out (t %.3f s of %.3f s) but the vehicle is "
++                          "%.3f m from the goal -- a stalled plan, NOT an arrival; replanning instead of "
++                          "declaring the goal reached (%ld times)",
++                          t_cur, info->duration_, goal_dist, stalled_arrival_count);
++            }
++            changeFSMExecState(REPLAN_TRAJ, "FSM");
++            goto force_return;
++          }
++
+           have_target_ = false;
+           have_trigger_ = false;
+ 
+           if (target_type_ == TARGET_TYPE::PRESET_TARGET)
+           {
+-            wp_id_ = 0;
+-            planNextWaypoint(wps_[wp_id_]);
++            // PATCH 0008: dwell at the LAST waypoint, then END the tour (upstream loops to waypoint 0 for
++            // ever, so a mission can never observe "the sequence is finished" -- and the index it never
++            // published is what our scoring layer needs).
++            if (!waypoint_arrived_)
++            {
++              waypoint_arrived_ = true;
++              waypoint_arrive_time_ = time_now;
++              publishWaypointIndex();
++            }
++            if ((time_now - waypoint_arrive_time_).seconds() < waypoint_dwell_s_[wp_id_])
++            {
++              goto force_return;                            // still dwelling: keep the target and the plan
++            }
++          if (waypoint_loop_)
++          {
++            // PATCH 0012: the same rule as the advance above -- the index moves only if the new leg exists.
++            if (planNextWaypoint(wps_[0]))
++            {
++              wp_id_ = 0;
++              waypoint_arrived_ = false;
++            }
++            else
++            {
++              RCLCPP_ERROR(node_->get_logger(),
++                           "TOUR-STALL: the loop back to waypoint 0 of %d could NOT be planned; the index "
++                           "stays at %d", waypoint_num_, wp_id_);
++            }
++          }
++            else
++            {
++              waypoint_done_ = 1;
++              RCLCPP_INFO(node_->get_logger(),
++                          "WP-INDEX: waypoint %d of %d finished -- tour complete, handing the mission back",
++                          wp_id_, waypoint_num_);
++            }
++            publishWaypointIndex();
+           }
+ 
+           changeFSMExecState(WAIT_TARGET, "FSM");
+@@ -669,10 +1096,62 @@ namespace ego_planner
+     // double t_cur = (time_now - info->start_time_).toSec();
+     double t_cur = (time_now - info->start_time_).seconds();
+ 
++    // PATCH D (patches/0003-ego-replan-escalation.patch).
++    // EXEC_TRAJ clamps t_cur to the trajectory's duration; THIS function -- the one every REPLAN calls --
++    // did not.  MEASURED 2026-10-14 (sortie F1): the adapter logged the same plan with
++    // "t_cur 1.185 s of dur 1.185 s (start_time 1791981437.203)" from t=16.7 s to t=66.7 s, i.e. it was
++    // offered a trajectory that had finished ~50 s earlier, and with t_cur past the end the start point
++    // below is the END OF AN EXPIRED SPLINE instead of anything near the vehicle.  Clamping cannot invent a
++    // trajectory, but it makes the replan start from the end of the last committed plan -- the honest
++    // "where the plan believes the vehicle is" -- and says so, once per 100 calls, instead of silently.
++    static long replan_from_expired_count = 0;
++    if (t_cur > info->duration_)
++    {
++      if ((replan_from_expired_count++ % 100) == 0)
++      {
++        RCLCPP_WARN(node_->get_logger(),
++                    "PLANNER-STALL: replanning from an EXPIRED trajectory (t_cur %.3f s > duration %.3f s, %ld times)",
++                    t_cur, info->duration_, replan_from_expired_count);
++      }
++      t_cur = info->duration_;
++    }
++
+     start_pt_ = info->position_traj_.evaluateDeBoorT(t_cur);
+     start_vel_ = info->velocity_traj_.evaluateDeBoorT(t_cur);
+     start_acc_ = info->acceleration_traj_.evaluateDeBoorT(t_cur);
+ 
++    // PATCH H (patches/0004-ego-replan-from-odom.patch): THE REPLAN MUST START WHERE THE VEHICLE IS.
++    // The three lines above are a proxy for the vehicle's state, and they are only a good proxy while the
++    // vehicle is following that trajectory.  MEASURED 2026-10-14 (sortie I1, the circle): after stop 1 was
++    // REACHED and its dwell completed, every plan offered for stop 2 was withheld with
++    // "starts 1.136 / 1.266 / 2.431 m from the vehicle (> 0.50 m)" and what did get published was degenerate
++    // ("n=2 arc=0.000226 m", then "n=151 arc=0.000000 m" -- 151 samples at one point), so the plan stream
++    // starved and the FSM aborted after 60 s while the aircraft hovered 0.012 m from its command.  Sortie F1
++    // shows the same signature at 5.871 m.  When the proxy has drifted further than this threshold from the
++    // odometry, the odometry wins; the acceleration is zeroed because ego never fills odom_acc_ (it is
++    // commented out in odometryCallback).
++    {
++      // PATCH H2 (patches/0004-ego-replan-from-odom.patch): ALWAYS, not above a threshold.
++      // MEASURED 2026-10-14 (sortie Q1): with the 0.30 m threshold ego committed 123 trajectories, one per
++      // second, whose start ALTERNATED between the vehicle (4.52, 0.02) and a point 0.30 m away
++      // (4.35, 0.31) for sixty seconds while the truth never left E <= 4.69 -- so every "new" trajectory
++      // began somewhere else, none was ever flown to completion, the vehicle never progressed, and the
++      // sequencer's timeout took the stop.  The alternation distance IS the threshold: that is what
++      // identifies it as the cause.  The proxy below is only ever right while the vehicle is following that
++      // trajectory; the odometry is the vehicle.
++      const double start_dev = (start_pt_ - odom_pos_).norm();
++      static long replan_from_odom_count = 0;
++      if ((replan_from_odom_count++ % 20) == 0)
++      {
++        RCLCPP_WARN(node_->get_logger(),
++                    "PLAN-START: replanning from the odometry (the trajectory put the start %.3f m away; "
++                    "%ld replans)", start_dev, replan_from_odom_count);
++      }
++      start_pt_ = odom_pos_;
++      start_vel_ = odom_vel_;
++      start_acc_.setZero();
++    }
++
+     bool success = callReboundReplan(false, false);
+ 
+     if (!success)
+diff --git a/src/planner/plan_manage/src/planner_manager.cpp b/src/planner/plan_manage/src/planner_manager.cpp
+index 2e420d4..2336297 100755
+--- a/src/planner/plan_manage/src/planner_manager.cpp
++++ b/src/planner/plan_manage/src/planner_manager.cpp
+@@ -54,7 +54,14 @@ namespace ego_planner
+ 
+     if ((start_pt - local_target_pt).norm() < 0.2)
+     {
+-      cout << "Close to goal" << endl;
++      // PATCH G (patches/0003-ego-replan-escalation.patch): a DELIBERATE refusal to plan when the replan's
++      // start is within 0.2 m of its local target -- i.e. the last metre of every arrival.  Upstream prints
++      // two words; this prints the distance and how often it has happened, because "the planner stopped
++      // producing plans near the goal" is otherwise indistinguishable from a crash.
++      static int close_to_goal_count = 0;
++      close_to_goal_count++;
++      cout << "Close to goal (start is " << (start_pt - local_target_pt).norm() << " m from the local target; "
++           << close_to_goal_count << " times this run)" << endl;
+       continous_failures_count_++;
+       return false;
+     }
+@@ -142,6 +149,16 @@ namespace ego_planner
+ 
+         double t;
+         double t_cur = (rclcpp::Clock().now() - local_data_.start_time_).seconds();
++        // PATCH 0012 (cleanup of 0003): THE SAME CLAMP AS ego_replan_fsm.cpp's, AND IT IS NOT OPTIONAL HERE.
++        // MEASURED sortie AP5-stations (2026-10-15): patch 0003 clamped t_cur in ego_replan_fsm.cpp only, and
++        // its WARN fired -- "replanning from an EXPIRED trajectory (t_cur 0.861 > duration 0.851)" -- while
++        // THIS copy of the same quantity was still past duration_.  The loop below then ran ZERO times,
++        // segment_point stayed EMPTY while pseudo_arc_length held one element, and the resampling loop that
++        // follows indexed the empty vector through `pseudo_arc_length.size() - 2` (a size_t UNDERFLOW): the
++        // control points were sized from garbage and the node died of std::bad_alloc -- "[drone 0 replan 537]"
++        // then "terminate called after throwing an instance of 'std::bad_alloc'", 35 s into a 101 s sortie,
++        // with the consumer waiting 60 s for a plan and the score blaming the trajectory source.
++        t_cur = std::min(local_data_.duration_, t_cur);
+ 
+         vector<double> pseudo_arc_length;
+         vector<Eigen::Vector3d> segment_point;
+@@ -180,6 +197,25 @@ namespace ego_planner
+           }
+         }
+ 
++        // PATCH 0012 (cleanup of 0003): NOTHING LEFT TO RESAMPLE IS A REFUSAL, NOT A GARBAGE CONTROL POINT.
++        // The clamp above makes the loop run at least once, but one sample is still not a path:
++        // `pseudo_arc_length` receives one entry FEWER than `segment_point` (the sample at t == t_cur adds no
++        // arc step), so with fewer than three samples the guard `id <= pseudo_arc_length.size() - 2` underflows
++        // (size_t) and the body reads pseudo_arc_length[id + 1] past the end.  MEASURED sortie AP5-stations:
++        // that read is what sized ctrl_pts from garbage and killed the node with std::bad_alloc.
++        // Returning false is the recovery path the FSM already has: REPLAN_TRAJ retries, patch 0003 escalates
++        // to GEN_NEW_TRAJ after 100 local failures, and GEN_NEW_TRAJ plans from the ODOMETRY instead.
++        if (segment_point.size() < 3 || pseudo_arc_length.size() < 2)
++        {
++          RCLCPP_ERROR(rclcpp::get_logger("ego_planner"),
++                       "PLANNER-STALL: the previous trajectory has nothing left to resample (t_cur %.3f of "
++                       "%.3f s: %zu samples, %zu arc steps) -- refusing to build control points from it; the "
++                       "caller must replan from the odometry",
++                       t_cur, local_data_.duration_, segment_point.size(), pseudo_arc_length.size());
++          continous_failures_count_++;
++          return false;
++        }
++
+         double sample_length = 0;
+         double cps_dist = pp_.ctrl_pt_dist * 1.5; // cps_dist will be divided by 1.5 in the next
+         size_t id = 0;

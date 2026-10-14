@@ -1,0 +1,28 @@
+THE EGO TREE AS BUILT AND FLOWN -- a content fingerprint, so "does the binary match the source?"
+(docs/metrics/phaseB-ego-patch-audit-20261015.txt, last section) has an answer next time.
+
+date            2026-10-15T07:14:15+08:00
+tree            /home/fanxin/lio_avoid/src/ego-planner-swarm   @ 23a8d5a (the pinned 23a8d5a) + our working-tree diff
+binary          /home/fanxin/lio_avoid/planner_ws/build/ego_planner/ego_planner_node
+binary mtime    2026-10-15 07:13:52.685544486
+build command   colcon build --symlink-install --packages-select bspline_opt ego_planner   (rc=0)
+diff stat        3 files changed, 717 insertions(+), 159 deletions(-)
+
+SOURCE MTIMES (all older than the binary, so the binary came from this source):
+    2026-10-15 07:10:17.614375268 /home/fanxin/lio_avoid/src/ego-planner-swarm/src/planner/plan_manage/include/ego_planner/ego_replan_fsm.h
+    2026-10-15 07:12:08.361982919 /home/fanxin/lio_avoid/src/ego-planner-swarm/src/planner/plan_manage/src/ego_replan_fsm.cpp
+    2026-10-15 07:09:34.260596184 /home/fanxin/lio_avoid/src/ego-planner-swarm/src/planner/plan_manage/src/planner_manager.cpp
+
+PATCH MARKERS FOUND IN THE BINARY (strings -a): 13 of 13
+   0012 clamp sibling guard   'nothing left to resample'
+   0012 advance after confirm 'the tour must not advance on a leg that does not exist'
+   0012 dwell cancel          'DWELL-CANCELLED'
+   0012 armTour flags         'could NOT be armed'
+   0012 real seconds          'consecutive global replan failures in'
+   0007 'a stalled plan, NOT an arrival'   0008 'WP-INDEX: sequence armed' / 'start-altitude gate ON'
+   0010 'TOUR-ADVANCE: waypoint' / 'GLOBAL plan FAILED'   0011 'WP-INDEX: %d of %d'
+   0002 'waypoint ignored: no odometry yet'   0003 'NO trajectory for'
+
+AND THE DIFF ITSELF: docs/metrics/phaseB-ego-tree-20261015.diff (the whole of our change to the
+planner, as one file).  NOTE: patches/ cannot yet rebuild this tree -- 0008 is the gate half only and
+the header's CRLF->LF normalisation is recorded in no patch; the repair is in progress.
