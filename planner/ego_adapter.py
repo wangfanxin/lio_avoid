@@ -804,18 +804,18 @@ def main():
                          "(MEASURED: F1 withheld one plan ~250 times over 50 s while the aircraft hovered)")
     ap.add_argument("--stall-s", type=float, default=2.0,
                     help="how long the same trajectory must be withheld before it counts as a stall, s")
-    ap.add_argument("--goal-repeat-s", type=float, default=1.0,
-                    help="forward an UNCHANGED goal again only after this many seconds; 1.0 reproduces the "
-                         "historical behaviour, which is also the one MEASURED to be load-bearing: with "
-                         "dedup on (10 s) sortie S1 forwarded 2 goals instead of 63, ego committed 6 "
-                         "trajectories instead of 145, and the aircraft stopped dead at stop 1 -- because a "
-                         "1 Hz goal is what pulls ego back out of WAIT_TARGET (it enters that state on "
-                         "arrival by design) and pushes it into REPLAN_TRAJ.  So the repeats are NOT the bug; "
-                         "the bug is that each repeat makes ego rebuild its GLOBAL trajectory and "
-                         "invalidate the local plan with it (R1: 63 callbacks, 106 REPLAN_TRAJ->EXEC_TRAJ "
-                         "and 47 EXEC_TRAJ->REPLAN_TRAJ transitions in one sortie, 145 trajectories, no "
-                         "progress).  The fix therefore belongs INSIDE ego (ignore a waypoint it is already "
-                         "pursuing), not here")
+    ap.add_argument("--goal-repeat-s", type=float, default=0.0,
+                    help="forward an UNCHANGED goal again only after this many seconds; 0.0 = forward every "
+                         "goal the sender publishes, which is the historical behaviour AND the one this stack "
+                         "needs: MEASURED 2026-10-14, ego reaches WAIT_TARGET by design the moment it reaches "
+                         "a goal (sortie U1: 69 'wait for goal' lines, the last 12 FSM states all "
+                         "WAIT_TARGET, the last committed trajectory at t=12.1 s and the abort at t=83.9 s -- "
+                         "70 s of doing nothing), and only an arriving goal pulls it out.  With this default "
+                         "at 10 s (sortie U1) only 9 goals reached ego in 84 s and the mission starved.  The "
+                         "HARMFUL part of the 1 Hz repeat -- each one rebuilding ego's global trajectory and "
+                         "invalidating the local plan (sortie R1: 145 trajectories, none flown to "
+                         "completion) -- is fixed inside ego by patches/0005, which makes a repeat a no-op "
+                         "while the same goal is under pursuit")
     ap.add_argument("--odom-topic", default="/lio/robo/odom")
     ap.add_argument("--rate", type=float, default=4.0, help="republish rate, Hz (>= 2 required)")
     ap.add_argument("--dt", type=float, default=0.02, help="trajectory-time sample spacing, s")

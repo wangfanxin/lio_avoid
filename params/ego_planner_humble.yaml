@@ -3,7 +3,19 @@ ego_planner_node:
     # --- what the FSM plans -------------------------------------------------------------------
     "fsm/flight_type": 1                 # 1 = MANUAL_TARGET: the goal arrives on /move_base_simple/goal
     "fsm/thresh_replan_time": 1.0
-    "fsm/thresh_no_replan_meter": 1.0
+    # THE LAST-METRE DEAD ZONE, and the reason a mission could not finish a leg.  With
+    # "fsm/planning_horizon": 12.0 the local target IS the global target, so the FSM is always in the
+    # "close to the global target" branch of EXEC_TRAJ, whose replan condition is
+    #     (end_pt_ - pos).norm() > thresh_no_replan_meter  &&  t_cur > thresh_replan_time
+    # -- i.e. with 1.0 m (upstream's default) ego STOPS REPLANNING as soon as it is within a metre of the
+    # goal, and the rest of the leg has to be flown on the last plan it happened to hold.  MEASURED
+    # 2026-10-14 (sorties R1/S1/T1, the circle): every station sits in a pillar's tight spot (stop 1 is
+    # 0.85 m from a pillar surface), so the last metre is exactly where the plan gets refused; ego then sits
+    # in WAIT_TARGET and only a NEW goal pulls it out -- which is why the sender's 1 Hz goal repeat turned
+    # out to be load-bearing (S1: repeats suppressed -> 6 committed trajectories, aircraft stopped dead) and
+    # why repeats that DID arrive were harmful in a different way (R1: 145 trajectories, none flown to
+    # completion).  0.15 m keeps replanning until the vehicle is essentially at the goal.
+    "fsm/thresh_no_replan_meter": 0.15
     "fsm/planning_horizon": 12.0         # > the A* route length, so getLocalTarget() returns the GOAL
     "fsm/planning_horizen_time": 3.0     # (upstream's spelling)
     "fsm/emergency_time": 1.0

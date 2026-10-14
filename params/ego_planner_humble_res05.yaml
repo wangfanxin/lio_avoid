@@ -3,7 +3,7 @@ ego_planner_node:
     # --- what the FSM plans -------------------------------------------------------------------
     "fsm/flight_type": 1                 # 1 = MANUAL_TARGET: the goal arrives on /move_base_simple/goal
     "fsm/thresh_replan_time": 1.0
-    "fsm/thresh_no_replan_meter": 1.0
+    "fsm/thresh_no_replan_meter": 0.15
     "fsm/planning_horizon": 12.0         # > the A* route length, so getLocalTarget() returns the GOAL
     "fsm/planning_horizen_time": 3.0     # (upstream's spelling)
     "fsm/emergency_time": 1.0
