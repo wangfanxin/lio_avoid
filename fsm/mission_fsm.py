@@ -96,6 +96,7 @@ class Mission:
         self.phase_t0 = time.monotonic()
         self.yaw_last = float(args.yaw)          # the heading actually streamed (velocity mode slews it)
         self.yaw_track_err = 0.0
+        self.yaw_hold = False                    # set by the follower near a station: freeze the heading
         self.stop_index = None                   # the sequencer's stop index (-1 = sequence complete)
         self.log_fh = open(args.phase_log, "w")
         self.log_fh.write("t_wall,t_sim_us,phase,cmd_x,cmd_y,cmd_z,lio_x,lio_y,lio_z,truth_x,truth_y,"
@@ -256,17 +257,26 @@ class Mission:
 
         Frame: the bridge writes this number straight into LOCAL_NED's yaw field, where 0 IS North and +90
         deg IS East -- the same convention as `--yaw` and as `atan2(v_E, v_N)`.
+
+        ARRIVAL FREEZE (the user's rule, 2026-10-14: *"命令速度 <0.4 m/s 且 距当前站 <0.5 m 时，保持当时航向
+        不转；离开站再开始跟速度"*).  MEASURED before it: with the nose following the velocity, each arrival
+        command reversed the direction of travel, so the heading whipped round by up to 49 deg at up to
+        68 deg/s while the vehicle was station-keeping -- the "spinning at the waypoint" the user saw.  The
+        freeze is exactly the rule above: `yaw_hold` is set by the follower when the vehicle is within
+        `--yaw-hold-m` of the trajectory's END (which IS the station) and the commanded speed is below
+        `--yaw-v-min`; while it is set the last heading is streamed unchanged.
         """
         if self.args.yaw_mode != "velocity" or velocity is None:
             return self.args.yaw
         v_e, v_n = float(velocity[0]), float(velocity[1])
         speed = math.hypot(v_e, v_n)
-        if speed >= self.args.yaw_v_min:
-            want = math.atan2(v_e, v_n)
-            d = (want - self.yaw_last + math.pi) % (2.0 * math.pi) - math.pi
-            mx = math.radians(self.args.yaw_rate_max) * max(period, 1e-3)
-            self.yaw_last = (self.yaw_last + max(-mx, min(mx, d)) + math.pi) % (2.0 * math.pi) - math.pi
-            self.yaw_track_err = d
+        if self.yaw_hold or speed < self.args.yaw_v_min:
+            return self.yaw_last
+        want = math.atan2(v_e, v_n)
+        d = (want - self.yaw_last + math.pi) % (2.0 * math.pi) - math.pi
+        mx = math.radians(self.args.yaw_rate_max) * max(period, 1e-3)
+        self.yaw_last = (self.yaw_last + max(-mx, min(mx, d)) + math.pi) % (2.0 * math.pi) - math.pi
+        self.yaw_track_err = d
         return self.yaw_last
 
     def pump(self, seconds=None, setpoint=None, until=None, velocity=None, accel=None):
@@ -715,9 +725,14 @@ class Mission:
             t_rel = (time.time() - t_wall0) + self.args.spline_lead
             pos, vel, acc = ref_at(p, tt, t_rel)
             self.cmd = pos
-            self.pump(0.05, setpoint=pos, velocity=vel, accel=acc)
-            st = self.bridge.state()
+            st = self.bridge.state()                       # the FCU's own state, read BEFORE the freeze test
             here = np.array(st.pos)
+            # THE ARRIVAL FREEZE (see yaw_command): near the END of this trajectory -- which is the station --
+            # and slower than --yaw-v-min, stop steering the nose.  Without it each arrival reversed the
+            # commanded direction and the heading whipped round (measured: up to 49 deg at 68 deg/s).
+            self.yaw_hold = (float(np.linalg.norm(here[:2] - p[-1, :2])) < self.args.yaw_hold_m
+                             and float(np.linalg.norm(np.asarray(vel)[:2])) < self.args.yaw_v_min)
+            self.pump(0.05, setpoint=pos, velocity=vel, accel=acc)
             left = dur - t_rel
             if time.monotonic() - t_start > self.args.traj_timeout_s:
                 return ("trajectory timed out after %.0f s: t %.2f of %.2f s, %.2f m from the end, "
@@ -1082,9 +1097,13 @@ def main() -> int:
                          "looks along the direction of travel instead of across it")
     ap.add_argument("--yaw-rate-max", type=float, default=120.0,
                     help="velocity mode: maximum yaw slew, deg/s")
-    ap.add_argument("--yaw-v-min", type=float, default=0.20,
+    ap.add_argument("--yaw-v-min", type=float, default=0.40,
                     help="velocity mode: below this speed the last heading is held (the azimuth of a hover "
-                         "is noise, and a spinning yaw feeds back into the EKF)")
+                         "is noise, and a spinning yaw feeds back into the EKF).  Raised from 0.20 to 0.40 m/s "
+                         "by the user's rule, 2026-10-14")
+    ap.add_argument("--yaw-hold-m", type=float, default=0.50,
+                    help="velocity mode: within this horizontal distance of the trajectory's END (the "
+                         "station) the heading is FROZEN, so arriving does not spin the aircraft")
     ap.add_argument("--follow", default="corner", choices=["corner", "path", "spline"],
                     help="corner: visit the path's corners (the rectangle; every table in docs/metrics/ "
                          "was flown this way).  path: follow the trajectory itself with a look-ahead "
