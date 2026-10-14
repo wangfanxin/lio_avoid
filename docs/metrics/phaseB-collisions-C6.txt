@@ -1,0 +1,18 @@
+# WHY THE AIRCRAFT WENT THROUGH PILLARS -- sortie C6 (pad -> SW corner -> NE), measured, not argued
+# tools: the SITL truth (1200 Hz tap), every published plan (tools/record-traj.py), the clock fitted on the
+# interface's own obligation (a plan must start within 0.5 m of the vehicle state, PLAN.md 4.1)
+
+clock offset +1791978899.800 s (median |truth - path start| 0.185 m), 132 published messages
+
+airborne samples 116876 (joined 45293)
+truth clearance: min -0.158 m;  below 0.20 m: 30.6 %;  INSIDE a pillar: 1.66 % (753 samples)
+distinct intrusions INTO a pillar: 6
+   #1  t   37.3..  40.1 s (2.83 s)  worst -0.326 m  |  plan clearance there min +nan m, deviation median nan m  |  at E -0.47 N -0.42
+   #2  t   45.7..  46.4 s (0.70 s)  worst -0.218 m  |  plan clearance there min +0.214 m, deviation median 0.539 m  |  at E -3.58 N -3.36
+   #3  t   72.3..  75.6 s (3.37 s)  worst -0.296 m  |  plan clearance there min +0.213 m, deviation median 0.364 m  |  at E -2.44 N -1.04
+   #4  t   80.8..  83.4 s (2.64 s)  worst -0.270 m  |  plan clearance there min +nan m, deviation median nan m  |  at E +0.34 N +0.62
+   #5  t   84.4..  84.7 s (0.27 s)  worst -0.031 m  |  plan clearance there min +nan m, deviation median nan m  |  at E +1.92 N +1.12
+   #6  t  100.5.. 103.9 s (3.45 s)  worst -0.177 m  |  plan clearance there min +nan m, deviation median nan m  |  at E +3.64 N +3.44
+
+of the samples below the contract: plan clearance < 0.20 m in 0.0 % (the plan was ALSO tight), plan >= 0.20 m in 100.0 % (the vehicle left the plan)
+median deviation while inside a pillar: 0.392 m (overall median 0.214 m)
