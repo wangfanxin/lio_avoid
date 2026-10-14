@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import glob
 import importlib.util
+import math
 import os
 import sys
 
@@ -97,6 +98,9 @@ def main() -> int:
                          "hide it")
     ap.add_argument("--zoom", type=float, default=0.0,
                     help="half-width of the zoomed panel, m; 0 = draw the whole arena only")
+    ap.add_argument("--snap-need", type=float, default=0.0,
+                    help="also draw where each blocked WAYPOINT would move if it were snapped to free "
+                         "space with this clearance (the alternative to carving the pillars out)")
     ap.add_argument("--title", default="")
     ax = ap.parse_args()
 
@@ -141,13 +145,25 @@ def main() -> int:
     # clearance problem -- it is an impossible goal.  MEASURED 2026-10-14 on the world as specified:
     # 13 of the 24 circle points were INSIDE a pillar while the path's own minimum was only -0.271 m.
     wp_min, wp_bad, wp_in = float("nan"), 0, 0
+    commanded = []
     if circle:
         wp = np.array(circle["points"], dtype=float)
         wc_ = np.full(len(wp), np.inf)
         for q in pillars:
             wc_ = np.minimum(wc_, np.hypot(wp[:, 0] - q["x"], wp[:, 1] - q["y"]) - q.get("r", 0.3))
         wp_min, wp_bad, wp_in = float(wc_.min()), int((wc_ < ax.footprint).sum()), int((wc_ < 0).sum())
-        if path:
+        commanded = wc.commanded_points(ax.world)
+        if need_cmd := (circle["snap_need"] > 0):
+            cclr = np.full(len(commanded), np.inf)
+            for q in pillars:
+                cclr = np.minimum(cclr, np.hypot(np.array(commanded)[:, 0] - q["x"],
+                                                 np.array(commanded)[:, 1] - q["y"]) - q.get("r", 0.3))
+            snap_d = [float(np.hypot(a[0] - b[0], a[1] - b[1])) for a, b in zip(commanded, wp)]
+            snap_d = [d for d in snap_d if d > 1e-9]
+            print("commanded (after snap_need %.2f): min clearance %+.3f m, %d moved, max %.3f m"
+                  % (circle["snap_need"], float(cclr.min()), len(snap_d),
+                     max(snap_d, default=0.0)))
+        else:
             print("waypoints: min clearance %+.3f m, %d of %d below the %.2f m contract, %d inside a pillar"
                   % (wp_min, wp_bad, len(wp), ax.footprint, wp_in))
     if path:
@@ -179,6 +195,22 @@ def main() -> int:
                                    edgecolor="#00a0a0", lw=0.4, ls=(0, (2, 2)), alpha=0.9, zorder=1))
             a.plot([], [], ls=(0, (2, 2)), color="#00a0a0", lw=0.8,
                    label="ego's inflation +%.2f m (its map)" % ax.inflation)
+        if commanded and circle["snap_need"] > 0:
+            # the IDEAL circle, so the reader can see how far the goals had to move
+            ang = np.linspace(0.0, 2 * np.pi, 241) + math.radians(circle["start_deg"])
+            a.plot(circle["centre"][0] + circle["radius"] * np.cos(ang),
+                   circle["centre"][1] + circle["radius"] * np.sin(ang),
+                   color="0.45", lw=0.9, ls=(0, (6, 4)), zorder=4,
+                   label="the commanded circle r = %.1f m (ideal)" % circle["radius"])
+            nmoved = 0
+            for s, q in zip(commanded, circle["points"]):
+                if float(np.hypot(s[0] - q[0], s[1] - q[1])) > 1e-9:
+                    nmoved += 1
+                    a.annotate("", xy=(s[0], s[1]), xytext=(q[0], q[1]),
+                               arrowprops=dict(arrowstyle="->", color="#008000", lw=1.2), zorder=8)
+                    a.plot([s[0]], [s[1]], "o", mfc="#00c000", mec="#006000", ms=4.5, zorder=9)
+            a.plot([], [], "o", mfc="#00c000", mec="#006000", ms=5,
+                   label="%d waypoints snapped to %.2f m (pillars KEPT)" % (nmoved, circle["snap_need"]))
         for q, c in viol:
             a.add_patch(Circle((q["x"], q["y"]), q.get("r", 0.3) + ax.footprint, facecolor="#d02020",
                                alpha=0.16, edgecolor="none", zorder=1))
@@ -246,6 +278,15 @@ def main() -> int:
                         minc, len(viol), n, ax.footprint))
         lines.append("commanded WAYPOINTS: min clearance %+.3f m, %d of %d below the %.2f m contract, "
                      "%d INSIDE a pillar" % (wp_min, wp_bad, circle["n"], ax.footprint, wp_in))
+        if circle["snap_need"] > 0:
+            cpts = np.array(commanded, dtype=float)
+            crho = float(np.abs(np.hypot(cpts[:, 0], cpts[:, 1]) - circle["radius"]).max())
+            cd = [float(np.hypot(a[0] - b[0], a[1] - b[1])) for a, b in zip(commanded, circle["points"])]
+            cd = [d for d in cd if d > 1e-9]
+            lines.append("COMMANDED after snap_need %.2f m: %d of %d goals moved (max %.3f m), "
+                         "every goal reachable, circle still within %.3f m of r = %.1f m"
+                         % (circle["snap_need"], len(cd), circle["n"], max(cd, default=0.0), crho,
+                            circle["radius"]))
     if runs:
         lines.append("%d run directories given" % len(runs))
     fig.suptitle("\n".join(lines), fontsize=9.5, y=0.995, va="top")

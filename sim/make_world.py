@@ -166,6 +166,12 @@ mission_b:
     points: @MB_N@
     start_deg: 0.0              # first point due East of the pad
     direction: ccw
+    # A waypoint that lands INSIDE a pillar is not an obstacle to avoid -- it is an unreachable target
+    # (MEASURED 2026-10-14: commanding one made the adapter withhold 81 of 93 paths and left the vehicle
+    # stuck 0.7338 m short).  The user's rule: "目标点如果不可达，就把航点挪出来到圆周上不在圆柱内的地方" --
+    # the goal slides ALONG THE CIRCLE, the pillars all stay, and the reference is still an r = 4 m circle.
+    # tools/world-circle.py applies it; 0 = command the circle verbatim.
+    snap_need: @MB_SNAP@
 """
 
 
@@ -392,6 +398,9 @@ def main() -> int:
     ap.add_argument("--circle-points", type=int, default=24,
                     help="waypoints around that circle (24 = every 15 deg = 1.047 m of arc)")
     ap.add_argument("--circle-alt", type=float, default=2.0)
+    ap.add_argument("--circle-snap", type=float, default=0.0,
+                    help="clearance a commanded waypoint must have; a blocked one is moved to the nearest "
+                         "free space by tools/world-circle.py (0 = command the circle verbatim)")
     ap.add_argument("--circle-clear", type=float, default=0.0,
                     help="free space left between the circle and a pillar's SURFACE; a pillar whose "
                          "surface would enter that band is dropped.  0 keeps every pillar, which is the "
@@ -457,6 +466,7 @@ def main() -> int:
                      .replace("@MB_R@", "%.1f" % args.circle)
                      .replace("@MB_ALT@", "%.1f" % args.circle_alt)
                      .replace("@MB_N@", "%d" % args.circle_points)
+                     .replace("@MB_SNAP@", "%.2f" % args.circle_snap)
                      .replace("@MB_GX@", "%.1f" % (args.circle * math.cos(deg)))
                      .replace("@MB_GY@", "%.1f" % (args.circle * math.sin(deg))))
     else:
@@ -475,7 +485,7 @@ def main() -> int:
     # reached its consumer, and a generator is a consumer of its own template.
     for tok in ("@WLO@", "@WHI@", "@SX0@", "@SY0@", "@SPAWN_Z@", "@SPAWN_YAW@", "@MOUNT_PITCH@",
                 "@MISSION_A@", "@MISSION_B@", "@MB_R@", "@MB_ALT@", "@MB_N@", "@MB_GX@", "@MB_GY@",
-                "@TAKEOFF_ALT@"):
+                "@MB_SNAP@", "@TAKEOFF_ALT@"):
         if tok in tail or tok in head:
             raise SystemExit("template token %s was not substituted" % tok)
     for need in ("spawn:", "pad:", "arena:", "pillars:", "mission:", "mission_b:"):
