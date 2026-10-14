@@ -1,0 +1,94 @@
+AP8-anchor -- the committed spline now starts at the odometry (ego patch 0013)
+=============================================================================
+2026-10-15.  ONE bounded producer-side change.  Consumer, worlds, params, fsm/, planner/ and tools/ are
+untouched (tools/frozen-check.py: 49 of 49 files unchanged).
+
+THE DEFECT, AS MEASURED (sortie AP7-rect-fixed, logs/missionA-AP7-rect-fixed)
+----------------------------------------------------------------------------
+The consumer accepted NO plan for the whole sortie (grep -c 'switched to a newer plan' fsm.log = 0), flew
+exactly one trajectory and aborted at t = 87.32 s.  Every second it refused the plan in hand:
+
+  [81.32] DIAG: 132 message(s), arc 0.343 m, 126 points, first point 2.408 m from the vehicle
+          (F frame ...; 4.923 m if the same point is read as L) -> refused because: arc 0.343 < 0.50 m
+
+The published plans were ~0.35 m stubs whose first point sat ~2.4 m from the aircraft.  That offset is real,
+not a frame residual: the adapter (L frame) and the mission FSM (F frame) agree on it.
+
+WHERE THE COMMITTED SPLINE'S START CAME FROM -- ESTABLISHED, NOT ASSUMED
+-----------------------------------------------------------------------
+`EGOPlannerManager::reboundReplan` (planner_manager.cpp) has two front-end branches, and the one a REPLAN
+takes never reads `start_pt`:
+
+  * `flag_polyInit` is false on every REPLAN (`callReboundReplan(false, false)`, `have_new_target_` already
+    cleared) and `flag_first_call` is a static that is false after the first call -- so the replan takes the
+    ELSE branch, "Initial path generated from previous trajectory";
+  * that branch resamples `local_data_.position_traj_` from `t_cur` onward, so
+    `point_set.front() == local_data_.position_traj_.evaluateDeBoorT(t_cur)`, and
+    `UniformBspline::parameterizeToBspline` fits the curve THROUGH point_set -- therefore
+    spline(0) = old_traj(t_cur) = where the plan BELIEVES the vehicle is, and nothing else;
+  * `start_pt` does not appear anywhere in that branch (it appears only in the <0.2 m refusal, in the `ts`
+    calculation, and in the polynomial branch).  Patch 0004-H2's `start_pt_ = odom_pos_` -- which the FSM does
+    execute on the replan path -- therefore CANNOT move the committed start.
+
+AP7 says exactly this in three consecutive planner.log lines; the first is patch 0004-H2's own WARN, i.e.
+`start_pt_` had just been set to the odometry:
+
+  [WARN][1792020215.161852040] PLAN-START: replanning from the odometry (the trajectory put the start 0.541 m away; 1 replans)
+  ego_adapter PLAN-START: traj 1792020215.162 dur 3.90 s, 16 ctrl | |cp0-odom| 0.262 m, |spline(0)-odom| 0.500 m -> ANCHORED
+  ego_adapter PLAN-START: traj 1792020216.181 dur 2.70 s, 12 ctrl | |cp0-odom| 1.388 m, |spline(0)-odom| 1.767 m -> NOT ANCHORED
+
+and it compounds at the 1 Hz replan cadence, plan extent collapsing as it goes:
+
+  traj 1792020223.083  |cp0-odom| 0.026 m  |spline(0)-odom| 0.026 m   extent 1.856 m   (anchored -- see below)
+  traj 1792020224.093  |cp0-odom| 0.541 m  |spline(0)-odom| 1.000 m   extent 1.704 m
+  traj 1792020225.110  |cp0-odom| 2.095 m  |spline(0)-odom| 2.366 m   extent 0.388 m
+  ... -> the 0.343 m / 126-point stub the consumer refuses.
+
+CORROBORATION FROM THE SAME SORTIE: every commit that WAS anchored is one this branch did not produce.  AP7
+logs 18 "the previous trajectory is FINISHED ... planning afresh FROM THE ODOMETRY" recoveries (patch 0012)
+and 19 ANCHORED commits -- 18 + the first plan.  All 37 commits from the resample branch are NOT ANCHORED.
+The polynomial branch anchors because it builds its initial path from `start_pt`; the resample branch does not.
+
+THE CHANGE (patches/0013-ego-anchor-the-committed-spline.patch, 2 files, 3 hunks)
+---------------------------------------------------------------------------------
+1. `reboundReplan`, resample branch, immediately after the resampling do-while: if the initial path it built
+   starts farther than `kReboundAnchorTol` (0.10 m) from `start_pt` -- the vehicle it was handed -- it does
+   not commit it.  It sets `flag_force_polynomial = true; flag_regenerate = true; continue;`, i.e. it
+   re-enters the do-while round through the POLYNOMIAL branch, which builds `point_set.front()` from
+   `start_pt`.  That is the mechanism patch 0012 already uses for the finished-trajectory case and the one
+   measured to anchor.  A one-shot `flag_anchor_retried` guard bounds this to a single redirection, so the
+   branch cannot ping-pong with the "initial path too long" regeneration and cannot hang; the second pass
+   commits today's behaviour unchanged.
+   Tolerance: 0.10 m is ~2 orders of magnitude above tracking noise (A1 rms 5.46 mm) and 5x below the
+   consumer's 0.50 m re-acceptance gate, the number it must never be allowed to reach.
+2. Instrumentation, once per commit and never on a failure or an intermediate trial:
+   * at the commit, `EGOReplanFSM::callReboundReplan` (the single place the just-optimised spline is
+     published):
+       PLAN-START: committed spline starts %.3f m from the odometry (cp0 %.3f, spline(0) %.3f, start_pt_ %.3f)
+   * at the decision, when the anchor fires (1 Hz throttled):
+       PLAN-START: the initial path came from the PREVIOUS trajectory, not the vehicle: it starts %.3f m from
+       start_pt_ (= the odometry, x y z) at t_cur %.3f of %.3f s while the vehicle is at x y z --
+       planning afresh FROM THE VEHICLE
+
+HEADLESS VERIFICATION (tools/ego-offline-test.py, forest_b.yaml, 64 pillars, same ego params as the flight)
+----------------------------------------------------------------------------------------------------------
+Two runs of the SAME harness with only `kReboundAnchorTol` changed (0.10 -> 1e9 disables the anchor), so the
+criterion is shown to have power:
+
+  anchor ON    commits: 0.000 0.003 0.004 0.006 0.047 0.069 m   median 0.004  max 0.069 m   anchor fired 3x
+               harness: start distance to vehicle median 0.0301 m worst 0.0695 m; clearance min 0.2808 m;
+               VERDICT PASS
+  anchor OFF   commits: 0.000 0.215 0.282 0.354 0.591 m         median 0.282  max 0.591 m   anchor fired 0x
+               harness: start distance to vehicle median 0.0190 m worst 0.4408 m; clearance min 0.2808 m;
+               VERDICT PASS (its own limit is 0.50 m)
+
+Without the fix the start offsets compound 0.215 -> 0.282 -> 0.354 -> 0.591 m in five consecutive commits --
+past the consumer's 0.50 m refusal threshold inside five seconds of headless flight.  The AP7 runaway is the
+same series continued while the aircraft is not tracking at all.  With the fix the worst commit is 0.069 m.
+
+REPRODUCIBILITY
+---------------
+`bash tools/ego-apply-patch.sh <fresh clone of 23a8d5a>` -> rc 0, and `cmp` shows
+planner_manager.cpp + ego_replan_fsm.cpp byte-identical to the live tree; `--revert` pops all 10 patches and
+leaves 0 dirty files at 23a8d5a.  `colcon build --symlink-install --packages-select ego_planner` rc 0, and
+both new format strings are in the binary (`strings .../ego_planner_node`).
