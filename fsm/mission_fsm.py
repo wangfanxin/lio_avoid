@@ -460,7 +460,21 @@ class Mission:
         A/B below measures what the FCU actually does rather than what the message could carry.
         """
         if self.path_l is None:
-            return "no trajectory on %s" % self.args.traj_topic
+            # a planner's trajectory is ASYNCHRONOUS -- same wait as follow_path, and for the same
+            # reason: MEASURED 2026-10-14, without it the spline arm aborted at 16 s with
+            # "no trajectory" while the planner was still initialising.
+            t_wait = time.monotonic()
+            self.log("no trajectory yet on %s -- waiting up to %.0f s for the source to publish one"
+                     % (self.args.traj_topic, self.args.traj_wait_s))
+            while self.path_l is None and time.monotonic() - t_wait < self.args.traj_wait_s:
+                if self.abort_reason:
+                    return self.abort_reason
+                self.pump(0.1)
+            if self.path_l is None:
+                return ("no trajectory on %s after %.0f s (a planner that never plans looks exactly "
+                        "like this)" % (self.args.traj_topic, self.args.traj_wait_s))
+            self.log("trajectory arrived after %.1f s: %d points"
+                     % (time.monotonic() - t_wait, len(self.path_l)))
         if self.path_t is None or len(self.path_t) != len(self.path_l):
             return ("the Path carries no usable per-point stamps (%s), so the time parameterisation cannot "
                     "be recovered -- use --follow path for a geometric source like the rectangle"
