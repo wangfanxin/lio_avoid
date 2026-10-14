@@ -49,6 +49,19 @@ import time
 
 import numpy as np
 
+# MEASURED sortie AP1-stations (2026-10-15): `stall_pub` is created with the message class imported INSIDE
+# another function (`from std_msgs.msg import Bool, Int32` at setup), so `Bool` was not in scope in
+# `_note_stall()` -- and at the FIRST real stall the adapter died reporting it:
+#     File "planner/ego_adapter.py", line 850, in _note_stall
+#         self.stall_pub.publish(Bool(data=True))
+#     NameError: name 'Bool' is not defined
+# ego had committed exactly one spline for stop 1, it expired, the adapter withheld it three times and then
+# crashed while raising /planner/stalled; the FSM was left with a stale path it refused every second
+# ("stamp unchanged and the first point 4.396 m away") until the sortie aborted at t = 81 s.  The diagnostic
+# that exists to make a stall visible was itself fatal at the first stall, and it hid the real question
+# (why ego never planned waypoint 2).  The import belongs at module level.
+from std_msgs.msg import Bool  # noqa: E402  (used by _note_stall/_clear_stall)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 from common import frames          # noqa: E402
