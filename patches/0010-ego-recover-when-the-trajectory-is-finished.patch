@@ -1,50 +1,19 @@
-diff --git a/src/planner/plan_manage/src/planner_manager.cpp b/src/planner/plan_manage/src/planner_manager.cpp
-index 2e420d4..16c1bcf 100755
+index 2336297..16c1bcf 100755
 --- a/src/planner/plan_manage/src/planner_manager.cpp
 +++ b/src/planner/plan_manage/src/planner_manager.cpp
-@@ -54,7 +54,14 @@ namespace ego_planner
- 
-     if ((start_pt - local_target_pt).norm() < 0.2)
-     {
--      cout << "Close to goal" << endl;
-+      // PATCH G (patches/0003-ego-replan-escalation.patch): a DELIBERATE refusal to plan when the replan's
-+      // start is within 0.2 m of its local target -- i.e. the last metre of every arrival.  Upstream prints
-+      // two words; this prints the distance and how often it has happened, because "the planner stopped
-+      // producing plans near the goal" is otherwise indistinguishable from a crash.
-+      static int close_to_goal_count = 0;
-+      close_to_goal_count++;
-+      cout << "Close to goal (start is " << (start_pt - local_target_pt).norm() << " m from the local target; "
-+           << close_to_goal_count << " times this run)" << endl;
-       continous_failures_count_++;
-       return false;
-     }
-@@ -142,6 +149,16 @@ namespace ego_planner
- 
-         double t;
-         double t_cur = (rclcpp::Clock().now() - local_data_.start_time_).seconds();
-+        // PATCH 0012 (cleanup of 0003): THE SAME CLAMP AS ego_replan_fsm.cpp's, AND IT IS NOT OPTIONAL HERE.
-+        // MEASURED sortie AP5-stations (2026-10-15): patch 0003 clamped t_cur in ego_replan_fsm.cpp only, and
-+        // its WARN fired -- "replanning from an EXPIRED trajectory (t_cur 0.861 > duration 0.851)" -- while
-+        // THIS copy of the same quantity was still past duration_.  The loop below then ran ZERO times,
-+        // segment_point stayed EMPTY while pseudo_arc_length held one element, and the resampling loop that
-+        // follows indexed the empty vector through `pseudo_arc_length.size() - 2` (a size_t UNDERFLOW): the
-+        // control points were sized from garbage and the node died of std::bad_alloc -- "[drone 0 replan 537]"
-+        // then "terminate called after throwing an instance of 'std::bad_alloc'", 35 s into a 101 s sortie,
-+        // with the consumer waiting 60 s for a plan and the score blaming the trajectory source.
-+        t_cur = std::min(local_data_.duration_, t_cur);
- 
-         vector<double> pseudo_arc_length;
-         vector<Eigen::Vector3d> segment_point;
-@@ -180,6 +197,45 @@ namespace ego_planner
+@@ -197,23 +197,43 @@ namespace ego_planner
            }
          }
  
+-        // PATCH 0012 (cleanup of 0003): NOTHING LEFT TO RESAMPLE IS A REFUSAL, NOT A GARBAGE CONTROL POINT.
 +        // PATCH 0012 (cleanup of 0003): NOTHING LEFT TO RESAMPLE MEANS THE PREVIOUS TRAJECTORY IS FINISHED.
-+        // The clamp above makes the loop run at least once, but one sample is still not a path:
-+        // `pseudo_arc_length` receives one entry FEWER than `segment_point` (the sample at t == t_cur adds no
-+        // arc step), so with fewer than three samples the guard `id <= pseudo_arc_length.size() - 2` underflows
-+        // (size_t) and the body reads pseudo_arc_length[id + 1] past the end.  MEASURED sortie AP5-stations:
-+        // that read is what sized ctrl_pts from garbage and killed the node with std::bad_alloc.
+         // The clamp above makes the loop run at least once, but one sample is still not a path:
+         // `pseudo_arc_length` receives one entry FEWER than `segment_point` (the sample at t == t_cur adds no
+         // arc step), so with fewer than three samples the guard `id <= pseudo_arc_length.size() - 2` underflows
+         // (size_t) and the body reads pseudo_arc_length[id + 1] past the end.  MEASURED sortie AP5-stations:
+         // that read is what sized ctrl_pts from garbage and killed the node with std::bad_alloc.
+-        // Returning false is the recovery path the FSM already has: REPLAN_TRAJ retries, patch 0003 escalates
+-        // to GEN_NEW_TRAJ after 100 local failures, and GEN_NEW_TRAJ plans from the ODOMETRY instead.
 +        //
 +        // AND IT MUST RECOVER, NOT REFUSE.  The first version of this guard returned false, and MEASURED
 +        // sortie AP6-rect-dyn showed what that costs: the guard fired every ~12 ms for the REST OF THE SORTIE
@@ -60,8 +29,15 @@ index 2e420d4..16c1bcf 100755
 +        // to GEN_NEW_TRAJ), so a REAL stall still escalates exactly as before.
 +        // Throttled to 1 Hz: at 10 ms per FSM tick the un-throttled line was ~6000 lines per minute of
 +        // standstill, which is how a log stops being read.
-+        if (segment_point.size() < 3 || pseudo_arc_length.size() < 2)
-+        {
+         if (segment_point.size() < 3 || pseudo_arc_length.size() < 2)
+         {
+-          RCLCPP_ERROR(rclcpp::get_logger("ego_planner"),
+-                       "PLANNER-STALL: the previous trajectory has nothing left to resample (t_cur %.3f of "
+-                       "%.3f s: %zu samples, %zu arc steps) -- refusing to build control points from it; the "
+-                       "caller must replan from the odometry",
+-                       t_cur, local_data_.duration_, segment_point.size(), pseudo_arc_length.size());
+-          continous_failures_count_++;
+-          return false;
 +          static rclcpp::Time last_empty_log(0, 0, RCL_SYSTEM_TIME);
 +          const rclcpp::Time empty_now = rclcpp::Clock().now();
 +          if ((empty_now - last_empty_log).seconds() >= 1.0)
@@ -76,8 +52,6 @@ index 2e420d4..16c1bcf 100755
 +          flag_force_polynomial = true;
 +          flag_regenerate = true;
 +          continue;
-+        }
-+
+         }
+ 
          double sample_length = 0;
-         double cps_dist = pp_.ctrl_pt_dist * 1.5; // cps_dist will be divided by 1.5 in the next
-         size_t id = 0;
