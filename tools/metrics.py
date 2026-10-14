@@ -158,14 +158,26 @@ def main() -> int:
     print("   LAND+disarm (B4): %s" % ("FAIL (aborted)" if aborted else "see the phase log"))
     print()
 
-    # ---- the route window: from the first leg to the last
+    # ---- the route window: from the first leg to the last, or the `traj` phase when the FSM followed a
+    # published trajectory instead of visiting corners (`--follow path`).  MEASURED 2026-10-14: this tool
+    # used to exit here with "no leg phases" and produced an EMPTY metrics file for a whole flight, which
+    # is the worst possible failure mode for an evidence tool.  B1/B2/B3 are defined against a commanded
+    # rectangle, so in traj mode they are skipped with that reason stated and C1/C2 carry the verdict.
     legs = [r for r in phases if r["phase"].startswith("leg")]
-    if not legs:
-        print("FAIL: no leg phases in the log -- the vehicle never flew the route")
+    traj_mode = not legs and any(r["phase"] == "traj" for r in phases)
+    if not legs and not traj_mode:
+        print("FAIL: no leg and no traj phases in the log -- the vehicle never flew a route")
         return 1
-    t_route0 = float(legs[0]["t_wall"])
-    t_route1 = float(legs[-1]["t_wall"])
-    print("route window: %.2f .. %.2f s (wall) = %d leg phases" % (t_route0, t_route1, len(legs)))
+    if traj_mode:
+        print("trajectory mode: the FSM followed the published Path (one 'traj' phase), so the")
+        print("   rectangle lines B1/B2/B3 do not apply; C1 (final point) and C2 (obstacle clearance)")
+        print("   are this mission's own lines, and A1-A4 are unchanged.")
+        t_route0 = t_route1 = float([r for r in phases if r["phase"] == "traj"][0]["t_wall"])
+    else:
+        t_route0 = float(legs[0]["t_wall"])
+        t_route1 = float(legs[-1]["t_wall"])
+    print("route window: %.2f .. %.2f s (wall) = %d %s phases"
+          % (t_route0, t_route1, len(legs) if legs else 1, "leg" if legs else "traj"))
 
     # the phase log's wall clock and the recordings' sim clock are different clocks; align them by the
     # FIRST leg's timestamp against the odometry's own first sample after take-off.  Simpler and
@@ -357,32 +369,40 @@ def main() -> int:
     # last leg, which is the route the acceptance talks about.
     t_sim_all = np.array([int(r.get("t_sim_us", 0)) for r in phases])
     leg_idx = [phases.index(r) for r in legs]
-    route_t0 = t_sim_all[leg_idx[1]] if len(leg_idx) > 1 else t_sim_all[leg_idx[0]]
-    route_t1 = t_sim_all[leg_idx[-1] + 1] if leg_idx[-1] + 1 < len(phases) else int(t_tap[-1])
-    m_route = np.flatnonzero((t_tap >= route_t0) & (t_tap <= route_t1))
-    p_route = p_tap[m_route] if len(m_route) else pw
-    ex = float(p_route[:, 0].max() - p_route[:, 0].min())
-    ny = float(p_route[:, 1].max() - p_route[:, 1].min())
-    print()
-    # The commanded rectangle comes from `--corners`, i.e. from the world file through
-    # tools/world-info.py -- NOT from a number typed here.  It used to be hard-coded as 2.000/1.200 with
-    # bounds 2.10/1.30, which silently mis-judged any other mission: MEASURED 2026-10-14, the first
-    # 2 m/s flight in the 6.0 x 4.0 m world was scored B1 "E 8.336 <= 2.10 FAIL" against a 2 m square it
-    # was never flying.  The tolerance stays what it was: +0.10 m on each axis (the same as B3's corner
-    # arrival), and the legacy +0.06 on N is still counted so the stricter number stays visible.
-    if corners:
-        ca = np.array(corners[:4], dtype=float) if len(corners) >= 4 else None
-        cw = float(ca[:, 0].max() - ca[:, 0].min()) if ca is not None else 2.0
-        ch = float(ca[:, 1].max() - ca[:, 1].min()) if ca is not None else 1.2
+    if traj_mode:
+        # B1/B2/B3 are defined against a commanded rectangle and a leg phase log; a followed trajectory
+        # has neither.  Skipped EXPLICITLY (this used to raise IndexError and truncate the evidence file
+        # right after A4, which is how a whole flight's metrics went missing).
+        ex = ny = float("nan")
     else:
-        cw, ch = 2.0, 1.2
-    b1_ok = ex <= cw + 0.10 and ny <= ch + 0.10
-    b1_legacy = ny <= ch + 0.06 and ex <= cw + 0.10
-    print("B1 truth box extents over the route (%.1f s): E %.3f m  N %.3f m   "
-          "(command %.3f / %.3f; target <= %.2f / %.2f = +0.10 on both axes)  [%s]"
-          % (len(m_route) and (t_tap[m_route][-1] - t_tap[m_route][0]) * 1e-6, ex, ny, cw, ch,
-             cw + 0.10, ch + 0.10, "PASS" if b1_ok else "FAIL"))
-    print("   against the legacy bound %.2f on N: %s" % (ch + 0.06, "PASS" if b1_legacy else "FAIL"))
+        route_t0 = t_sim_all[leg_idx[1]] if len(leg_idx) > 1 else t_sim_all[leg_idx[0]]
+        route_t1 = t_sim_all[leg_idx[-1] + 1] if leg_idx[-1] + 1 < len(phases) else int(t_tap[-1])
+        m_route = np.flatnonzero((t_tap >= route_t0) & (t_tap <= route_t1))
+        p_route = p_tap[m_route] if len(m_route) else pw
+        ex = float(p_route[:, 0].max() - p_route[:, 0].min())
+        ny = float(p_route[:, 1].max() - p_route[:, 1].min())
+    print()
+    if traj_mode:
+        print("B1/B2/B3 skipped: they are defined against a commanded rectangle (see the note above).")
+    else:
+        # The commanded rectangle comes from `--corners`, i.e. from the world file through
+        # tools/world-info.py -- NOT from a number typed here.  It used to be hard-coded as 2.000/1.200
+        # with bounds 2.10/1.30, which silently mis-judged any other mission: MEASURED 2026-10-14, the
+        # first 2 m/s flight in the 6.0 x 4.0 m world was scored B1 "E 8.336 <= 2.10 FAIL" against a 2 m
+        # square it was never flying.
+        if corners:
+            ca = np.array(corners[:4], dtype=float) if len(corners) >= 4 else None
+            cw = float(ca[:, 0].max() - ca[:, 0].min()) if ca is not None else 2.0
+            ch = float(ca[:, 1].max() - ca[:, 1].min()) if ca is not None else 1.2
+        else:
+            cw, ch = 2.0, 1.2
+        b1_ok = ex <= cw + 0.10 and ny <= ch + 0.10
+        b1_legacy = ny <= ch + 0.06 and ex <= cw + 0.10
+        print("B1 truth box extents over the route (%.1f s): E %.3f m  N %.3f m   "
+              "(command %.3f / %.3f; target <= %.2f / %.2f = +0.10 on both axes)  [%s]"
+              % (len(m_route) and (t_tap[m_route][-1] - t_tap[m_route][0]) * 1e-6, ex, ny, cw, ch,
+                 cw + 0.10, ch + 0.10, "PASS" if b1_ok else "FAIL"))
+        print("   against the legacy bound %.2f on N: %s" % (ch + 0.06, "PASS" if b1_legacy else "FAIL"))
 
     # B2 straightness per leg: fit a line to each leg's truth samples, take the max perpendicular error.
     # Windowing is by SIM TIME (the phase log's second column), because the recordings are indexed by it

@@ -147,7 +147,7 @@ class Harness:
 
 
 # --------------------------------------------------------------------------- metric
-def metrics(paths, world, calib, odom_l, goal_w, args):
+def metrics(paths, world, calib, odom_l, goal_w, args, t_pub_start=None):
     """Every number the run is judged on, each with the window it was measured over."""
     m = {}
     if not paths:
@@ -158,16 +158,20 @@ def metrics(paths, world, calib, odom_l, goal_w, args):
     m["n_points_median"] = int(np.median([len(p[1]) for p in paths]))
     m["n_points_min"] = int(min(len(p[1]) for p in paths))
 
-    # republish rate: median interval between messages
+    # republish rate: median interval between messages, and the worst interval AFTER the first
+    # publication (the startup wait before there is anything to publish is not a republish gap)
     w = np.diff([p[0] for p in paths])
     m["republish_hz_median"] = float(1.0 / np.median(w)) if len(w) else float("nan")
     m["republish_hz_worst"] = float(1.0 / np.max(w)) if len(w) else float("nan")
+    m["startup_delay"] = float(paths[0][0] - t_pub_start) if t_pub_start else float("nan")
+    m["republish_hz_steady"] = m["republish_hz_worst"]
 
     # trajectory-time spacing, from the per-point stamps of the LAST message
     st = paths[-1][2]
     dts = np.diff(st)
-    m["traj_dt_min"], m["traj_dt_med"], m["traj_dt_max"] = (
-        float(dts.min()), float(np.median(dts)), float(dts.max()))
+    m["traj_dt_min"] = float(dts.min()) if len(dts) else float("nan")
+    m["traj_dt_med"] = float(np.median(dts)) if len(dts) else float("nan")
+    m["traj_dt_max"] = float(dts.max()) if len(dts) else float("nan")
     m["traj_hz_min"] = float(1.0 / dts.max()) if len(dts) else float("nan")
 
     # geometry over EVERY point of EVERY published path
@@ -176,6 +180,14 @@ def metrics(paths, world, calib, odom_l, goal_w, args):
     m["clearance_min"] = float(clr.min())
     m["clearance_p05"] = float(np.percentile(clr, 5))
     m["outside_arena"] = int((~world.inside(allp)).sum())
+
+    # arc-length step between consecutive points, and what it means in TIME at the planner's own
+    # speed limit: step <= v_max / 20 is what makes the points ">= 20 Hz of trajectory time"
+    last = paths[-1][1]
+    seg = np.linalg.norm(np.diff(last, axis=0), axis=1) if len(last) > 1 else np.zeros(1)
+    m["arc_step_max"] = float(seg.max())
+    m["arc_step_med"] = float(np.median(seg))
+    m["arc_hz_at_vmax"] = float(args.v_max / seg.max()) if seg.max() > 0 else float("inf")
 
     # start distance, per message, against the (static) vehicle state
     m["start_d_max"] = float(max(np.linalg.norm(p[1][0] - odom_l) for p in paths))
@@ -196,6 +208,10 @@ def metrics(paths, world, calib, odom_l, goal_w, args):
     if m["traj_dt_max"] > 1.0 / args.min_traj_hz + 1e-6:
         fails.append("trajectory-time spacing %.4f s is below the %.0f Hz the contract requires"
                      % (m["traj_dt_max"], args.min_traj_hz))
+    if m["arc_hz_at_vmax"] < args.min_traj_hz - 1e-6:
+        fails.append("arc step %.4f m is only %.1f Hz of trajectory time at the planner's %.1f m/s "
+                     "limit (< %.0f Hz)" % (m["arc_step_max"], m["arc_hz_at_vmax"], args.v_max,
+                                            args.min_traj_hz))
     if m["republish_hz_worst"] < args.min_republish_hz - 1e-6:
         fails.append("republish rate %.2f Hz is below the %.1f Hz the contract requires"
                      % (m["republish_hz_worst"], args.min_republish_hz))
@@ -278,14 +294,19 @@ def main():
     ap.add_argument("--planner-goal-topic", default="/move_base_simple/goal")
     ap.add_argument("--adapter-rate", type=float, default=4.0)
     ap.add_argument("--duration", type=float, default=25.0, help="seconds to publish and collect")
+    ap.add_argument("--warmup", type=float, default=2.0,
+                    help="odometry-only seconds before the first goal, as in the real stack")
     ap.add_argument("--cloud-hz", type=float, default=5.0)
     ap.add_argument("--odom-hz", type=float, default=50.0)
     ap.add_argument("--footprint", type=float, default=0.35)
     ap.add_argument("--start-max", type=float, default=0.50)
     ap.add_argument("--goal-tol", type=float, default=0.050)
+    ap.add_argument("--v-max", type=float, default=1.0,
+                    help="the planner's max_vel, for turning an arc step into trajectory time")
     ap.add_argument("--min-traj-hz", type=float, default=20.0)
     ap.add_argument("--min-republish-hz", type=float, default=2.0)
-    ap.add_argument("--mutation", default="", choices=["", "goal-frame", "predicted-calib", "no-cloud"])
+    ap.add_argument("--mutation", default="",
+                    choices=["", "goal-frame", "predicted-calib", "no-cloud", "goal-before-odom"])
     ap.add_argument("--out", default="")
     ap.add_argument("--no-spawn", action="store_true",
                     help="use nodes that are already running instead of starting them")
@@ -352,9 +373,15 @@ def main():
 
     h = Harness(args)
     # --- publish loop ---------------------------------------------------------------------------
-    t_end = time.time() + args.duration
+    # Odometry runs ALONE for `--warmup` seconds first.  That is what the real stack looks like (the
+    # LIO is up long before anyone sends a goal) and it removes a startup race that is not what this
+    # test is about: a goal that reaches the planner before its first odometry used to segfault it
+    # (see patches/0002, fix 3).  Both guards are exercised separately by --mutation goal-before-odom.
+    h.t_pub_start = time.time()
+    t_end = h.t_pub_start + args.duration
     t_cloud = t_odom = t_goal = 0.0
     n_cloud = n_odom = n_goal = 0
+    goal_enable = h.t_pub_start + (0.0 if args.mutation == "goal-before-odom" else args.warmup)
     while time.time() < t_end and h.rclpy.ok():
         now = time.time()
         if now >= t_odom:
@@ -365,7 +392,7 @@ def main():
             t_cloud = now + 1.0 / args.cloud_hz
             h.send_cloud(pts_l)
             n_cloud += 1
-        if now >= t_goal:
+        if now >= goal_enable and now >= t_goal:
             t_goal = now + 1.0
             if args.mutation == "goal-frame":
                 h.send_goal(goal_l, FRAME_L)          # deliberately the WRONG frame
@@ -378,7 +405,7 @@ def main():
     time.sleep(0.5)
 
     print("\npublished %d odom, %d clouds, %d goals in %.0f s" % (n_odom, n_cloud, n_goal, args.duration))
-    m, fails = metrics(h.paths, world, calib, odom_l, goal_w, args)
+    m, fails = metrics(h.paths, world, calib, odom_l, goal_w, args, h.t_pub_start)
 
     lines = []
     lines.append("ego-planner offline chain test")
@@ -407,8 +434,12 @@ def main():
                  % (m["n_points_median"], m["n_points_min"]))
     lines.append("  republish rate             %.2f Hz median, %.2f Hz worst"
                  % (m["republish_hz_median"], m["republish_hz_worst"]))
+    lines.append("  first path arrived         %.2f s after publishing started" % m["startup_delay"])
     lines.append("  trajectory-time spacing    min %.4f / median %.4f / max %.4f s  (= %.1f Hz worst)"
                  % (m["traj_dt_min"], m["traj_dt_med"], m["traj_dt_max"], m["traj_hz_min"]))
+    lines.append("  arc step between points    median %.4f m, max %.4f m  (= %.1f Hz of trajectory "
+                 "time at the planner's %.1f m/s limit)"
+                 % (m["arc_step_med"], m["arc_step_max"], m["arc_hz_at_vmax"], args.v_max))
     lines.append("  min pillar clearance       %.4f m (p05 %.4f) over %d points"
                  % (m["clearance_min"], m["clearance_p05"], len(np.vstack([p[1] for p in h.paths]))))
     lines.append("  points outside the arena   %d" % m["outside_arena"])

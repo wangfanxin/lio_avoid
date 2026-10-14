@@ -390,6 +390,7 @@ class EgoAdapter:
         self.n_goal_in = 0
         self.n_goal_out = 0
         self.n_goal_rejected = 0
+        self.n_goal_deferred = 0
         self.n_bspline = 0
         self.n_pub = 0
         self.n_blocked = 0
@@ -427,6 +428,19 @@ class EgoAdapter:
     def on_goal(self, msg):
         p_w = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z])
         self.n_goal_in += 1
+        # A goal forwarded before the planner has ever seen an odometry drives its FSM from INIT into
+        # REPLAN_TRAJ, which evaluates a B-spline that does not exist yet.  MEASURED 2026-10-14: the
+        # node segfaulted 7 s after start, the instant the first goal arrived.  patches/0002 makes the
+        # planner drop such a goal; this is the second, independent guard, and it is the one that
+        # holds even against an unpatched planner.  Goals are repeated by their sender, so dropping
+        # one costs at most a second.
+        if self.odom_l is None:
+            self.n_goal_deferred += 1
+            if self.n_goal_deferred <= 2 or self.n_goal_deferred % 20 == 0:
+                print("ego_adapter: goal DEFERRED (%d): no odometry on %s yet -- forwarding a goal "
+                      "before the planner has a state crashes it"
+                      % (self.n_goal_deferred, self.args.odom_topic), flush=True)
+            return
         p_l = w_to_l(self.calib, p_w)
         back = l_to_w(self.calib, p_l)
         err_mm = float(np.linalg.norm(back - p_w)) * 1e3
@@ -496,21 +510,33 @@ class EgoAdapter:
         t_cur = time.time() - t0
         if not (t_cur > -1.0):
             return None, "clock mismatch: Bspline start %.3f vs wall %.3f" % (t0, time.time())
-        t_cur = max(0.0, min(t_cur, dur - self.args.dt))
+        t_cur = max(0.0, min(t_cur, dur))
 
-        ts = np.arange(t_cur, dur + 1e-9, self.args.dt)
-        if len(ts) < 2:
-            ts = np.array([t_cur, dur])
-        ts = np.minimum(ts, dur)
+        ts = np.arange(0.0, dur + 1e-9, self.args.dt)
+        if len(ts) == 0 or ts[-1] < dur - 1e-9:
+            ts = np.append(ts, dur)
         pos = np.array([bspline_eval(knots, pts, m.order, float(t)) for t in ts])
 
-        info = {"t_cur": t_cur, "duration": dur, "n": len(pos)}
+        info = {"t_cur": t_cur, "duration": dur, "n": len(pos), "t0": t0}
 
+        # WHERE THE PATH STARTS.  The contract's third obligation is "never publish a path that starts
+        # more than 0.5 m from the vehicle's current state", and this is the one place it can be met
+        # or broken.  The spline is a TIMED trajectory planned at ~1 Hz from the odometry of that
+        # instant, but the consumer (`fsm/mission_fsm.py`) flies it as a GEOMETRIC path with arc-length
+        # look-ahead -- so the right thing to publish is the spline from the point nearest the vehicle
+        # to its end, not "from t_cur onwards".  MEASURED 2026-10-14 while parked: publishing from
+        # t_cur made the start distance grow with the plan's own speed (0.60 m after 0.6 s, 5.08 m
+        # after 5 s) and the gate withheld 73 of 88 paths; projecting instead puts the start at the
+        # vehicle and leaves the gate to catch only a genuinely stale plan.
+        i0 = 0
         if self.odom_l is not None:
-            d = float(np.linalg.norm(pos[0] - self.odom_l))
-            info["start_d"] = d
-            if d > self.args.start_max:
-                return None, "starts %.3f m from the vehicle (> %.2f m)" % (d, self.args.start_max)
+            d = np.linalg.norm(pos - self.odom_l, axis=1)
+            i0 = int(np.argmin(d))
+            info["start_d"] = float(d[i0])
+            if d[i0] > self.args.start_max:
+                return None, "starts %.3f m from the vehicle (> %.2f m)" % (d[i0], self.args.start_max)
+        pos, ts = pos[i0:], ts[i0:]
+        info["n"] = len(pos)
 
         cl = self.world.clearance(pos)
         info["clr_min"] = float(cl.min())
@@ -525,12 +551,17 @@ class EgoAdapter:
                 i, pos[i, 0], pos[i, 1], pos[i, 2])
 
         out = self.Path()
-        stamp = self.node.get_clock().now().to_msg()
-        out.header.stamp = stamp
+        out.header.stamp = self.node.get_clock().now().to_msg()
         out.header.frame_id = FRAME_L
         for i, (x, y, z) in enumerate(pos):
             ps = self.PoseStamped()
-            ps.header.stamp = stamp
+            # The contract asks for "points at >= 20 Hz of trajectory time".  Stamping every point
+            # with the instant the planner means it to be reached (start_time + t_i) is what makes
+            # that clause CHECKABLE from the message alone; `planner/rectangle_source.py` stamps all
+            # points identically, which is why its version of the same clause can only be argued
+            # from the geometry.  The consumer reads positions only, so this is compatible with the
+            # flown interface and strictly more informative.
+            ps.header.stamp = self.to_msg(info["t0"] + float(ts[i]))
             ps.header.frame_id = FRAME_L
             ps.pose.position.x, ps.pose.position.y, ps.pose.position.z = float(x), float(y), float(z)
             j = min(i + 1, len(pos) - 1)
@@ -541,7 +572,20 @@ class EgoAdapter:
             ps.pose.orientation.w = math.cos(yaw / 2.0)
             ps.pose.orientation.z = math.sin(yaw / 2.0)
             out.poses.append(ps)
+        seg = np.linalg.norm(np.diff(pos, axis=0), axis=1) if len(pos) > 1 else np.zeros(1)
+        info["arc_max"] = float(seg.max())
+        info["arc_med"] = float(np.median(seg))
         return out, info
+
+    def to_msg(self, sec_float):
+        from builtin_interfaces.msg import Time
+        t = Time()
+        t.sec = int(math.floor(sec_float))
+        t.nanosec = int(round((sec_float - t.sec) * 1e9))
+        if t.nanosec >= 1000000000:
+            t.sec += 1
+            t.nanosec -= 1000000000
+        return t
 
     def tick(self):
         if self.bspline is None:
@@ -563,18 +607,19 @@ class EgoAdapter:
         if self.n_pub == 1 or self.n_pub % 40 == 0:
             dts = np.diff([p.header.stamp.sec + 1e-9 * p.header.stamp.nanosec for p in path.poses])
             print("ego_adapter: published %d poses on %s  (t_cur %.3f / %.3f s, start %.4f m from "
-                  "the vehicle, min pillar clearance %.3f m, sample dt %.4f s)"
+                  "the vehicle, min pillar clearance %.3f m, traj dt %.4f s, arc step %.4f m)"
                   % (len(path.poses), self.args.traj_topic, info["t_cur"], info["duration"],
                      info.get("start_d", float("nan")), info["clr_min"],
-                     float(np.median(dts)) if len(dts) else float("nan")), flush=True)
+                     float(np.median(dts)) if len(dts) else float("nan"),
+                     info.get("arc_med", float("nan"))), flush=True)
 
     def report(self):
         rt = float(np.median(self.pub_dt)) if self.pub_dt else float("nan")
-        print("ego_adapter REPORT: goals in %d, published %d, rejected %d | Bsplines %d | "
+        print("ego_adapter REPORT: goals in %d, published %d, rejected %d, deferred %d | Bsplines %d | "
               "paths published %d, withheld %d | republish %.2f Hz (median over %d intervals)"
-              % (self.n_goal_in, self.n_goal_out, self.n_goal_rejected, self.n_bspline,
-                 self.n_pub, self.n_blocked, (1.0 / rt if rt == rt and rt > 0 else float("nan")),
-                 len(self.pub_dt)), flush=True)
+              % (self.n_goal_in, self.n_goal_out, self.n_goal_rejected, self.n_goal_deferred,
+                 self.n_bspline, self.n_pub, self.n_blocked,
+                 (1.0 / rt if rt == rt and rt > 0 else float("nan")), len(self.pub_dt)), flush=True)
         for k, v in sorted(self.blocked_reasons.items()):
             print("   withheld %4d x  %s" % (v, k), flush=True)
 
