@@ -59,10 +59,22 @@ def main() -> int:
     node.create_subscription(PointCloud2, args.topic, on_cloud, qos)
     print("recording %s -> %s (every %d-th point, %d scans)" % (args.topic, args.csv, args.decimate,
                                                                 args.scans), flush=True)
+    last_beat = time.monotonic()
     while rclpy.ok() and state["n"] < args.scans:
         if args.seconds and time.monotonic() - state["t0"] > args.seconds:
             break
         rclpy.spin_once(node, timeout_sec=0.2)
+        # HEARTBEAT.  MEASURED 2026-10-14: this tool failed by printing NOTHING (it only printed after N
+        # scans), which cost a round of guessing -- three tools in this project have now failed that way.
+        # Say what is happening: how long we have waited, how many messages arrived, and what the graph
+        # looks like from here.
+        if time.monotonic() - last_beat > 3.0:
+            last_beat = time.monotonic()
+            topics = [t for t, _ in node.get_topic_names_and_types()]
+            print("  waiting %.0f s: %d messages, %d topic(s) visible%s"
+                  % (time.monotonic() - state["t0"], state["n"], len(topics),
+                     "" if args.topic in topics else "  (NOT publishing %s from here)" % args.topic),
+                  flush=True)
     fh.close()
     print("recorded %d scans, %d points" % (state["n"], state["k"]))
     node.destroy_node()

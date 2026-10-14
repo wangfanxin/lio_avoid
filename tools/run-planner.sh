@@ -93,6 +93,7 @@ cleanup() {
 trap cleanup INT TERM
 
 ros2 run ego_planner ego_planner_node --ros-args \
+  -r /cloud_registered:=/lio/cloud_world \
   --params-file "$PARAMS" \
   -p "manager/max_vel:=$MAXVEL" \
   -r odom_world:=/lio/robo/odom \

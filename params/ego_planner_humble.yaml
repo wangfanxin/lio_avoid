@@ -10,7 +10,7 @@ ego_planner_node:
     "fsm/realworld_experiment": false
     "fsm/fail_safe": true
     "fsm/waypoint_num": -1
-    # --- the local map, built from /cloud_registered -------------------------------------------
+    # --- the local map, built from /lio/cloud_world -------------------------------------------
     "grid_map/resolution": 0.10
     "grid_map/map_size_x": 14.0
     "grid_map/map_size_y": 14.0
