@@ -32,9 +32,26 @@ echo "ArduPilot: $AP_TREE"
 echo "revision : $(git -C "$AP_TREE" describe --tags --always) $(git -C "$AP_TREE" rev-parse --short HEAD)"
 echo
 
+# THE GLOB IS NOT `patches/*.patch`, AND THAT IS THE WHOLE POINT.  patches/ holds patches for TWO trees:
+# the ArduPilot truth tap (`apm-*.patch`) and the ego-planner series (`00NN-*.patch`).  MEASURED 2026-10-15:
+# with `patches/*.patch` this script tried to apply all eight ego patches to the ArduPilot tree (and
+# tools/ego-apply-patch.sh's `00[0-9][0-9]-*` tried to apply the ArduPilot patch to the ego tree, where it
+# died on `libraries/SITL/SIM_Aircraft.cpp: No such file or directory` and -- because of `set -e` -- left the
+# ego series with NOTHING applied).  Each script now selects its own tree's patches by name.
+# The reverse order is the same rule as the ego script's: a stack comes off the top.
+PATCHES=()
+for p in patches/apm-*.patch; do
+    [ -e "$p" ] || { echo "no apm-*.patch in patches/"; exit 0; }
+    PATCHES+=("$p")
+done
+ORDER=("${PATCHES[@]}")
+if [ -n "$REVERT" ]; then
+    ORDER=()
+    for ((i = ${#PATCHES[@]} - 1; i >= 0; i--)); do ORDER+=("${PATCHES[$i]}"); done
+fi
+
 n=0
-for p in patches/*.patch; do
-    [ -e "$p" ] || { echo "no patches in patches/"; exit 0; }
+for p in "${ORDER[@]}"; do
     echo "== $p"
     git -C "$AP_TREE" apply --check $REVERT "$HERE/$p"
     git -C "$AP_TREE" apply $REVERT "$HERE/$p"

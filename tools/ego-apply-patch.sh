@@ -31,9 +31,25 @@ echo "ego-planner: $EGO_TREE"
 echo "revision   : $(git -C "$EGO_TREE" rev-parse --short HEAD) ($(git -C "$EGO_TREE" rev-parse --abbrev-ref HEAD))"
 echo
 
-n=0
+# THE ORDER IS PART OF THE OPERATION.  The series is a STACK: patch 0002 rewrites lines that 0009 also
+# rewrites, so applying `--reverse` to 0002 FIRST asks it to undo context that the later patches have already
+# replaced.  MEASURED 2026-10-15 (the acceptance test of this repair): forward application reproduced the live
+# tree byte-for-byte on all three files, and `--revert` then died at the second patch --
+#     == patches/0002-...  error: patch failed: ego_replan_fsm.cpp:243  ... dirty after revert: 3
+# because the loop walked the list forwards.  Forward: in order.  Revert: in REVERSE order.
+PATCHES=()
 for p in patches/00[0-9][0-9]-*.patch; do
-    [ -e "$p" ] || { echo "no 0002-*...0008-* patches in patches/"; exit 0; }
+    [ -e "$p" ] || { echo "no 00NN-*.patch patches in patches/"; exit 0; }
+    PATCHES+=("$p")
+done
+ORDER=("${PATCHES[@]}")
+if [ -n "$REVERT" ]; then
+    ORDER=()
+    for ((i = ${#PATCHES[@]} - 1; i >= 0; i--)); do ORDER+=("${PATCHES[$i]}"); done
+fi
+
+n=0
+for p in "${ORDER[@]}"; do
     echo "== $p"
     git -C "$EGO_TREE" apply --check $REVERT "$HERE/$p"
     git -C "$EGO_TREE" apply $REVERT "$HERE/$p"
