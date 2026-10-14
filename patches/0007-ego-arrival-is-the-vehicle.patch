@@ -1,0 +1,38 @@
+--- a/src/planner/plan_manage/src/ego_replan_fsm.cpp
++++ b/src/planner/plan_manage/src/ego_replan_fsm.cpp
+@@ -697,6 +697,35 @@
+       {
+         if (t_cur > info->duration_ - 1e-2)
+         {
++          // PATCH 0007 (patches/0007-ego-arrival-is-the-vehicle.patch): ARRIVAL IS ABOUT THE VEHICLE, NOT
++          // ABOUT THE PLAN'S CLOCK.  Upstream's exit from EXEC_TRAJ fires on "the local target has caught up
++          // with the global target" (always true here, because fsm/planning_horizon 12.0 makes
++          // local_target_pt_ == end_pt_) AND "this plan's clock has run out" -- and then declares the GOAL
++          // REACHED: have_target_ = false, have_trigger_ = false, WAIT_TARGET.  MEASURED sortie AO1
++          // (2026-10-14, circle): stop 1 was reached, the plan offered for stop 2 was refused/degenerate, the
++          // last committed spline (t = 31.5 s) ran out while the vehicle sat 0.170 m from stop 1, and ego
++          // declared STOP 2 REACHED at 2.8 m away -- then parked in WAIT_TARGET for the remaining 500 s and
++          // answered every one of the adapter's 1 Hz goal re-forwards ("GOAL-TRACE ... have_target=1
++          // |end-new|=0.000", 29 of them) with nothing, because the arrival had also cleared have_trigger_.
++          // A plan whose clock is out while the vehicle is nowhere near the goal is a STALLED plan: keep
++          // planning (REPLAN_TRAJ, whose own failure counter escalates loudly to GEN_NEW_TRAJ after 1 s) and
++          // leave the target alone.
++          const double goal_dist = (odom_pos_ - end_pt_).norm();
++          if (goal_dist > no_replan_thresh_)
++          {
++            static long stalled_arrival_count = 0;
++            if ((stalled_arrival_count++ % 20) == 0)
++            {
++              RCLCPP_WARN(node_->get_logger(),
++                          "PLANNER-STALL: the plan's clock is out (t %.3f s of %.3f s) but the vehicle is "
++                          "%.3f m from the goal -- a stalled plan, NOT an arrival; replanning instead of "
++                          "declaring the goal reached (%ld times)",
++                          t_cur, info->duration_, goal_dist, stalled_arrival_count);
++            }
++            changeFSMExecState(REPLAN_TRAJ, "FSM");
++            goto force_return;
++          }
++
+           have_target_ = false;
+           have_trigger_ = false;
+ 
