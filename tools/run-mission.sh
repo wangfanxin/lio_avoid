@@ -325,6 +325,31 @@ python3 "$REPO/tools/metrics.py" --tap "$OUT/tap.csv" --odom "$OUT/lio.csv" \
 MET_RC=${PIPESTATUS[0]}
 
 echo
+echo "== the planner's health, from this run's own artifacts (audit F3) =="
+python3 - "$OUT" <<'PYHEALTH'
+import os, re, sys
+out = sys.argv[1]
+log = os.path.join(out, "planner.log")
+text = open(log, errors="replace").read() if os.path.exists(log) else ""
+crash = [s for s in ("terminate called", "std::bad_alloc", "what():", "[ros2run]: Aborted",
+                     "Traceback (most recent call last)", "NameError") if s in text]
+status = re.findall(r"ego_adapter STATUS: .*", text)
+bsplines = re.findall(r"bsplines (\d+)", text)
+withheld = re.findall(r"withheld (\d+)", text)
+ages = [float(v) for v in re.findall(r"committed ([0-9.]+) s ago", text)]
+print("   adapter's last STATUS : %s" % (status[-1] if status else "(none)"))
+print("   bsplines received     : %s" % (bsplines[-1] if bsplines else "?"))
+print("   plans withheld        : %s   (the highest 'committed X s ago' seen: %s)"
+      % (withheld[-1] if withheld else "?", ("%.1f s" % max(ages)) if ages else "n/a"))
+print("   crash strings in the planner log: %s"
+      % (", ".join(crash) if crash else "none -- the planner chain did not report a crash"))
+if ages and max(ages) > 10.0:
+    print("   *** PLANNER LIVENESS FAIL: a plan was withheld while the last committed trajectory was %.1f s old"
+          % max(ages))
+    print("       (healthy sorties measured <= 4.5 s; AP5's dead node reached 69.8 s) -- treat every")
+    print("       'no new trajectory' abort in this run as a PLANNER FAILURE, not a trajectory timeout.")
+PYHEALTH
+echo
 echo "== the FCU's own log =="
 if [ -n "$BINFILE" ]; then
     python3 "$REPO/tools/bin-triage.py" "$BINFILE" | tail -25

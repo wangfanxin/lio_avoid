@@ -99,6 +99,10 @@ class Mission:
         self.yaw_hold = False                    # set by the follower near a station: freeze the heading
         self.last_end_dist = float("nan")        # how far the vehicle was from the plan's end at completion
         self.stop_index = None                   # the sequencer's stop index (-1 = sequence complete)
+        # F3 (planner-death visibility): the planner's own stall signal, and when the last plan arrived.
+        self.planner_stalled = False
+        self.planner_stall_since = None
+        self.last_path_wall = time.monotonic()
         self.log_fh = open(args.phase_log, "w")
         self.log_fh.write("t_wall,t_sim_us,phase,cmd_x,cmd_y,cmd_z,lio_x,lio_y,lio_z,truth_x,truth_y,"
                           "truth_z\n")
@@ -201,6 +205,16 @@ class Mission:
             except Exception as exc:                                     # noqa: BLE001
                 self.log("no trajectory_msgs (%s): the plan's exact velocity/acceleration cannot be "
                          "received and the reference stays a finite difference of the Path" % exc)
+        # THE PLANNER'S OWN LIFELINE (audit F3).  planner/ego_adapter.py publishes /planner/stalled = true
+        # once the SAME trajectory has been withheld for --stall-s, which is what a DEAD planner looks like
+        # from outside -- and MEASURED (AP5) nothing in the repository subscribed to it: the FSM waited out
+        # its 60 s and aborted naming "the trajectory source", i.e. the reporter blamed the messenger.
+        from std_msgs.msg import Bool as _Bool
+        try:
+            self.node.create_subscription(_Bool, self.args.stall_topic, self._on_stall, 10)
+        except Exception as exc:                                       # noqa: BLE001
+            self.log("cannot subscribe %s (%s): a planner stall will only be visible as a timeout"
+                     % (self.args.stall_topic, exc))
         # THE SEQUENCER'S STATE.  The FSM does not count stops any more (see follow_spline_stations): it
         # reads the mission's own stop index, so the two cannot drift apart.  Volatile + reliable: the
         # sequencer publishes at 1 Hz and the value is a state, not an event.
@@ -258,6 +272,40 @@ class Mission:
             return None, None, ("dyn stamps differ from the Path's by up to %.3f ms (a dyn of another plan)"
                                 % (dt * 1e3))
         return self.dyn_v, self.dyn_a, "matched to the Path (max stamp diff %.2e s)" % dt
+
+    def _on_stall(self, m):
+        """The PLANNER says it is stalled: the same trajectory withheld for seconds on end.
+
+        Two conditions have to hold before this aborts, because each alone has a benign explanation:
+          * the signal has been up for `--stall-abort-s`, and
+          * NO Path message has arrived for the same time (`last_path_wall`).
+        A planner that is merely between stops keeps REPUBLISHING its current spline at 4 Hz, so the second
+        condition separates "the planner has nothing to say" from "the planner is waiting for the aircraft"
+        -- and it is exactly the state AP5 spent its last 60 s in (66 identical-stamp messages, then silence).
+        """
+        v = bool(m.data)
+        if v and not getattr(self, "planner_stalled", False):
+            self.planner_stall_since = time.monotonic()
+            self.log("PLANNER STALL SIGNALLED on %s: the trajectory source reports it is not committing new "
+                     "plans" % self.args.stall_topic)
+        elif not v and getattr(self, "planner_stalled", False):
+            self.log("the planner's stall signal cleared after %.1f s"
+                     % (time.monotonic() - (self.planner_stall_since or time.monotonic())))
+            self.planner_stall_since = None
+        self.planner_stalled = v
+
+    def _stall_reason(self):
+        """A NAMED abort reason when the planner is dead or wedged, else None (audit F3)."""
+        if not getattr(self, "planner_stalled", False) or self.planner_stall_since is None:
+            return None
+        up = time.monotonic() - self.planner_stall_since
+        quiet = time.monotonic() - getattr(self, "last_path_wall", 0.0)
+        if up < self.args.stall_abort_s or quiet < self.args.stall_abort_s:
+            return None
+        return ("THE PLANNER IS NOT PLANNING: %s has been up for %.1f s and no plan has arrived on %s for "
+                "%.1f s (the planner process is dead or wedged -- check planner.log for 'terminate called', "
+                "'std::bad_alloc' or an aborted node; this is NOT a trajectory-source timeout)"
+                % (self.args.stall_topic, up, self.args.traj_topic, quiet))
 
     def _on_stop(self, m):
         """The sequencer's current stop index (0-based; -1 = the sequence is complete)."""
@@ -317,6 +365,7 @@ class Mission:
         if pts:
             self.path_l = np.array(pts)
             self.path_t = np.array(ts)
+            self.last_path_wall = time.monotonic()      # F3: "the planner is still talking to me"
             # HOW MANY PLANS ACTUALLY ARRIVE.  MEASURED 2026-10-14 (sortie AH1): the adapter published 38
             # plans, 20 with distinct stamps and 16 usable (arc >= 0.30 m, clearance >= 0.281 m), and this FSM
             # flew ONE -- so the acceptance decision is the last unexplained link and it needs a denominator.
@@ -497,6 +546,9 @@ class Mission:
             reasons.append("geofence: truth at [%+.2f %+.2f]" % (self.tap.p[0], self.tap.p[1]))
         if st.armed and st.mode == "LAND" and self.phase not in ("land", "done"):
             reasons.append("the FCU left the mission mode (%s)" % st.mode)
+        stall = self._stall_reason()
+        if stall:
+            reasons.append(stall)
         if reasons:
             self.abort_reason = "; ".join(reasons)
 
@@ -1540,6 +1592,16 @@ def main() -> int:
                     help="spline mode: the number of stops the mission EXPECTS (only printed; the loop is "
                          "driven by --stop-topic so the FSM and the sequencer cannot drift apart).  1 = the "
                          "single-trajectory behaviour")
+    ap.add_argument("--stall-topic", default="/planner/stalled",
+                    help="std_msgs/Bool from planner/ego_adapter.py: true while the SAME trajectory has been "
+                         "withheld for seconds.  With --stall-abort-s of silence on --traj-topic the FSM "
+                         "aborts NAMING THE PLANNER instead of waiting out --traj-wait-s and blaming the "
+                         "trajectory source (MEASURED AP5: the node was dead for 60 s and the abort said "
+                         "'no new trajectory')")
+    ap.add_argument("--stall-abort-s", type=float, default=3.0,
+                    help="abort when the planner's stall signal has been up this long AND no plan has arrived "
+                         "for the same time.  MEASURED AP5: the adapter raises it after 2 s of withholding, so "
+                         "3 s here aborts ~5 s after the node dies, against 60 s of blaming the wrong link")
     ap.add_argument("--stop-topic", default="/mission/stop",
                     help="spline mode with >1 stop: the sequencer's current stop index (std_msgs/Int32, "
                          "-1 = sequence complete).  The FSM follows trajectories until it reads -1")

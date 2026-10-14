@@ -176,4 +176,28 @@ python3 "$HERE/planner/ego_adapter.py" \
 PIDS="$PIDS $!"
 
 echo "=== running (ctrl-c to stop) ==="
-wait
+# F3 (docs/metrics/phaseB-pipeline-audit-20261015.txt): THE CHAIN MUST NOTICE ITS OWN DEAD.  MEASURED AP5:
+# ego_planner_node died of std::bad_alloc 35 s into a 101 s sortie and this script -- whose whole job is to
+# run the planner chain -- went on `wait`ing in silence while the adapter withheld and the FSM waited 60 s.
+# A child that exits is a headline, not a detail: name it, name its exit code, and take the others down so
+# the sortie ends with ONE cause instead of three symptoms.
+# The children write into the caller's log (${PLANNER_LOG:-planner.log} in a sortie), so the health line
+# says where to look rather than trying to re-print it.
+set +e
+while :; do
+  for pid in $PIDS; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid"
+      rc=$?
+      echo
+      echo "PLANNER HEALTH: child $pid EXITED with rc=$rc -- THE PLANNER CHAIN IS NO LONGER COMPLETE."
+      echo "   this is a PLANNER failure, not a planner timeout: look for 'terminate called', 'std::bad_alloc',"
+      echo "   'what():' or '[ros2run]: Aborted' in the log this script is writing to."
+      for p in $PIDS; do kill -INT "$p" 2>/dev/null; done
+      sleep 1
+      for p in $PIDS; do kill -9 "$p" 2>/dev/null; done
+      exit 1
+    fi
+  done
+  sleep 0.5
+done
