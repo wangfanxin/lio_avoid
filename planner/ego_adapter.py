@@ -579,8 +579,10 @@ class EgoAdapter:
                 # exactly like "a planner that never plans".  When the straight connection is inside the
                 # arena and clears every pillar by the footprint, the follower can fly it, so the path is
                 # published; otherwise it is still withheld, now with the clearance that failed.
-                return None, ("starts %.3f m from the vehicle (> %.2f m) and the connecting segment is "
-                              "not clear (%s)" % (d[i0], self.args.start_max,
+                return None, ("starts %.3f m from the vehicle (> %.2f m); t_cur %.3f s of dur %.3f s (start_time %.3f, now %.3f, sim_offset %.1f) and the connecting segment is "
+                              "not clear (%s)" % (d[i0], self.args.start_max, t_cur, dur, t0,
+                                                  self.node.get_clock().now().nanoseconds * 1e-9,
+                                                  self.node.get_clock().now().nanoseconds * 1e-9 - t0,
                                                   self._connection_is_clear(self.odom_l, pos[i0], True)))
         # A path of ONE point is not a path: once the vehicle reaches the end of the spline the
         # projection lands on the last sample and the published Path degenerated to a single pose
