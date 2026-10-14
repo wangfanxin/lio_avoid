@@ -650,6 +650,17 @@ class Mission:
 
         if self.path_l is not None and ok():
             return True
+        # HOLD AT A VERIFIED POINT WHILE WAITING.  MEASURED 2026-10-14 (sortie AE1, the circle): this loop
+        # streamed NOTHING while it waited (`pump` with no setpoint sends no setpoint), so the aircraft stayed
+        # wherever the last fragment had left it -- and the truth spent 80.4 % of its airborne samples in a
+        # 0.1 x 0.16 m box at (E 4.00..4.10, N 0.31..0.47), 0.35 m north of the stop and only 0.12-0.19 m from
+        # pillar #52's surface, i.e. BELOW the 0.20 m contract for most of the flight, while every plan the
+        # adapter published was >= 0.210 m clear.  The endpoint of the last usable plan IS a verified point
+        # (the adapter's gate guarantees it), so the wait holds the vehicle there with zero velocity instead
+        # of letting it sit wherever a time-expired fragment ended.
+        hold_pt = None
+        if self.path_l is not None and len(self.path_l) >= 2:
+            hold_pt = np.array(self.path_l[-1], dtype=float)
         t_wait = time.monotonic()
         self.log("waiting up to %.0f s on %s for %s"
                  % (self.args.traj_wait_s, self.args.traj_topic,
@@ -665,7 +676,18 @@ class Mission:
                             if last_t0 is not None and self.path_t is not None
                             and float(self.path_t[0]) == float(last_t0) else ""))
                 return True
-            self.pump(0.1)
+            if hold_pt is not None and float(np.linalg.norm(hold_pt[:2] - self.tap.p[:2])) < self.args.hold_radius_m:
+                self.pump(0.1, setpoint=hold_pt, velocity=np.zeros(3))
+            else:
+                # TOO FAR TO HOLD BY STRAIGHT LINE.  MEASURED 2026-10-14 (sortie AF1): holding at the end of the
+                # last plan in hand, when that plan belonged to another stop, flew the aircraft STRAIGHT at it
+                # -- 233 published plans all >= 0.201 m clear, while the truth cut through pillars
+                # (min -0.376 m, 14.03 % of samples inside a pillar, lateral |truth - plan| p95 4.98 m) and
+                # "99.6 % of the contract-breaking samples were following a plan that HELD it".  A straight
+                # line this short cannot cross a pillar whose surface is >= 0.20 m away, so the hold is applied
+                # only within --hold-radius-m; beyond it, streaming NOTHING is the safe action (the FCU keeps
+                # its last setpoint and the vehicle stays put).
+                self.pump(0.1)
         return False
 
     def follow_spline_stations(self, n):
@@ -1229,6 +1251,13 @@ def main() -> int:
                          "(sorties AA1-AD1): ego's commit rate collapses to ~0.2 Hz once the vehicle rests, so "
                          "without this the FSM flew 1 of the 20 distinct plans the recorder saw and aborted on "
                          "its 60 s wait.  0 disables the fallback (the historical behaviour)")
+    ap.add_argument("--hold-radius-m", type=float, default=0.50,
+                    help="spline mode: while waiting for the next plan, hold at the last plan's endpoint ONLY "
+                         "if it is within this many metres of the vehicle; beyond it the FSM streams nothing "
+                         "(the FCU then keeps its last setpoint).  MEASURED 2026-10-14 (sortie AF1): holding at "
+                         "a far endpoint drove the aircraft straight at it through pillars -- the truth cut "
+                         "0.376 m inside a pillar for 14.03 %% of the samples while all 233 published plans "
+                         "held the 0.20 m contract")
     ap.add_argument("--hold-at-m", type=float, default=0.50,
                     help="spline mode: only hold the station if the trajectory ended within this distance of "
                          "the vehicle -- otherwise the plan was a short hop and the mission is still moving")
