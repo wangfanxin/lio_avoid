@@ -133,9 +133,19 @@ if [ "$NAV_SOURCE" = "lio" ]; then
     # with the predicted one here and the measured one there, every commanded corner moved 51 mm in N
     TRAJ_CALIB_ARG="--calib-file $CALIB"
 fi
-python3 "$REPO/planner/rectangle_source.py" --world "$WORLD" $TRAJ_CALIB_ARG > "$OUT/traj.log" 2>&1 &
-TRAJ_PID=$!
-sleep 1
+# TRAJ_SOURCE selects WHO publishes /planner/traj: `rect` (the rectangle, mission A) or `planner`
+# (ego-planner through tools/run-planner.sh, mission B).  The FSM does not know or care which -- that is
+# the point of the frozen interface -- but a planner's trajectory is ASYNCHRONOUS, so the FSM is switched
+# to path following (with its own wait) and the planner gets the goal from the world file.
+TRAJ_SOURCE="${TRAJ_SOURCE:-rect}"
+if [ "$TRAJ_SOURCE" = "planner" ]; then
+    # run-planner.sh carries its own world default (worlds/forest_all.yaml, the mission-B forest) and
+    # takes no --world: pass nothing, so the geometry stays in its one documented place.
+    bash "$REPO/tools/run-planner.sh" > "$OUT/planner.log" 2>&1 &
+else
+    python3 "$REPO/planner/rectangle_source.py" --world "$WORLD" $TRAJ_CALIB_ARG > "$OUT/traj.log" 2>&1 &
+fi
+TRAJ_PID=$!sleep 1
 python3 "$REPO/fsm/mission_fsm.py" --nav-source "$NAV_SOURCE" $CALIB_ARG \
     --tap-port 0 --alt "$TAKEOFF_ALT" --hold 3.0 --geofence-m "$GEOFENCE_M" ${FSM_ARGS:-} \
     --phase-log "$OUT/phase.csv" > "$OUT/fsm.log" 2>&1

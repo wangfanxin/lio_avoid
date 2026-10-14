@@ -446,7 +446,21 @@ class Mission:
         the curve instead of aiming at a point on it.
         """
         if self.path_l is None:
-            return "no trajectory on %s" % self.args.traj_topic
+            # A planner's trajectory is ASYNCHRONOUS: it appears some time after the goal is published, once
+            # the map is worth planning on.  Waiting for it here (rather than aborting) is what makes the
+            # same FSM work for a source that answers instantly (the rectangle) and one that does not.
+            t_wait = time.monotonic()
+            self.log("no trajectory yet on %s -- waiting up to %.0f s for the source to publish one"
+                     % (self.args.traj_topic, self.args.traj_wait_s))
+            while self.path_l is None and time.monotonic() - t_wait < self.args.traj_wait_s:
+                if self.abort_reason:
+                    return self.abort_reason
+                self.pump(0.1)
+            if self.path_l is None:
+                return ("no trajectory on %s after %.0f s (a planner that never plans looks exactly like "
+                        "this)" % (self.args.traj_topic, self.args.traj_wait_s))
+            self.log("trajectory arrived after %.1f s: %d points"
+                     % (time.monotonic() - t_wait, len(self.path_l)))
         R, t = self.calib.R_WL, self.calib.t_WL
         p = (R @ self.path_l.T).T + t                     # the path in F
         seg = np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1)
@@ -758,6 +772,9 @@ def main() -> int:
                     help="path mode: extra look-ahead per m/s of speed")
     ap.add_argument("--traj-timeout-s", type=float, default=180.0,
                     help="path mode: give up if the trajectory is not finished in this long")
+    ap.add_argument("--traj-wait-s", type=float, default=45.0,
+                    help="path mode: wait this long for the source to publish a first trajectory "
+                         "(a planner needs the map before it can plan)")
     ap.add_argument("--follow-mode", default="pos", choices=["pos", "vel"],
                     help="pos: stream the look-ahead point as a position setpoint (the verified first "
                          "version).  vel: stream a velocity along the path tangent plus a cross-track "

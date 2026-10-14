@@ -35,7 +35,7 @@ ego_planner_node:
     "grid_map/pose_type": 2               # 2 = ODOMETRY
     "grid_map/frame_id": "lio_world"
     # --- the planner ---------------------------------------------------------------------------
-    "manager/max_vel": 1.0
+    "manager/max_vel": 2.0
     "manager/max_acc": 1.0
     "manager/max_jerk": 2.0
     "manager/control_points_distance": 0.4
@@ -49,7 +49,7 @@ ego_planner_node:
     "optimization/lambda_fitness": 1.0
     "optimization/dist0": 0.60
     "optimization/swarm_clearance": 0.5
-    "optimization/max_vel": 1.0
+    "optimization/max_vel": 2.0
     "optimization/max_acc": 1.0
     "bspline/limit_vel": 1.0
     "bspline/limit_acc": 1.0

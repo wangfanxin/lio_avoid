@@ -109,7 +109,7 @@ if [ "$GOAL" != "none" ]; then
   IFS=',' read -r gx gy gz <<EOF
 $GOAL
 EOF
-  AGOAL=(--auto-goal "$gx" "$gy" "$gz")
+  AGOAL=(--auto-goal "$gx" "$gy" "$gz" --goal-timeout "${GOAL_TIMEOUT:-5}")
 fi
 
 python3 "$HERE/planner/ego_adapter.py" \
