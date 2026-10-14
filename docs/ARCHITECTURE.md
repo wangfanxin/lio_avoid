@@ -34,9 +34,10 @@ orphans -- a parameter file that nothing loads is a bug (verifiable by grep).
 ║   ┌───┴──────────┐   ┌──────────────────┐   ┌─────────────────┐   ┌────────────────────┐  ║
 ║   │ truth_rx     │──►│ lidar_imu        │   │ clock           │   │ world editor       │  ║
 ║   │ (UDP -> ROS) │   │ raycast + noise  │   │ /clock 100 Hz   │   │ RViz clicks ->     │  ║
-║   │ 400 Hz       │   │ IMU model        │   │ /sim/rtf 1 Hz   │   │ worlds/*.yaml      │  ║
+║   │ 1200 Hz      │   │ IMU model        │   │ /sim/rtf 1 Hz   │   │ worlds/*.yaml      │  ║
 ║   └──────────────┘   └────────┬─────────┘   └─────────────────┘   └─────────▲──────────┘  ║
-║   worlds/pillars.yaml ────────┘  (geometry, mount 45 deg, mission, fake_truth)│           ║
+║   $WORLD (ONE file) ──────────┘  (geometry, mount 45 deg, mission; the SENSOR gets --world too, so
+║   generation and judgement cannot disagree -- see 4.0 rule 1)                  │           ║
 ╚════════════════════════════════╪══════════════════════════════════════════════╪═══════════╝
      /livox/lidar 10 Hz (S)      │      /livox/imu 200 Hz (S)                   │ /clicked_point (W)
      /sim/truth/odom 100 Hz (W)  │                                              │
@@ -45,11 +46,10 @@ orphans -- a parameter file that nothing loads is a bug (verifiable by grep).
 ┌═══════════════════════════════════════════════════════════════════════════════╪═══════════┐
 ║ BOX 3   lio/          one LIO process (Super-LIO or FAST-LIO) + adaptation    │           ║
 ║   in : /livox/lidar 10 Hz (S), /livox/imu 200 Hz (S)                          │           ║
-║   out: /lio/odom 10 Hz (L, raw state)                                         │           ║
-║        /odom 200 Hz (L, fitted, child = base_link)                            │           ║
-║        /cloud_registered 10 Hz (L, scan in the map frame)                     │           ║
-║        /lio/map 0.2-1 Hz (L, optional), /lio/status 1 Hz (rate, degeneracy)   │           ║
-║        /tf  (odom -> base_link)                                               │           ║
+║   out: /lio/robo/odom 200 Hz (L, body pose)   /lio/odom 10 Hz (L, WITH velocity)│         ║
+║        /lio/imu/odom 200 Hz (L, IMU state + twist)                             │           ║
+║        /lio/cloud_world 10 Hz (L) = THE VOXEL MAP (0.25 m), not a raw scan     │           ║
+║        /lio/path (L)                                                          │           ║
 ╚═══════════════╪═══════════════════════════════════════════════════════════════╪═══════════╝
                 │ /odom 200 Hz (L)          /cloud_registered 10 Hz (L)         │
                 ├──────────────────────────────┬───────────────────────────────┘
