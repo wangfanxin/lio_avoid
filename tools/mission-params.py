@@ -112,22 +112,35 @@ def main() -> int:
     rt = max(float(np.linalg.norm(l_to_w(calib, q) - np.asarray(p, dtype=float)))
              for p, q in zip(stops_w, stops_l))
 
-    lines = ["%s:" % args.node, "  ros__parameters:", "    fsm:",
-             "      # WRITTEN BY tools/mission-params.py -- the mission's stations as EGO'S OWN waypoint",
-             "      # sequence (patch 0008).  Stops come from %s, converted once with %s."
+    lines = ["%s:" % args.node, "  ros__parameters:",
+             "    # WRITTEN BY tools/mission-params.py -- the mission's stations as EGO'S OWN waypoint",
+             "    # sequence (patch 0008).  Stops come from %s, converted once with %s."
              % (os.path.basename(args.world), os.path.basename(args.calib_file)),
-             "      flight_type: 2                 # PRESET_TARGET",
-             "      waypoint_num: %d" % len(stops_l),
-             "      waypoint_advance_m: %.3f" % args.advance_m,
+             # FLAT, QUOTED, SLASH-SEPARATED KEYS.  NOT a nested `fsm:` map, and that is the whole point.
+             # MEASURED 2026-10-15 (sortie AP1-stations, the first flight that ever passed this file to the
+             # planner): with the nested map the file WAS delivered -- run-planner.sh's own header prints
+             # `stations /home/fanxin/lio_avoid/logs/missionA-AP1-stations/stations.yaml (ego plans the
+             # sequence itself)` -- and ego still came up with
+             #   `WP-INDEX: sequence armed: -1 waypoints, advance 0.150 m, loop 0`
+             # i.e. the DEFAULT of every key in this file.  ROS 2 flattens a nested map into DOT-separated
+             # parameter names (`fsm.waypoint_num`), so the name the C++ declares, `fsm/waypoint_num`, kept
+             # the value from the base params file (params/ego_planner_humble_coll20.yaml:12) and
+             # `fsm/flight_type` stayed 1 = MANUAL_TARGET.  That second one is why the sortie could not even
+             # reach patch 0008's gate: the gate is `target_type_ == PRESET_TARGET && waypoint_start_alt_ > 0`.
+             # All three committed planner params files write this form (`"fsm/waypoint_num": -1`), so this
+             # is the house convention and not a preference.
+             '    "fsm/flight_type": 2                 # PRESET_TARGET',
+             '    "fsm/waypoint_num": %d' % len(stops_l),
+             '    "fsm/waypoint_advance_m": %.3f' % args.advance_m,
              # patch 0008's START-ALTITUDE GATE: the tour must not be armed while the vehicle is on the pad.
-             "      waypoint_start_alt: %.2f" % args.start_alt,
-             "      waypoint_loop: %s" % ("true" if args.loop else "false")]
+             '    "fsm/waypoint_start_alt": %.2f' % args.start_alt,
+             '    "fsm/waypoint_loop": %s' % ("true" if args.loop else "false")]
     for i, q in enumerate(stops_l):
-        lines.append("      waypoint%d_x: %.4f" % (i, q[0]))
-        lines.append("      waypoint%d_y: %.4f" % (i, q[1]))
-        lines.append("      waypoint%d_z: %.4f" % (i, q[2]))
+        lines.append('    "fsm/waypoint%d_x": %.4f' % (i, q[0]))
+        lines.append('    "fsm/waypoint%d_y": %.4f' % (i, q[1]))
+        lines.append('    "fsm/waypoint%d_z": %.4f' % (i, q[2]))
     for i in range(len(stops_l)):
-        lines.append("      waypoint%d_dwell_s: %.1f" % (i, dwell.get(i, args.dwell_s)))
+        lines.append('    "fsm/waypoint%d_dwell_s": %.1f' % (i, dwell.get(i, args.dwell_s)))
     text = "\n".join(lines) + "\n"
 
     if args.out:
