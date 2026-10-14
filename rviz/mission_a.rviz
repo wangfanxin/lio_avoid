@@ -1,3 +1,8 @@
+# FROZEN -- MISSION A'S RVIZ VIEW.  Do not edit: this is the view every mission-A number in docs/STATUS.md
+# was watched in (12 x 12 m arena, fixed frame world_w, the world's pillars as markers, the simulated
+# Livox cloud in the sensor frame, the truth odometry from the SITL tap).  Mission B has its own view in
+# rviz/mission_b.rviz (24 x 24 m, ego-planner's map and its /planner/traj).  The freeze is verified by
+# tools/frozen-check.py against frozen/mission_a.manifest.
 Panels:
   - Class: rviz_common/Displays
     Help Height: 78

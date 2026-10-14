@@ -111,8 +111,11 @@ def main() -> int:
         print("C1 final point           <= 0.30 m      %d of %d   %s"
               % (*count(c1, lambda v: v <= 0.30), _stats(c1, "m")))
         c2 = [r["C2"] for r in rows]
-        print("C2 obstacle clearance    >= 0.35 m      %d of %d   %s"
-              % (*count(c2, lambda v: v >= 0.35), _stats(c2, "m")))
+        # the same contract number the adapter gates on and metrics.py scores with (0.20 m since
+        # 2026-10-14; it was 0.35 m).  Hard-coded HERE on purpose: this is the verdict line, so it must
+        # state the contract it judged, not inherit whatever the parser happened to find.
+        print("C2 obstacle clearance    >= 0.20 m      %d of %d   %s"
+              % (*count(c2, lambda v: v >= 0.20), _stats(c2, "m")))
 
     b1e = [r["B1"][0] for r in rows if r["B1"]]
     b1n = [r["B1"][1] for r in rows if r["B1"]]

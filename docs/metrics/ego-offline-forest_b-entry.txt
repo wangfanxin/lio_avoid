@@ -1,0 +1,38 @@
+ego-planner offline chain test
+when            2026-10-14 15:28:04
+world           /mnt/d/distill_self/lio_avoid/worlds/forest_b.yaml (256 pillars)
+calib           L->W yaw +90.050 deg, t = [-0.0008 -0.0041 +0.1156] m (n=45589, rms 0.0177 m)
+mutation        none
+start W         [+0.000 +0.000 +2.000] heading 0.0 deg
+goal W          [+4.000 +0.000 +2.000]
+goal L          [+0.0006 -4.0008 +1.8844]
+W->L->W goal round trip   0.000000 mm
+cloud           20000 points from the start pose, frame lio_world, mid360_pattern.csv (real MID-360, rows 1..20000); re-cast from the moving pose at 4.0 Hz
+published       463 odom / 99 clouds / 23 goals at 50.0 / 4.0 / 1 Hz
+logs            /tmp/ego-offline-1791962851
+
+MEASURED
+  paths published            88
+  frame_id                   ['lio_world']
+  points per path            8 (min 2)
+  republish rate             3.99 Hz median, 3.54 Hz worst (worst gap 0.28 s; 0 gaps over 0.5 s)
+  first path arrived         3.25 s after publishing started
+  trajectory-time spacing    min 0.0003 / median 0.0200 / max 0.0200 s  (= 50.0 Hz worst, 2406 consecutive pairs)
+  arc step between points    median 0.0259 m, max 0.0408 m  (= 24.5 Hz of trajectory time at the planner's 1.0 m/s limit)
+  min pillar clearance       0.2755 m (p05 0.2872) over 2494 points
+  points outside the arena   0
+  start distance to vehicle  median 0.0057 m, worst 2.3687 m (limit 0.50)
+  last path ends at W        [+3.8699 -0.0001 +2.0000]
+  PLAN reaches the goal      0.1301 m away (horizontal 0.1301)
+  adapter goal, back to W    [+4.0000 +0.0000 +2.0000]  = 0.0000 mm from the requested goal
+  VEHICLE ended at W         [+3.8699 -0.0001 +2.0000]  = 0.1301 m from the goal
+  vehicle path length        3.874 m
+  path length                4.040 m (straight line 4.040 m)
+  path box in W              E[+0.00 +4.04] N[-0.00 -0.00]
+
+WHAT THE NODES SAID (from their own logs in /tmp/ego-offline-1791962851)
+  planner  plan_success=12  replans=3540  segfault=no
+  adapter  goals in 23, published 23, rejected 0, deferred 0 | Bsplines 12 | paths published 89, withheld 0 | republish 4.00 Hz (median over 88 intervals)
+
+VERDICT  FAIL
+   a published path starts 2.3687 m from the vehicle (> 0.50 m)

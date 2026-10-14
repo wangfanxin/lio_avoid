@@ -61,7 +61,7 @@ orphans -- a parameter file that nothing loads is a bug (verifiable by grep).
 ║              + /lio/robo/odom: RAW registered points, publisher QoS RELIABLE              ║
 ║        /goal_pose (W) -> the adapter converts to L (same calib as the FSM) and forwards   ║
 ║   out: planning/bspline (L) -> the adapter -> /planner/traj (nav_msgs/Path, L, >= 2 Hz)   ║
-║        the adapter REFUSES a path that breaks PLAN 4.1 (arena / 0.35 m footprint / start   ║
+║        the adapter REFUSES a path that breaks PLAN 4.1 (arena / 0.20 m footprint / start   ║
 ║        distance) and prints which check failed with its number                            ║
                 │            ╚═══════════════════════════════════╪═════════════════════════╝
                 │                                             │ /planner/traj (L)

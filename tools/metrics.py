@@ -468,7 +468,12 @@ def main() -> int:
             import yaml
             wcfg = yaml.safe_load(open(args.world)) or {}
             pillars = wcfg.get("pillars", []) or []
-            foot = 0.35
+            # C2's band is the project's clearance CONTRACT, the same number the adapter gates on
+            # (planner/ego_adapter.py --footprint).  It is measured here against the world file's TRUE
+            # pillars, on the SITL tap's truth, so C2 answers "did the real vehicle ever come closer than
+            # the contract?" rather than "did the planner's own map think it was fine?".
+            # DECIDED by the user 2026-10-14: 0.20 m (was 0.35 m).
+            foot = 0.20
             m_all = np.flatnonzero(p_tap[:, 2] > 0.30)      # everything above 30 cm: take-off to landing
             if pillars and len(m_all):
                 q = p_tap[m_all]

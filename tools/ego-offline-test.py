@@ -432,7 +432,9 @@ def main():
                     help="odometry-only seconds before the first goal, as in the real stack")
     ap.add_argument("--cloud-hz", type=float, default=4.0)
     ap.add_argument("--odom-hz", type=float, default=50.0)
-    ap.add_argument("--footprint", type=float, default=0.35)
+    ap.add_argument("--footprint", type=float, default=0.20,
+                    help="the clearance contract, same number as the adapter's --footprint (0.20 m since "
+                         "2026-10-14; it was 0.35 m)")
     ap.add_argument("--start-max", type=float, default=0.50)
     ap.add_argument("--goal-tol", type=float, default=0.35,
                     help="how close the VEHICLE must end to the goal")

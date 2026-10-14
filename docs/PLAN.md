@@ -80,7 +80,17 @@ one rotation is allowed), B2 <= 30 mm, B3 <= 68 mm (`docs/figures/round7/`).
 | producer today | `planner/rectangle_source` -- the square from `worlds/pillars.yaml`, corner holds included |
 | producer later | `planner/ego_adapter` -- samples the planner's B-spline into the same Path; the planner itself is untouched |
 | FSM's obligations | sample it at 50 Hz, convert L -> F, stream the setpoints, enforce the safety gates, publish `/fsm/phase` |
-| source's obligations | keep the path inside the arena, leave >= the vehicle's footprint to any pillar, and never publish a path that starts further than 0.5 m from the current state |
+| source's obligations | keep the path inside the arena, leave >= **0.20 m** (`--footprint`) to any pillar's TRUE surface in the world file, and never publish a path that starts further than 0.5 m from the current state |
+
+**The clearance contract is 0.20 m** (decided by the user 2026-10-14: *"我希望这个值是0.2m"*; it was 0.35 m).
+It is measured by `planner/ego_adapter.World.clearance()` against the world file's analytic cylinders --
+not against the planner's inflated occupancy grid -- so it is independent of `grid_map/obstacles_inflation`,
+which the user set to **0.10 m** the same day (from 0.45 m).  The two numbers do different jobs: 0.20 m is
+what the project promises, 0.10 m is what the planner believes, and the promise is the binding one.  The
+consequence for any world is then a formula: a corridor of width `g` is flyable while `g > 2 x 0.20 =
+0.40 m`, and visible to the planner at all while `g > 2 x 0.10 = 0.20 m`.  The 1.5 m / r = 0.4 m forest of
+`worlds/forest_b.yaml` has `g = 0.565-0.640 m`, so it is both flyable AND threadable -- which is what makes
+mission B a real avoidance problem rather than a corridor-following exercise.
 
 Why a `nav_msgs/Path` and not a bespoke message: it carries what both sources can produce without a new
 package, and it keeps the *planner's* message types out of the flight-critical code -- the adapter is the

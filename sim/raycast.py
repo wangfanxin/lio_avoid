@@ -21,6 +21,8 @@ import argparse
 import math
 import os
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -183,7 +185,7 @@ def as_per_ray_pose(origin, R, n: int):
 
 def cast(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: World, *,
          rmin: float = 0.10, rmax: float = 40.0, return_full: bool = False,
-         return_index: bool = False):
+         return_index: bool = False, prune: bool = True):
     """Cast `rays` (N,2: azimuth, elevation) from `origin` with attitude `R` (sensor->world).
 
     `origin` and `R` may be one pose or one pose per ray (see `as_per_ray_pose`).  The sensor frame is
@@ -191,6 +193,10 @@ def cast(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: World, *,
     Returns (points_world (M,3), ranges (M,)) with non-hits dropped; `return_full=True` adds best_t
     (N,) where misses are +inf, and `return_index=True` instead returns the N-ray indices of the hits,
     which is how the scan simulator gets each surviving point's own pose back.
+
+    `prune` = True uses the exact per-band prefilter described at `_cast_cylinders` (bit-for-bit the same
+    result, several times faster on a dense forest); False runs the plain loop over every pillar, which is
+    what `--prune-check` compares against.
     """
     n = len(rays)
     az, el = rays[:, 0], rays[:, 1]
@@ -237,23 +243,7 @@ def cast(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: World, *,
     # at the farther hit.  It was also SLOWER than this plain loop (22.3 ms vs 18.2 ms at 48
     # pillars), because the mask costs more than the vectorised quadratic it saves.  So: no culling.
     # The scalar reference in brute_force() is what keeps this honest.
-    for cx, cy, r, z0, z1 in world.pillars:
-        ox, oy = o[:, 0] - cx, o[:, 1] - cy
-        dx, dy = d[:, 0], d[:, 1]
-        a = dx * dx + dy * dy
-        b = 2.0 * (ox * dx + oy * dy)
-        c = ox * ox + oy * oy - r * r
-        disc = b * b - 4.0 * a * c
-        ok = (disc > 0) & (a > 1e-12)
-        if not np.any(ok):
-            continue
-        sq = np.sqrt(np.where(ok, disc, 0.0))
-        t1 = (-b - sq) / (2.0 * a)
-        t2 = (-b + sq) / (2.0 * a)
-        t = np.where(t1 > 0, t1, t2)
-        hit_z = o[:, 2] + t * d[:, 2]
-        ok &= (t > 0) & (hit_z >= z0) & (hit_z <= z1)
-        best_t = np.where(ok & (t < best_t), t, best_t)
+    best_t = _cast_cylinders(o, d, world.pillars, best_t, prune)
 
     good = np.isfinite(best_t) & (best_t >= rmin) & (best_t <= rmax)
     t = best_t[good]
@@ -263,6 +253,83 @@ def cast(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: World, *,
     if return_full:
         return pts, t, best_t
     return pts, t
+
+
+# --------------------------------------------------------------------- the cylinder pass, pruned exactly
+#
+# WHY THIS EXISTS: the number of primitives is now a real cost.  MEASURED 2026-10-14 on the mission-B world
+# (24 x 24 m, 256 pillars of r = 0.40 m -- the user's spec): one 20 000-ray scan took 147.6 ms, i.e. the
+# sensor could run at 6.8 Hz against the 10 Hz the whole chain is built on (28 pillars: 20.4 ms; 46: 30.4).
+# Splitting the pillar loop across 8 threads was tried first and is a DEAD END, measured: 138.5 ms -> 727 ms
+# (0.2x), i.e. 5x slower, because the per-pillar arrays are small and the threads spend their time in the
+# allocator and the GIL instead of in arithmetic.  So the work itself is cut instead.
+#
+# The prune is exact, not heuristic.  A ray that starts at o, has already been found to hit something at
+# best_t, and hits a cylinder of radius r must satisfy, by the triangle inequality,
+#
+#       hypot(o_xy - c_xy)  <=  best_t + r
+#
+# (the entry point is at most best_t away from o and exactly r from the axis).  Rays are therefore split
+# into groups by their current best_t, and a whole group skips a pillar when the pillar's axis is further
+# than the group's LARGEST best_t + r from every origin in it -- using the group's bounding circle
+# (centre, radius), a SCALAR test per (group, pillar) pair.  Because every group is pruned with an upper
+# bound on its own final best_t and each group's rays are updated only by pillars that can beat it, the
+# result equals the un-pruned loop BIT FOR BIT, which `--prune-check` asserts with np.array_equal.
+_T_BANDS = (0.0, 1.0, 2.0, 3.0, 5.0, 8.0, 12.0, 20.0, float("inf"))
+
+
+def _cast_cylinders(o, d, pillars, best_t, prune: bool = True):
+    """The cylinder ray-cast: exact, and blind to pillars that provably cannot be hit."""
+    if len(pillars) == 0 or not prune:
+        return _cast_cylinders_chunk(o, d, pillars, best_t)
+    n_rays = len(o)
+    for lo, hi in zip(_T_BANDS[:-1], _T_BANDS[1:]):
+        idx = np.flatnonzero((best_t >= lo) & (best_t < hi))
+        if len(idx) == 0:
+            continue
+        t_max = float(best_t[idx].max())
+        og = o[idx]
+        cxy_x = float(og[:, 0].mean())
+        cxy_y = float(og[:, 1].mean())
+        rad = float(np.hypot(og[:, 0] - cxy_x, og[:, 1] - cxy_y).max()) if len(idx) > 1 else 0.0
+        reach = t_max + rad                        # + the pillar's own radius, added per pillar
+        keep = (np.hypot(pillars[:, 0] - cxy_x, pillars[:, 1] - cxy_y)
+                - pillars[:, 2] - reach) <= 0.0
+        sub = pillars[keep]
+        if len(sub) == 0:
+            continue
+        best_t[idx] = _cast_cylinders_chunk(og, d[idx], sub, best_t[idx])
+    return best_t
+
+
+def _cast_cylinders_chunk(o, d, pillars, best_t):
+    """The pillar loop itself.  The arithmetic is the SAME closed form as before the prune, term for term
+    -- `two_a` replaces the literal `2.0 * a` denominator (set to 1 where the ray is vertical, so the
+    masked-out garbage stays finite instead of inf) and `4.0 * a * c` is the same product as `four_a * c`.
+    Ray-only terms are hoisted out of the loop, which is worth about 7 % on its own."""
+    dx, dy, dz = d[:, 0], d[:, 1], d[:, 2]
+    ox_all, oy_all, oz_all = o[:, 0], o[:, 1], o[:, 2]
+    a = dx * dx + dy * dy
+    a_ok = a > 1e-12
+    two_a = np.where(a_ok, 2.0 * a, 1.0)
+    four_a = 4.0 * a
+    for cx, cy, r, z0, z1 in pillars:
+        ox = ox_all - cx
+        oy = oy_all - cy
+        b = 2.0 * (ox * dx + oy * dy)
+        c = ox * ox + oy * oy - r * r
+        disc = b * b - four_a * c
+        ok = (disc > 0) & a_ok
+        if not ok.any():
+            continue
+        sq = np.sqrt(np.maximum(disc, 0.0))    # disc <= 0 is masked out by `ok` either way
+        t1 = (-b - sq) / two_a
+        t2 = (-b + sq) / two_a
+        t = np.where(t1 > 0, t1, t2)
+        hit_z = oz_all + t * dz
+        ok &= (t > 0) & (hit_z >= z0) & (hit_z <= z1)
+        best_t = np.where(ok & (t < best_t), t, best_t)
+    return best_t
 
 
 def cast_full(origin: np.ndarray, R: np.ndarray, rays: np.ndarray, world: World, *,
@@ -400,6 +467,10 @@ def main() -> int:
     ap.add_argument("--summary", action="store_true")
     ap.add_argument("--selftest", action="store_true",
                     help="prove the culled casting equals the un-culled reference")
+    ap.add_argument("--prune-check", action="store_true",
+                    help="prove the pruned cylinder pass equals the un-pruned one, BIT FOR BIT, and time "
+                         "both (the prune exists because 256 pillars cost 147 ms/scan, i.e. 6.8 Hz "
+                         "against a 10 Hz chain)")
     ap.add_argument("--scale", action="store_true",
                     help="timing versus pillar count (the forest gets dense)")
     ap.add_argument("--pos", default="0,0,3.2", help="sensor origin x,y,z")
@@ -468,6 +539,45 @@ def main() -> int:
 
         print("  SELFTEST %s" % ("PASS" if bad == 0 else "FAIL (%d of 7 differ)" % bad))
         return 0 if bad == 0 else 1
+
+    if args.prune_check:
+        # WHY THIS TEST EXISTS: the prefilter is only allowed to be a SPEED change.  Its bound is a proof
+        # (a hit within best_t implies hypot(o_xy - c_xy) <= best_t + r), and every band is pruned against
+        # an UPPER bound of its own final best_t, so the pruned cast must equal the un-pruned one exactly --
+        # not to 1e-9, to the last bit.  If a future edit prunes a band with the wrong bound, or updates
+        # best_t across bands, the numbers would still LOOK right and every geometry conclusion in this
+        # project would rest on a subtly different world.  np.array_equal is the whole point.
+        import time
+        print("world   : %s (%d pillars)" % (args.world, len(w.pillars)))
+        nz = 0
+        for trial in range(4):
+            if trial == 0:
+                origin = np.array([0.0, 0.0, 2.6])
+            else:
+                origin = np.random.default_rng(trial).uniform(-3, 3, 3)
+                origin[2] = abs(origin[2]) + 0.6
+            R = rpy_to_R(0, 0, 0) @ make_mount_rotation(mount)
+            _, r1, a1 = cast(origin, R, rays, w, return_full=True, return_index=True, prune=False)
+            _, r8, a8 = cast(origin, R, rays, w, return_full=True, return_index=True, prune=True)
+            same_full = bool(np.array_equal(a1, a8))       # includes the +inf misses
+            same_hits = bool(np.array_equal(r1, r8)) and len(a1) == len(a8)
+            print("  trial %d origin (%+.2f, %+.2f, %+.2f): %d hits, best_t identical=%s, "
+                  "ranges identical=%s" % (trial, origin[0], origin[1], origin[2], len(r1),
+                                           same_full, same_hits))
+            nz += 0 if (same_full and same_hits) else 1
+            if trial == 0:
+                t0 = time.perf_counter()
+                for _ in range(5):
+                    cast(origin, R, rays, w, prune=False)
+                t_off = (time.perf_counter() - t0) / 5 * 1e3
+                t0 = time.perf_counter()
+                for _ in range(5):
+                    cast(origin, R, rays, w, prune=True)
+                t_on = (time.perf_counter() - t0) / 5 * 1e3
+                print("  cost: no prune %.2f ms/scan, pruned %.2f ms/scan (%.2fx), budget 100 ms "
+                      "at 10 Hz" % (t_off, t_on, t_off / t_on))
+        print("  PRUNE %s" % ("PASS" if nz == 0 else "FAIL (%d of 4 differ)" % nz))
+        return 0 if nz == 0 else 1
 
     if args.scale:
         import time

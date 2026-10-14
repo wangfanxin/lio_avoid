@@ -24,7 +24,7 @@ whose round trip is worse than `--roundtrip-mm`.
 
 OBLIGATIONS CHECKED ON EVERY PATH (PLAN.md 4.1, "source's obligations"):
   1. inside the arena (from the world file's `arena.walls`)
-  2. >= `--footprint` (0.35 m) clearance from every pillar in the world file
+  2. >= `--footprint` (0.20 m) clearance from every pillar in the world file
   3. starts no further than `--start-max` (0.50 m) from the vehicle's current state
 A path that breaks any of them is NOT published: the counters in the periodic report are the
 evidence, and the console line says which check failed and by how much.
@@ -694,7 +694,15 @@ def main():
     ap.add_argument("--odom-topic", default="/lio/robo/odom")
     ap.add_argument("--rate", type=float, default=4.0, help="republish rate, Hz (>= 2 required)")
     ap.add_argument("--dt", type=float, default=0.02, help="trajectory-time sample spacing, s")
-    ap.add_argument("--footprint", type=float, default=0.35)
+    ap.add_argument("--footprint", type=float, default=0.20,
+                    help="the project's clearance CONTRACT, metres: no point of a published path may come "
+                         "closer than this to a TRUE pillar surface in the world file.  It is measured "
+                         "against the analytic cylinders, NOT against ego-planner's inflated occupancy "
+                         "grid, so it is independent of `grid_map/obstacles_inflation`.  DECIDED by the "
+                         "user 2026-10-14: \"我希望这个值是0.2m\" (it was 0.35 m).  At 0.35 the planner's "
+                         "own plans failed it by 12-43 mm in 3 of 4 measured cases (STATUS.md row 48); at "
+                         "0.20 the same maps stay valid and the 1.5 m forest's 0.565 m corridors become "
+                         "passable (2 x 0.20 = 0.40 m needed)")
     ap.add_argument("--start-max", type=float, default=0.50)
     ap.add_argument("--roundtrip-mm", type=float, default=1.0)
     ap.add_argument("--dump-bspline", default="",

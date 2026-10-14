@@ -1,0 +1,67 @@
+# =====================================================================================================
+# THE FROZEN MISSION-A SET, stamped 2026-10-14.
+#
+# The user's instruction: "mission A之前的任务和rviz的地图都保存好，冻结，不搞了" -- mission A and everything
+# before it, together with its RViz map, are finished: save them, freeze them, stop working on them.
+# Mission B is a NEW world (worlds/forest_b.yaml) with a NEW RViz map (rviz/mission_b.rviz); neither of
+# them is listed here, and neither is allowed to change anything below.
+#
+# WHAT IS FROZEN: the five world files mission A was flown in, the mission/EKF parameter sets it was flown
+# with, the RViz view it was watched in, its figures, and the metric dumps that carry its numbers.
+# WHAT IS NOT FROZEN: docs/*.md (they are the living record and mission B keeps updating STATUS.md), the
+# tools and the flight scripts (mission B fixes bugs in them), and the mission-B artifacts.
+#
+# HOW TO CHECK: python3 tools/frozen-check.py   -- recomputes every SHA-256 below and names any file that
+# moved.  Nothing in this project re-runs a mission-A flight; if a frozen file changes, the mission-A
+# numbers in docs/STATUS.md are numbers about a different world, and that is what this manifest refuses to
+# let happen silently.
+# =====================================================================================================
+70fa61cfbe2ae4c2fb2a70e2f5c144e6bef1f0134b9d8cf4a4d303af665b44db  docs/figures/mission_a/s4_map.png  399811
+1ae1268a07c3ab943dd159ae06884bc05731b7cdbb6afde5896e1debf53a369a  docs/figures/mission_a/scan_at_cruise_real.png  556067
+2ede4b5973a815c70757f1e37c22d5ec8b25ad86b70bf42ce0a79987eb8e9f5f  docs/figures/mission_a/scan_at_low_real.png  602839
+9795eead13e7afe38dc5e6a00417b42b17ac0da9cc7a9d1902c2de67a24f67a8  docs/figures/mission_a/traj-xy-fullforest-01-20261014_114104.png  161635
+976e61a0b0e3444dbcb342ec49e73c36e01e2e2a64cbe5cc47e29aac7b76f6e3  docs/figures/mission_a/traj-xy-fullforest-02-20261014_114104.png  162787
+20324ca5487a657c110a7f0330d70945bc1619ecb38cf7b6a35d14ead4cfd038  docs/figures/mission_a/traj-xy-fullforest-03-20261014_114104.png  162455
+9d9ec4e89b86431f316c5aa7e3d42eb4153dd87993bf929464f1171a5136cc6a  docs/figures/mission_a/traj-xyzt-fullforest-01-20261014_114104.png  148079
+706be998c9dcd52d91241b4c1b5dc5dba130e9a46350eeabee603934299ee7ae  docs/figures/mission_a/traj-xyzt-fullforest-02-20261014_114104.png  148438
+626787fca748eabb4bbeb10efddfd3233c57ae4c8cd1fa2c5debf074798e5df1  docs/figures/mission_a/traj-xyzt-fullforest-03-20261014_114104.png  150434
+d95df3a4477fbf954eebd088fa1350a5e51e20f52a22565c6d0e79fe18676f74  docs/figures/round7/fig1_tilt.png  159817
+7b1cad7ac02eeaa96fde019eef629f7a3687ea7cfa5a61616e0b040c21438e02  docs/figures/round7/fig2_accuracy_rates.png  106875
+44512cae359b622afed34d505503b55d4a9ae65dd652a67ccc5c8587009ae1a7  docs/figures/round7/fig3_noise_floor.png  99266
+f6e71378676ad10444b0777589469ef4a2cf56217c10bb963f20d37956214599  docs/figures/round7/fig4_ab.png  86394
+8ac0cfb4a6f7d74e736048a3ecc612cdc64f91b43e33e25c6723e71804ca7b28  docs/figures/round7/fig5_a3.png  119267
+dbae7fb198ab293b88c7de9f31c965d517dbb355778f9880da13f589c4a30c0c  docs/figures/round7/fig6_flight.png  116506
+915079c22cc75934d20db42f475a784cc29a78926fb5d5532619c6ba9f4518f3  docs/figures/round7/fig7_when.png  133169
+15916e3487f0edebfa9a3ae5681473d718fda029f47a94fdcb9df1a108d985b3  docs/figures/round7/round7_table.csv  2312
+c950928966bea84ba6fb4ac6916aa4116b4d3a0e50e0b7785a15ae18763e2237  docs/metrics/lio-attitude-20261013.txt  2512
+290e9d9daa12c5bcc29a2f0a507f624c7d1cfd208fa58e308c9b511e5e2f8cdf  docs/metrics/phaseA-batch-20261013_223212.txt  2287
+28df823db08697b3408c4ad645a5cee318164053211b63bfd362503d06900724  docs/metrics/phaseA-settle-20261013_230937.txt  2734
+efeb4e8c763d3192a0b7b1a128158e40ede3093bfeb01c981544636d657e813b  docs/metrics/phaseA-step-b-20261013_224336.txt  2463
+3c5225bf17fef74439c6074e38da82c54d556969c933be9f001bd1042f755422  docs/metrics/phaseB-corner-gates-ab-20261013.txt  5691
+b98e69f5a89b22de215fff0700f69408fb5d482d17a2778f6b6ec684f16a47cd  docs/metrics/r6c1-20260930_041559.txt  3511
+97ddb021924c8610a427a71a0e44db31974c3ae8b1c8bb7d2e0b3329a609e96a  docs/metrics/r6c2-20260930_042416.txt  3513
+498ceebbcb3d0f608b632dc6e37d2d2fd43183d6e295b06abea21762845c24ad  docs/metrics/r6c3-20260930_043122.txt  3533
+0aa60f881a1c3a90e8f05bf3dace9e3a8e1cd90181694759951a91afec77f997  docs/metrics/r6c4-20260930_044233.txt  3513
+d9ab1b489e1a63da6fec3aa3f8d1da4dd77763014f444ba8109be04cfa58bda6  docs/metrics/r6c5-20260930_045055.txt  3533
+a4cb1ca932d7abb4a33052fccba55d3aaf7d3662cbe22f873f986260e8df010e  docs/metrics/r7a1-20260930_050230.txt  3553
+53d919776c328c4a71d4b056b67c046857440c602008277b82a73c46aa6b1333  docs/metrics/r7a2-20260930_050817.txt  3554
+af302a1e6abad8175512cba1474841a03f4ef9278dc9ffba1e1bc046217c5a16  docs/metrics/r7a3-20260930_051328.txt  3575
+611c23123125803729d08cc78fed277b4862df3b6eca7e59f25ca0eb8797c1bf  docs/metrics/r7b1-20260930_052036.txt  3533
+45774eaaf4130d196f471409f73c589f97c77add2f61ee0dd72a5c9a66fd8fe6  docs/metrics/r7b2-20260930_052630.txt  3533
+ceb95d05423576384c3fd2fef8f072de2b26b956e7b35da7ec9d4234c10b5044  docs/metrics/r7d1-20260930_053418.txt  3533
+38cfdafa48b0427e259dd9094f5708e0801d197f4057922af2f70f7379420997  docs/metrics/r7d3-20260930_054251.txt  3533
+268f92ae82659de411bf8c58ddc3ca4f621f17efa0dc644758fd83d9f20e7ca9  docs/metrics/r7e1-20260930_054948.txt  3533
+85ab4a42dc495dc693071a6445ba413f53b7ef7c26954d12778616c4285564ab  docs/metrics/stepB-rectangle-20261013.txt  3116
+37ee27dc961a251cba860324564fc8c6ec2f862eec49f5ca3ac05837641957e0  params/apm_lio_only.parm  7603
+4f3d4ff049f1e03eb7837b81bfd239be3826e020a12fc40e405c04ed5e3d00b5  params/ekf_trust_lio.parm  3718
+259ec220b837ca7961441d81d9a11d62f79e5b0b1f7b626a8df1c88219240a6c  params/phase_a_mission.parm  977
+e437e5bfc1af88ee5db6a21d1712e0baa94e1c7ce520fbce69b163f1e269a8dc  params/phase_a_mission_fast.parm  1524
+a0196a13ed8d4a67738be25257621ecb5200c5ea46c0f1b412399a4215b5d2b7  params/phase_a_posz_baro.parm  1243
+4f546e56567271c103feb15aad7e5d05eb12dd412b6c2118d49de97e1b5f9ec2  params/phase_a_posz_lio.parm  1248
+63a42c8c9ab7b99795af5f5a6e2b8cbd4923fb7a45696c63e733c2f580f32aef  params/sitl_basics.parm  2071
+efcd34dfacfaeaf681536e0f3c11a6f836d799c02ff24de7509d2c0a189748b8  rviz/mission_a.rviz  4313
+1e249bdd39fd6fd02e0bb7cd11333e2ad1fabece05abc0425f35837016bf8605  worlds/corridor_fast.yaml  34216
+6e1824759c92cacaf8549c4b79a5a6f7ab8ef6b1c137f2263127d50264f96325  worlds/forest6x4.yaml  4535
+ad1d60b571a3305df251b8389998924608a1beb66792f13cb11f2b915bfdbdb5  worlds/forest_all.yaml  4910
+3c1c5daa0a6b20ee97c75a27b5e0b1e4b8ca4b1ece93463093c1af405e808c91  worlds/pillars.yaml  6133
+02bba01132f428d67d5ced394af86f408c04a49b29c42cf2f62e5e861f2d0148  worlds/pillars_fast.yaml  10401

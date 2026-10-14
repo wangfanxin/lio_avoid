@@ -18,7 +18,20 @@ ego_planner_node:
     "grid_map/local_update_range_x": 6.0
     "grid_map/local_update_range_y": 6.0
     "grid_map/local_update_range_z": 3.0
-    "grid_map/obstacles_inflation": 0.45  # the vehicle's footprint
+    # DECIDED by the user 2026-10-14: "ego膨胀0.1m就够了我觉得".  0.10 m is exactly ONE grid cell
+    # (`inf_step = ceil(0.10 / 0.10) = 1`), and it is also within a thousandth of upstream's own default
+    # (`advanced_param.launch.py`: 0.099) -- ego-planner's inflation is the PLANNER's own margin, not the
+    # project's safety contract.  The contract lives in the adapter's `--footprint` (now 0.20 m, measured
+    # against the TRUE pillar surfaces of the world file) and it is strictly larger, so the adapter is
+    # still the binding gate.
+    # WAS 0.45 (5 cells = 0.50 m).  MEASURED 2026-10-14 (STATUS.md row 50, commit b46a2e4): raising it
+    # 0.2 -> 0.45 "moved the withheld point from 110 to 92 but did NOT change the clearance", so this
+    # number was never what decided how close the plan came.  What it DID decide is whether ego's map has
+    # any free channel at all in a dense forest: a corridor of width g stays passable for ego only while
+    # g > 2 x inflation (1.00 m at 0.45, 0.20 m at 0.10).  The user's 1.5 m / r = 0.4 m forest has
+    # corridors of 0.565-0.640 m, so at 0.45 the whole forest was solid to the planner and at 0.10 it is
+    # threadable (0.365-0.440 m of free channel = 3.6-4.4 cells).
+    "grid_map/obstacles_inflation": 0.10
     "grid_map/local_map_margin": 10
     "grid_map/ground_height": 0.0
     "grid_map/use_depth_filter": false    # there is NO camera in this project
