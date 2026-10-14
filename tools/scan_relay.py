@@ -51,6 +51,12 @@ def main() -> int:
     node = Node("scan_relay")
     qos = QoSProfile(depth=5, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.BEST_EFFORT)
     pub = node.create_publisher(PointCloud2, args.dst, qos)
+    # RELIABLE_FOR_PLANNER: the planner subscribes with RELIABLE and a BEST_EFFORT publisher
+    # cannot deliver to it (MEASURED 2026-10-14: "offering incompatible QoS. No messages will be
+    # sent to it" -- the planner had NO map for every Mission B attempt until this line).
+    qos_pub = QoSProfile(depth=10, history=HistoryPolicy.KEEP_LAST,
+                          reliability=ReliabilityPolicy.RELIABLE)
+    pub = node.create_publisher(PointCloud2, args.dst, qos_pub)
     state = {"n": 0, "t0": time.monotonic(), "p": None, "R": None, "odom": 0}
 
     def on_odom(m: Odometry):

@@ -154,6 +154,37 @@ so `sim/` can fly a scripted square and publish exactly the same topics.  That i
 | 6 RViz | everything visual | tool topics | nothing (display and world editing only) |
 | 7 `tools/` | everything | logs, tables, figures | the evidence |
 
+## 4.0 The chain AS BUILT — 2026-10-14 (read this before the diagram: that one is the design intent)
+
+Every row is a measured number from a run directory, and the row says where.
+
+| stage | what really happens | the number, and where it came from |
+|---|---|---|
+| truth | ArduPilot SITL (Copter-4.7.1 + `patches/0001` tap) steps at 1200 Hz and emits `TAP` lines on UDP | **1200.5 Hz**, `logs/s3-parked-*` |
+| sensor | `sim/lidar_imu.py` renders `/livox/lidar` (20 000 points, 10 Hz, per-point times) and `/livox/imu` | **199.4-200.1 Hz IMU**, decimation derived from the rate that ARRIVES, `logs/missionA-imu200a` |
+| LIO | clean upstream Super-LIO `f89f48d`: `/lio/robo/odom` (200 Hz, body pose, L), `/lio/odom` (10 Hz, WITH velocity), `/lio/imu/odom` (200 Hz), **`/lio/cloud_world` = the VOXEL map (0.25 m)**, `/lio/path` | 200.1 Hz delivered, `logs/missionA-stepB10-*` |
+| FCU feed | the FSM re-samples the newest LIO pose in its own 50 Hz loop and streams ODOMETRY (331) in NED/FRD | the FCU's own log: **VISP/VISV at 48.2 Hz**, `tools/bin-extnav-rate.py` |
+| EKF | `EK3_SRC1_POSXY/POSZ/VELXY/VELZ/YAW = 6` (external nav), no GPS, no compass; every measurement and process noise set to the MEASURED value in `params/ekf_trust_lio.parm`, with `FS_EKF_THRESH` raised in proportion (it is a RATIO) | `tools/bin-params.py` on the flight BIN |
+| Mission A | `planner/rectangle_source.py` publishes the rectangle on `/planner/traj`; the FSM visits its **corners** (`--follow corner`, the default and what every table in `docs/metrics/` was measured with) | A1 4.65-4.90 mm, A4 18.6-21.1 mm, 10 of 10 flights, `docs/metrics/stepB-rectangle-20261013.txt` |
+| Mission B | ego-planner (`ZJU-FAST-Lab/ego-planner-swarm`, `ros2_version`, `23a8d5a`, GPL-3.0, + `patches/0002`) plans in L, publishes `planning/bspline`; **`planner/ego_adapter.py`** samples it into `/planner/traj` (Path, frame `lio_world`, ≥2 Hz) and enforces PLAN 4.1's three obligations | offline: 0.4538-0.4978 m clearance, 1 withheld of 68, goal round trip 0.000000 mm, `docs/metrics/ego-offline-*.txt` |
+| the planner's map | the planner declares `/cloud_registered`; **the LIO publishes `/lio/cloud_world`** -- so both the NAME and the QoS needed bridging: `tools/scan_relay.py` registers the RAW scan into L (`/livox/lidar` + `/lio/robo/odom`, no voxels) and publishes it **RELIABLE** | the planner's own log: `offering incompatible QoS. No messages will be sent to it`; `ros2 topic list` never had that name |
+| Mission B flying | the FSM follows the trajectory itself (`--follow path`, look-ahead `1.2 + 0.8 v`), one `traj` phase | 20.00 m in 10.1 s (mean 1.98 m/s), C1 0.075 m, C2 0.574 m, `logs/missionA-followlook-*` |
+| scoring | `tools/metrics.py`: A1/A2 (LIO vs truth), A3 (delivered-stream continuity, bounds anchored to the acceptance table), A4 (the FCU's own `XKF1` vs truth, clock-aligned, best-fit lag reported), B1-B4 (truth vs the commanded geometry), **C1** final point, **C2** minimum truth-to-pillar-surface distance from the world file | every line prints its denominator; `tools/batch-summary.py` aggregates them |
+
+**THREE RULES THIS STACK PAID FOR**, each a class rather than an incident:
+
+1. **One geometry source.**  `tools/world-info.py` is the only reader of the world file; the sensor, the
+   trajectory source, the FSM's geofence, the adapter's clearance gate and the metrics all take their
+   geometry from it.  MEASURED: `run-mission.sh` started the sensor WITHOUT `--world`, so it rendered
+   `worlds/pillars.yaml` while everything else used `worlds/forest_all.yaml` -- two different forests, and
+   Mission B's plans were judged against pillars the aircraft never flew near.
+2. **An interface has three properties: name, type and QoS.**  `/cloud_registered` did not exist under that
+   name; once it did, the planner dropped every message because a BEST_EFFORT publisher cannot feed a
+   RELIABLE subscription.  A topic is not connected until the CONSUMER's own log stops complaining.
+3. **A number carries its rate, its frame, its window -- and its DELAY is a number too.**  A3's bound was
+   written "per sample at 200 Hz" for a stream arriving at 33.3 Hz; A4 grows with speed because the velocity
+   is ~80 ms old, and its gate now scores the residual at the best-fit lag rather than at zero.
+
 ## 4. Topics — rate, content, frame
 
 | topic | type | rate | content | frame | producer -> consumer |
