@@ -131,6 +131,7 @@ def main() -> int:
     from geometry_msgs.msg import PoseStamped
     from nav_msgs.msg import Odometry
     from rclpy.node import Node
+    from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
     from std_msgs.msg import Int32
 
     class Sequencer(Node):
@@ -145,7 +146,22 @@ def main() -> int:
             # busy with 200 Hz odometry plus the 4 Hz clearance check, so 1 Hz goals were being overwritten
             # before they were ever delivered.  Depth 10 covers ~10 s of a 1 Hz goal and the goals are
             # identical, so a burst is harmless.
-            self.pub = self.create_publisher(PoseStamped, args.goal_topic, 10)
+            # LATCHED GOAL PUBLISHER (TRANSIENT_LOCAL + RELIABLE).  MEASURED 2026-10-14 (sortie AJ1, the
+            # circle): this node published stop 4's goal (W 0.000, 4.000) 42 times and the adapter received
+            # NONE of them -- its own STATUS line reads "goals in 16, forwarded 16, dedup 0, deferred 0,
+            # rejected 0", and the last goal it ever saw was stop 3 (W 1.5918, 3.6696).  The adapter is a
+            # single-threaded rclpy node busy with 200 Hz odometry and its 4 Hz path/clearance work, so a
+            # VOLATILE goal published while it is busy is gone for good; with TRANSIENT_LOCAL the middleware
+            # keeps the latest sample for a subscriber that comes back, which is exactly the failure mode.
+            # The consequence of the loss was severe and is why this matters: the adapter's own 1 Hz
+            # re-forward (--reforward-hz) re-sent the LAST goal it had, i.e. stop 3, so ego's target stayed
+            # on the stop it was already standing on and upstream's "close to goal" rule refused to plan
+            # 54 737 times -- "PLANNER-STALL: NO trajectory for 52.0 s (target [3.67 -1.60 1.88],
+            # odom [3.64 -1.63 1.75])", 0.14 m apart -- while the mission had moved on to stop 4.
+            latched_goal = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST,
+                                      reliability=ReliabilityPolicy.RELIABLE,
+                                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
+            self.pub = self.create_publisher(PoseStamped, args.goal_topic, latched_goal)
             # THE MISSION'S STATE, published so the FSM does not have to guess it.  MEASURED 2026-10-14:
             # with the FSM counting trajectories instead, four consecutive sorties aborted on a wait because
             # its counter had drifted out of step with the stops actually commanded.
