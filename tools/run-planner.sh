@@ -92,14 +92,25 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-# The LIO publishes its registered scan as /lio/cloud_world; the planner declares /cloud_registered, which
-# exists nowhere in this stack (MEASURED 2026-10-14: `ros2 topic list` with a fresh daemon shows 14 topics
-# and not that one).  A `-r /cloud_registered:=/lio/cloud_world` on the node's own command line did NOT
-# change the subscription it reported, so the name is made REAL here instead -- verifiable in one command,
-# `ros2 topic hz /cloud_registered`, and removable in one line if the planner is ever pointed at the LIO's
-# name directly.
-python3 "$HERE/tools/cloud_relay.py" --in /lio/cloud_world --out /cloud_registered \
-    > "${RELAY_LOG:-/tmp/cloud_relay.log}" 2>&1 &
+# WHAT THE PLANNER'S MAP IS BUILT FROM -- and this is the Mission B blocker, measured twice.
+# The LIO's own cloud topic (`/lio/cloud_world`) is its VOXEL map: its start-up line says
+# `OctVoxMap init. Resolution: 0.25`, and a voxel centre on a pillar's surface sits up to half a voxel
+# INSIDE it.  MEASURED 2026-10-14: the closest published point to a pillar surface was -0.244 m, i.e. inside
+# the pillar, and the planner's plans consequently landed 0.306-0.311 m from the TRUE surface while keeping a
+# comfortable margin in their own (thin) map -- which is exactly what the adapter's world-file clearance gate
+# refuses, replan after replan, at the same point.
+# So the map is built from a REGISTERED SCAN OF RAW POINTS instead: `tools/scan_relay.py` takes the sensor's
+# own `/livox/lidar` and the LIO's body pose `/lio/robo/odom` and publishes them in L.  No new estimate is
+# introduced (the pose is the LIO's) and no surface is moved by a voxel grid.
+# `CLOUD_SOURCE=voxel` restores the old behaviour so the difference can be measured rather than asserted.
+CLOUD_SOURCE="${CLOUD_SOURCE:-scan}"
+if [ "$CLOUD_SOURCE" = "voxel" ]; then
+  python3 "$HERE/tools/cloud_relay.py" --in /lio/cloud_world --out /cloud_registered \
+      > "${RELAY_LOG:-/tmp/cloud_relay.log}" 2>&1 &
+else
+  python3 "$HERE/tools/scan_relay.py" --in /livox/lidar --odom /lio/robo/odom --out /cloud_registered \
+      > "${RELAY_LOG:-/tmp/scan_relay.log}" 2>&1 &
+fi
 RELAY_PID=$!
 PIDS="$PIDS $RELAY_PID"
 
