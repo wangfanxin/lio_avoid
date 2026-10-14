@@ -653,8 +653,15 @@ class EgoAdapter:
                           % (self.n_prefix, seg, k, float(cl[k]), k, self.args.footprint), flush=True)
                 pos, ts = pos[:k], ts[:k]
             else:
-                return None, "pillar clearance %.3f m < footprint %.2f m (at point %d)" % (
-                    info["clr_min"], self.args.footprint, int(np.argmin(cl)))
+                # THE OFFENDING PLAN'S OWN IDENTITY, so a refusal can be matched to the recorded B-spline
+                # (tools/record-bspline.py) and the question "is that pillar in ego's map?" can be answered
+                # offline instead of inferred.  MEASURED 2026-10-14: 13 refusals of the form
+                # "pillar clearance -0.172 .. -0.219 m (at point 37)" in sorties L1/N1 could not be matched
+                # to any recorded trajectory because the message carried no start_time.
+                return None, "pillar clearance %.3f m < footprint %.2f m (at point %d, traj %.3f, t_cur %.2f of %.2f)" % (
+                    info["clr_min"], self.args.footprint, int(np.argmin(cl)),
+                    float(self.bspline.start_time.sec) + 1e-9 * float(self.bspline.start_time.nanosec),
+                    float(info.get("t_cur", float("nan"))), float(info.get("duration", float("nan"))))
 
         ins = self.world.inside(pos)
         if not bool(ins.all()):

@@ -117,13 +117,13 @@ cd - > /dev/null
 
 cleanup() {
     for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RX_PID:-}" "${REC_PID:-}" \
-             "${RECC_PID:-}" "${RECT_PID:-}" "${RECB_PID:-}" "${SEQ_PID:-}"; do
+             "${RECC_PID:-}" "${RECT_PID:-}" "${RECB_PID:-}" "${RECM_PID:-}" "${SEQ_PID:-}"; do
         [ -n "$p" ] && kill "$p" 2>/dev/null
     done
     kill "$SITL" 2>/dev/null
     sleep 1
     for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RX_PID:-}" "${REC_PID:-}" \
-             "${RECC_PID:-}" "${RECT_PID:-}" "${RECB_PID:-}" "${SEQ_PID:-}"; do
+             "${RECC_PID:-}" "${RECT_PID:-}" "${RECB_PID:-}" "${RECM_PID:-}" "${SEQ_PID:-}"; do
         [ -n "$p" ] && kill -9 "$p" 2>/dev/null
     done
     kill -9 "$SITL" 2>/dev/null
@@ -186,6 +186,15 @@ python3 "$REPO/tools/record-bspline.py" --help > /dev/null 2>&1 || true
   exec python3 "$REPO/tools/record-bspline.py" --topic planning/bspline --csv "$OUT/bspline.csv" ) \
     > "$OUT/recbspline.log" 2>&1 &
 RECB_PID=$!
+# EGO'S OWN OCCUPANCY GRID, recorded next to the plan it refused.  MEASURED 2026-10-14 (sorties L1/N1): the
+# adapter refused 13 plans per sortie with "pillar clearance -0.172 .. -0.219 m", i.e. those plans cut 17-22 cm
+# INTO a 0.40 m pillar, while every PUBLISHED plan held the contract (min 0.278 m).  ego treats UNKNOWN cells
+# as free (occupancy_buffer_inflate_ = 0), so either that pillar is not in its grid (a map-update problem) or
+# it is in the grid and the plan cuts it anyway (an optimiser problem).  `grid_map/occupancy_inflate` is ego's
+# own answer to which, so this file turns "is the pillar in ego's map?" into a measurement.
+python3 "$REPO/tools/record-cloud.py" --topic grid_map/occupancy_inflate --csv "$OUT/ego_map.csv" \
+    --decimate 20 --scans 400 > "$OUT/recogomap.log" 2>&1 &
+RECM_PID=$!
 sleep 3
 
 echo "== flying =="
