@@ -45,4 +45,9 @@ EK3_GBIAS_P_NSE 0.0002
 # so shrinking the assumed noise 10x makes an honest 50 mm innovation look like a 1.67 ratio and the
 # vehicle lands itself.  Raising the threshold by the same factor keeps the ABSOLUTE tolerance where it
 # was: a 0.5 m innovation still trips it, exactly as before.
-FS_EKF_THRESH 3.0
+# FS_EKF_THRESH is a RATIO against EK3_POSNE_M_NSE, so it has to be derived from the ABSOLUTE
+# innovation we are willing to tolerate.  We want ~300 mm (the same order the original 0.50 m x 1.0
+# gave): 0.300 / 0.03 = 10.  MEASURED 2026-10-14: with 3.0 the tolerance was 90 mm and a normal
+# trajectory-following manoeuvre tripped it -- 3 of 5 Mission B flights ended in LAND mode, one of
+# them with the LIO tracking to 1.37 mm, so the failsafe, not the estimator, was the problem.
+FS_EKF_THRESH 10.0
