@@ -1,0 +1,30 @@
+topic rates measured in flight, sortie B5 (mission B, 12 stops, worlds/forest_b.yaml)
+when             2026-10-14
+how              ros2 topic hz -w 200, one process per topic, started before take-off
+run              /home/fanxin/lio_avoid/logs/missionA-B5-circle-12
+
+topic                            avg Hz       min/max dt
+/livox/lidar                     10.082       	min: 0.094s max: 0.107s std dev: 0.00310s window: 12
+/livox/imu                       200.421      	min: 0.000s max: 0.054s std dev: 0.01041s window: 200
+/lio/robo/odom                   191.803      	min: 0.000s max: 0.056s std dev: 0.01062s window: 192
+/lio/odom                        9.962        	min: 0.088s max: 0.108s std dev: 0.00516s window: 12
+/lio/imu/odom                    191.835      	min: 0.000s max: 0.056s std dev: 0.01062s window: 192
+/lio/cloud_world                 8.488        	min: 0.088s max: 0.302s std dev: 0.05839s window: 11
+/lio/path                        0.482        	min: 0.096s max: 21.811s std dev: 6.24144s window: 11
+/cloud_registered                10.253       	min: 0.084s max: 0.112s std dev: 0.00730s window: 12
+/planner/traj                    4.018        	min: 0.243s max: 0.251s std dev: 0.00287s window: 5
+/goal_pose                       0.909        	min: 1.100s max: 1.100s std dev: 0.00000s window: 2
+planning/bspline                 1.421        	min: 0.075s max: 1.019s std dev: 0.44461s window: 3
+grid_map/occupancy               9.077        	min: 0.106s max: 0.113s std dev: 0.00173s window: 11
+grid_map/occupancy_inflate       9.077        	min: 0.106s max: 0.113s std dev: 0.00174s window: 11
+planning/data_display            6.324        	min: 0.010s max: 14.490s std dev: 1.45514s window: 98
+/sim/truth/odom                  92.636       	min: 0.006s max: 0.013s std dev: 0.00184s window: 94
+/sim/rtf                         1.000        	min: 1.000s max: 1.001s std dev: 0.00023s window: 2
+/clock                           48.007       	min: 0.017s max: 0.023s std dev: 0.00248s window: 49
+/tf                              92.322       	min: 0.006s max: 0.015s std dev: 0.00185s window: 94
+
+the per-stop score of this sortie
+goal_sequencer: stop 1/12 REACHED in 6.9 s (0.351 m off)
+goal_sequencer: stop 2/12 REACHED in 7.8 s (0.279 m off)
+goal_sequencer: stop 3/12 REACHED in 2.7 s (0.376 m off)
+goal_sequencer: stop 4/12 MISSED after 35 s: 1.293 m from it -- moving on

@@ -125,6 +125,13 @@ REC_PID=$!
 python3 "$REPO/tools/record-cloud.py" --topic /lio/cloud_world --csv "$OUT/cloud.csv" \
     --decimate 40 --scans 3 > "$OUT/reccloud.log" 2>&1 &
 RECC_PID=$!
+# THE PLAN, recorded next to the truth.  Without it "the gate cannot see the truth" is an argument, not a
+# measurement: MEASURED 2026-10-14 the truth spent 55.9 % of a 12-stop flight inside the 0.20 m contract
+# while every published path had been verified clear, and there was no record of those paths to compare
+# against.  tools/record-traj.py writes every Path message plus its own minimum clearance.
+python3 "$REPO/tools/record-traj.py" --topic /planner/traj --csv "$OUT/traj.csv" \
+    --world "$WORLD" > "$OUT/rectraj.log" 2>&1 &
+RECT_PID=$!
 sleep 3
 
 echo "== flying =="
@@ -181,6 +188,7 @@ cat "$OUT/fsm.log"
 kill "$SEQ_PID" 2>/dev/null
 kill "$REC_PID" 2>/dev/null
 kill "$RECC_PID" 2>/dev/null
+kill "$RECT_PID" 2>/dev/null
 sleep 1
 echo
 echo "== metrics =="

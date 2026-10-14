@@ -78,6 +78,51 @@ def main() -> int:
     arena = (wcfg.get("arena", {}) or {}).get("walls", {}) or {}
     ax_x, ax_y = arena.get("x", [-5.0, 5.0]), arena.get("y", [-5.0, 5.0])
 
+    # EVERY PATH EGO PUBLISHED, in full, drawn over the truth -- the user asked for exactly this
+    # ("每次ego发布新的path，你整条存下来画在图里，这样我才知道跟踪效果").  The recorder stores every point of every
+    # Path message; the adapter republishes the SAME B-spline at 4 Hz, so the lines are grouped by the
+    # trajectory's own start stamp (t0_us) -- one line per distinct PLAN, not per message.
+    plans = []
+    _tp = os.path.join(args.run, "traj.csv")
+    _pp = _tp + ".points.csv"
+    if os.path.exists(_tp) and os.path.exists(_pp):
+        try:
+            ph = np.genfromtxt(_tp, delimiter=",", names=True, dtype=None, encoding="utf-8")
+            pp = np.genfromtxt(_pp, delimiter=",", names=True, dtype=None, encoding="utf-8")
+            if ph.ndim == 0:
+                ph = ph.reshape(1)
+            if pp.ndim == 0:
+                pp = pp.reshape(1)
+            calib = None
+            try:
+                # import as a MODULE: a dataclass built from a module that is not in sys.modules raises
+                # inside dataclasses itself (MEASURED 2026-10-14), and the except below then hid it by
+                # drawing the plans in the wrong frame.
+                import json as _json
+                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                from common import frames as _frames
+                with open(args.calib) as _fh:
+                    _d = _json.load(_fh)
+                calib = _frames.Calib(R_WL=np.array(_d["R_WL"], dtype=float),
+                                      t_WL=np.array(_d["t_WL"], dtype=float))
+            except Exception as _exc:
+                print("   (no calibration: %s -- plans would be drawn in L, so they are NOT drawn)"
+                      % _exc)
+                plans = []
+            for t0 in np.unique(ph["t0_us"]):
+                sel = ph["t_us"][ph["t0_us"] == t0]
+                tm = int(sel[-1] if len(sel) else t0)          # the freshest message of this plan
+                rows = pp[pp["t_us"] == tm]
+                if not len(rows):
+                    continue
+                q = np.column_stack([rows["e"], rows["n"], rows["u"]]).astype(float)
+                if calib is not None:
+                    q = (calib.R_WL @ q.T).T + calib.t_WL
+                plans.append((float(t0) * 1e-6, q))
+            print("   plans: %d Path messages, %d distinct plans drawn" % (len(ph), len(plans)))
+        except Exception as exc:
+            print("   could not read the plan recording: %s" % exc)
+
     # the FCU's own estimate (XKF1), clock-aligned to the truth by the take-off ramp -- the same trick A4
     # uses.  This is the curve that answers "did the EKF keep what the LIO gave it".
     ekf = None
@@ -104,7 +149,22 @@ def main() -> int:
     # ---------------------------------------------------------------- (1) top view
     fig, (a1, a2) = plt.subplots(1, 2, figsize=(13, 6.2))
     for ax, zoom in ((a1, False), (a2, True)):
-        ax.plot(p_t[:, 0], p_t[:, 1], lw=1.6, color="#1f4fd8", label="truth (1200 Hz)")
+        # every published plan first, so the truth and the LIO sit ON TOP of it
+        if plans:
+            import matplotlib.cm as cm
+            import matplotlib.colors as mcolors
+            t0s = np.array([t for t, _ in plans])
+            lo, hi = float(t0s.min()), float(t0s.max())
+            norm = mcolors.Normalize(vmin=lo, vmax=hi if hi > lo else lo + 1.0)
+            for t0, q in plans:
+                ax.plot(q[:, 0], q[:, 1], lw=0.9, alpha=0.75,
+                        color=cm.viridis(norm(t0)), zorder=2)
+            sm = cm.ScalarMappable(norm=norm, cmap="viridis")
+            cb = fig.colorbar(sm, ax=ax, fraction=0.035, pad=0.02)
+            cb.set_label("plan start time [s since epoch]", fontsize=8)
+            ax.plot([], [], lw=1.2, color=cm.viridis(0.5),
+                    label="ego's published paths (%d plans, in full)" % len(plans))
+        ax.plot(p_t[:, 0], p_t[:, 1], lw=1.6, color="#1f4fd8", label="truth (1200 Hz)", zorder=5)
         ax.plot(p_lw[:, 0], p_lw[:, 1], lw=0.9, color="#e8791a", alpha=0.9,
                 label="LIO odometry (200 Hz, L->W)")
         if ekf is not None:
