@@ -1,0 +1,35 @@
+MISSION B, THE CIRCLE: THE PLAN-SUPPLY LOOP, MEASURED END TO END (2026-10-14)
+================================================================================
+Every number here comes from a sortie of the same mission (12 stops on the r = 4 m circle), the same
+aircraft (SITL_MODEL=x against FRAME_TYPE 1), the same LIO and the same 0.20 m hard gate.
+
+1. THE AIRCRAFT SIDE IS DONE.
+   C1 0.003-0.029 m, A1 2.5-9.6 mm, A2 3.4-4.3 mm, A3 PASS, A4 12-49 mm, and C2 is 0 of ~86 000 samples
+   inside the 0.20 m footprint in every sortie whose stations the planner could serve at all.
+
+2. THE THREE SORTIES THAT DIFFER ONLY IN THE WAIT-LOOP HOLD.
+     hold policy                          trajectories flown   stops      C2 min clearance / below 0.20 m
+     AF1  always at the last endpoint     20                   8 of 12    -0.376 m / 46.6 % (14.03 % INSIDE a pillar)
+     AG1  only within 0.50 m              1                    1 of 12    +0.340 m / 0 of 87 032
+     AH1  gated on the segment's clearance 1                   1 of 12    +0.283 m / 0 of 86 479
+   AF1 finished the sequence and landed; AG1/AH1 are legal and starve.  So the mission advances only while
+   the VEHICLE MOVES, and the only motion the FSM can create on its own is that pull -- which is illegal at a
+   distance and has nothing legal to pull toward up close (offline: a 0.3 m segment beside stop 1 measures
+   +0.208 m and is allowed; a 0.8 m segment toward pillar #52 measures -0.339 m and is refused).
+
+3. WHERE THE PLANS COME FROM (a correction to the earlier model).
+   ego's OWN committed trajectories are NOT anchored at the vehicle: MEASURED over AF1's 79 commits,
+   |cp0 - truth| median 4.711 m, p95 7.285 m, max 7.746 m, and 0 of 79 within 0.50 m.  The plan that gets
+   flown is the ADAPTER's re-projection of that spline onto the vehicle ("publish from the point nearest the
+   vehicle"), which is why the aircraft can fly plans whose raw start is metres away.  Any future work on
+   "make ego anchor at the vehicle" must not break that re-projection.
+
+4. THE LAST BLOCKER, WITH ITS DENOMINATOR.
+     sortie   published /planner/traj   distinct stamps   usable (arc >= 0.30 m)   flown by the FSM
+     AH1      38                        20                16                        1
+     AF1      233                       155               91                        20 (+12 re-projected acceptances)
+   All of them verified clear (AH1 min 0.281 m, AF1 min 0.201 m -- 0 of 233 below the 0.20 m contract).  So
+   in AH1 the FSM had 16 freshly-stamped, verified, >= 0.30 m plans and used ONE.
+     NEXT: instrument the FSM's acceptance decision itself -- log, per candidate plan, WHICH test refused it
+     (arc too short / same stamp and the start is X m away / no plan at all) -- and let the numbers say which
+     one it is.  That is the same discipline that resolved every other link in this chain.

@@ -676,19 +676,61 @@ class Mission:
                             if last_t0 is not None and self.path_t is not None
                             and float(self.path_t[0]) == float(last_t0) else ""))
                 return True
-            if hold_pt is not None and float(np.linalg.norm(hold_pt[:2] - self.tap.p[:2])) < self.args.hold_radius_m:
+            if hold_pt is not None and self._hold_is_legal(hold_pt):
                 self.pump(0.1, setpoint=hold_pt, velocity=np.zeros(3))
             else:
-                # TOO FAR TO HOLD BY STRAIGHT LINE.  MEASURED 2026-10-14 (sortie AF1): holding at the end of the
-                # last plan in hand, when that plan belonged to another stop, flew the aircraft STRAIGHT at it
-                # -- 233 published plans all >= 0.201 m clear, while the truth cut through pillars
-                # (min -0.376 m, 14.03 % of samples inside a pillar, lateral |truth - plan| p95 4.98 m) and
-                # "99.6 % of the contract-breaking samples were following a plan that HELD it".  A straight
-                # line this short cannot cross a pillar whose surface is >= 0.20 m away, so the hold is applied
-                # only within --hold-radius-m; beyond it, streaming NOTHING is the safe action (the FCU keeps
-                # its last setpoint and the vehicle stays put).
                 self.pump(0.1)
         return False
+
+    def _load_world(self):
+        """The adapter's own world model, imported rather than re-implemented (same rule as tools/record-traj).
+
+        Loaded LAZILY and by PATH: planner/ego_adapter.py is not a ROS package, and importing it by path is
+        what tools/record-traj.py does for the same reason.  A failure here must never stop a flight -- the
+        hold simply falls back to "stream nothing", which is the safe behaviour.
+        """
+        try:
+            import importlib.util
+            import os as _os
+            p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "planner", "ego_adapter.py")
+            spec = importlib.util.spec_from_file_location("ego_adapter_fsm", p)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if not _os.path.exists(self.args.world_file):
+                self.log("no world file at %s -- the wait-loop hold is disabled" % self.args.world_file)
+                return None
+            return mod.World.load(self.args.world_file)
+        except Exception as exc:                              # noqa: BLE001
+            self.log("could not load the world model (%s) -- the wait-loop hold is disabled" % exc)
+            return None
+
+    def _hold_is_legal(self, target):
+        """Is pulling straight at `target` legal?  The straight line is the whole question.
+
+        MEASURED 2026-10-14, three sorties that differ only in this decision (the circle):
+          AF1  hold always at the last plan's endpoint: 20 trajectories flown, 8 of 12 stops REACHED,
+               sequence complete, landed -- and C2 min -0.376 m with 14.03 % of the samples INSIDE a pillar,
+               because the endpoint belonged to another stop and the aircraft flew STRAIGHT at it;
+          AG1  hold only within 0.50 m:                 1 trajectory flown, 1 of 12 stops, C2 min +0.340 m,
+               0 of 87032 samples below the contract -- legal and starved;
+          AE1  no hold at all:                          3 trajectories, 1 of 12 stops, same starvation.
+        The mission advances only while the VEHICLE MOVES (ego's replanning follows the vehicle's state, and
+        the adapter refuses plans whose nearest point is far from it), and the only motion the FSM can create
+        on its own is this pull.  So the pull must be gated on what actually makes it illegal: the straight
+        segment from the vehicle to `target`.  Sample it and check it against the same world model the
+        adapter's gate uses; if the segment is clear, the pull is legal motion and keeps the mission fed.
+        """
+        if getattr(self, "_world", None) is None and not getattr(self, "_world_tried", False):
+            self._world_tried = True
+            self._world = self._load_world()
+        if self.path_l is None or getattr(self, "_world", None) is None:
+            return False
+        here = np.array(self.bridge.state().pos)
+        seg = np.linspace(here, np.asarray(target, dtype=float), 24)[:, :3]
+        try:
+            return float(self._world.clearance(seg).min()) >= self.args.footprint_contract
+        except Exception:                                     # noqa: BLE001  (never block the flight on this)
+            return False
 
     def follow_spline_stations(self, n):
         """Fly the mission's stops in sequence, and land when the SEQUENCER says the sequence is over.
@@ -1252,12 +1294,19 @@ def main() -> int:
                          "without this the FSM flew 1 of the 20 distinct plans the recorder saw and aborted on "
                          "its 60 s wait.  0 disables the fallback (the historical behaviour)")
     ap.add_argument("--hold-radius-m", type=float, default=0.50,
-                    help="spline mode: while waiting for the next plan, hold at the last plan's endpoint ONLY "
-                         "if it is within this many metres of the vehicle; beyond it the FSM streams nothing "
-                         "(the FCU then keeps its last setpoint).  MEASURED 2026-10-14 (sortie AF1): holding at "
-                         "a far endpoint drove the aircraft straight at it through pillars -- the truth cut "
-                         "0.376 m inside a pillar for 14.03 %% of the samples while all 233 published plans "
-                         "held the 0.20 m contract")
+                    help="spline mode: DEPRECATED (kept for the A/B record) -- the wait-loop hold is now gated "
+                         "on the straight segment's measured clearance (--footprint-contract) instead of on "
+                         "distance.  MEASURED 2026-10-14: holding always at a far endpoint advanced the mission "
+                         "(8 of 12 stops) but cut 0.376 m inside a pillar for 14.03 %% of the samples; holding "
+                         "only within 0.50 m was legal (C2 0 of 87032) and starved (1 of 12)")
+    ap.add_argument("--footprint-contract", type=float, default=0.20,
+                    help="spline mode: the clearance the FSM itself requires of the straight segment it would "
+                         "fly while waiting for the next plan (the same 0.20 m the adapter's gate enforces on "
+                         "published plans).  This is what lets the wait pull the vehicle toward a legal point -- "
+                         "the pull is the only motion the FSM can create on its own, and the mission only "
+                         "advances while the vehicle moves")
+    ap.add_argument("--world-file", default="/mnt/d/distill_self/lio_avoid/worlds/forest_b.yaml",
+                    help="spline mode: the world the wait-loop hold checks its straight segment against")
     ap.add_argument("--hold-at-m", type=float, default=0.50,
                     help="spline mode: only hold the station if the trajectory ended within this distance of "
                          "the vehicle -- otherwise the plan was a short hop and the mission is still moving")
