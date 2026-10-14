@@ -14,10 +14,11 @@ THE RECTANGLE
     altitude      2.00 m in W -- the same altitude rule the circle mission uses (mission_b.rect.altitude,
                   then mission_b.takeoff_alt)
     perimeter     2 * (8 + 6) = 28.0 m, so the default --n 12 gives 28 / 12 = 2.333 m between stops
-    direction     COUNTER-CLOCKWISE in the x-y plane (x East, y North: -y edge -> +x edge -> +y edge -> -x
-                  edge), starting at the corner nearest the pad; all four corners are (4, -3), (4, 3),
-                  (-4, 3), (-4, -3), equidistant (5.0 m) from a pad at the origin, so "nearest" is a tie
-                  there and the tie-break is the first corner in (-x,-y), (+x,-y), ... order = (4, -3)
+    direction     COUNTER-CLOCKWISE in the x-y plane (x East, y North), starting at the corner its two
+                  clauses select: closest to DUE EAST of the centre, and -- the owner's pad at the origin
+                  ties (+4, -3) with (+4, +3) at 36.87 deg -- nearest the pad, i.e. (+4, -3), the corner
+                  the circle mission's due-East start (`start_deg: 0.0`) is nearest to.  The walk is then
+                  +x edge -> +y edge -> -x edge -> -y edge, back to (+4, -3)
 
 THE FOUR LAYOUT RULES (each one is a decision, not an implementation detail)
   1. default: `--n` stops EVENLY SPACED ALONG THE PERIMETER, i.e. at arc length k * perimeter / n for
@@ -46,7 +47,25 @@ usage:
 nothing (0 = command the rectangle verbatim).  --margin shrinks the rectangle inside the arena
 (--margin 0.5 -> x in [-3.5, 3.5], y in [-2.5, 2.5]); the DEFAULT IS 0.0 ON PURPOSE, because the owner
 named the bounds x(-4,4) y(-3,3) and a silent shrink would fly a different rectangle than the one asked
-for.  Use it to reserve room for the vehicle's footprint or a wall-clearance rule.
+for.  --margin IS NOT A CLEARANCE KNOB: the obstacles are the pillars, and shrinking the rectangle moves
+the stops toward the interior of the field, not away from it (MEASURED on forest_b: --margin 0 moves 4 of
+12 stops, --margin 0.5 moves 8 of 12).  It reserves room against the ARENA WALLS and nothing else.
+
+WHAT `--verify` MEASURES (MEASURED 2026-10-15 on worlds/forest_b.yaml, and the reason the numbers below
+are in this docstring: a layout change that is only asserted in a commit message is not evidence):
+  * the 12 stops, clearance from `World.clearance`, minimum +0.3011 m, 0 of 12 below the 0.20 m contract,
+    0 of 12 inside a pillar.  The RAW rectangle -- same stops before rule 3 -- has 2 of 12 INSIDE a
+    pillar (minimum -0.1999 m), so "can a stop end up inside a pillar?" is answered by the slide rule:
+    not while snap_need > 0, and yes if it is 0.
+  * the legs, sampled every 0.05 m: minimum -0.2198 m and 4 of 12 legs below 0.20 m, all four of them
+    crossing a pillar.  THE EDGES OF THE RECTANGLE CROSS PILLARS, and sliding the stops cannot fix that
+    -- the stops are clear, the straight lines between them are not.  (Sampling at 0.01 m moves the
+    minimum by 0.0002 m, so 0.05 m is not hiding anything.)
+  * the same for --corners: 4 of 4 stops clear (minimum +0.3762 m, none moved), and 2 of 4 legs cross a
+    pillar (minimum -0.3417 m): the 4-corner tour is the worse of the two for the legs.
+  * the entry leg pad -> stop 0: minimum -0.2485 m, i.e. the leg the mission flies FIRST also crosses a
+    pillar.  This is a property of the world's pad pocket, not of the rectangle.
+  * containment: 0 of 12 stops outside the arena walls, 0 of 12 outside the rectangle.
 """
 from __future__ import annotations
 
@@ -70,7 +89,6 @@ STEP_M = 0.05                  # arc-length step of the slide search, m
 MAX_SLIDE_M = 0.25 * 28.0      # furthest a stop may slide, forward or backward: a quarter of the perimeter
 EDGE_STEP_M = 0.05             # arc-length step of the leg sampling in --verify, m
 FOOTPRINT_M = 0.20             # PLAN.md 4.1's hard contract: the same number the adapter gates on
-SECOND_LEG_TAU = 0.95          # cos threshold for "these two legs are collinear"
 
 
 def read(world):
@@ -163,24 +181,44 @@ def arena_walls(world):
 
 
 def corner_points(r):
-    """The 4 corners in (bound-order) list form: (-x,-y), (+x,-y), (+x,+y), (-x,+y)."""
+    """The 4 corners in their COUNTER-CLOCKWISE order: (+x,-y), (+x,+y), (-x,+y), (-x,-y).
+
+    Counter-clockwise in the x-y plane is the order of increasing polar angle, so the list order IS the
+    travel order from whatever corner the mission starts at -- no separate direction logic, and no way
+    for "the corner list" and "the direction of travel" to disagree.
+    """
     x0, x1, y0, y1 = r["bounds"]
-    return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+    return [[x1, y0], [x1, y1], [x0, y1], [x0, y0]]
 
 
 def start_corner(r):
-    """Index of the corner nearest the pad, and the distance.  Ties break on the corner order above.
+    """(index, distances) of the corner the mission STARTS at.
 
-    "Starting at the corner nearest the pad" is the owner-facing rule: the entry leg from the pad is
-    shortest from that corner, and the corner is where the turn is sharpest, so it is the worst case for
-    the slide rule -- starting anywhere else would hide it.  On the owner's rectangle with the pad at
-    the origin all four corners are exactly 5.000 m away, so the tie-break (the first corner in the list,
-    i.e. (-4, -3)) is what actually decides, and it is stated here so nobody has to infer it.
+    THE RULE, one clause and one tie-break (this is a decision, so it is written out):
+      1. the corner closest to DUE EAST of the rectangle's centre -- because the circle this rectangle
+         replaces started at `start_deg: 0.0`, i.e. due East of the pad and turning counter-clockwise
+         (worlds/forest_b.yaml).  Keeping that start keeps the first stop of the mission on the same side
+         of the pad it has always been on, which is what the flight logs, the figures and the scores are
+         comparable across;
+      2. among corners tied on that (the owner's rectangle has its pad at the origin, so (+4, -3) and
+         (+4, +3) are BOTH 36.87 deg from due East and this clause is what actually decides), the one
+         NEAREST THE PAD -- the entry leg from the pad is the leg this forest bites first, so it should be
+         the shortest one.
+    For the owner's rectangle that selects (+4, -3): the walk then leaves along the +x edge, +y edge, -x
+    edge, -y edge and returns to (+4, -3).
+
+    Note what the tie-break does NOT say: it is not "the nearest corner" full stop.  With a pad pushed
+    west, say (-3, 0), the nearest corners are (-7, +-3) at 4.000 m -- 126.87 deg from due East -- while
+    (+1, -3) is 5.000 m away at 36.87 deg, and the mission starts at (+1, -3).
     """
     c = corner_points(r)
     cx, cy = r["centre"]
     d = [math.hypot(q[0] - cx, q[1] - cy) for q in c]
-    i = int(min(range(4), key=lambda k: (d[k], k)))
+    # |polar angle from due East|, i.e. how far the corner is from the due-East RAY: 0 for a corner exactly
+    # due East, 90 deg for one due North or due South.  The ABSOLUTE value is the point -- sorting on the
+    # signed angle hands the start to the NORTH-EAST corner (+4, +3) on the owner's rectangle.
+    ang = [abs(math.atan2(q[1] - cy, q[0] - cx)) for q in c]
+    i = int(min(range(4), key=lambda k: (round(ang[k], 9), d[k], k)))
     return i, d
 
 
@@ -188,8 +226,8 @@ def perimeter_path(r):
     """The rectangle as a closed polyline of (point, arc length) vertices, CCW from the start corner.
 
     Arc length is the parameter: 0 at the start corner, growing counter-clockwise once around, so
-    `perimeter` is the same point as 0.  All four edges have integer length in the owner's rectangle,
-    but nothing here assumes that.
+    `perimeter` lands on the same point as 0 and `at_arc` wraps.  All four edges have integer length in
+    the owner's rectangle, but nothing here assumes that.
     """
     c = corner_points(r)
     i0, _ = start_corner(r)
@@ -253,17 +291,26 @@ def _slide_one(world, r, s0, need, verts, perim, step, max_slide):
     flies -- and take the FIRST arc length that satisfies the clearance.  Only if no forward point within
     `max_slide` clears does it try BACKWARD the same way, and only if neither clears does the stop stay
     where it was (with a NaN slide the caller reports).
+
+    The two directions MUST be tested against their own points.  The first version of this function
+    tested the backward walk against `ok`, the FORWARD test's array, and the consequence was invisible
+    from the outside for a while: the backward branch then only ever "succeeded" where a FORWARD point
+    happened to be clear, so a stop whose way out was genuinely backward came back with no exit at all
+    (MEASURED on the synthetic all-forward-blocked world: slide NaN, while the backward profile at
+    -0.75 m read +0.350 m clear).  The self-test that catches it asserts a backward slide happens.
     """
     import numpy as np
     cand = np.arange(0, int(round(max_slide / step)) + 1) * step
-    pts = np.array([at_arc(r, s0 + d, verts, perim) for d in cand])
-    ok = world_clearance(world, pts) >= need
-    if bool(ok[0]):
+    fwd = np.array([at_arc(r, s0 + d, verts, perim) for d in cand])
+    ok_fwd = world_clearance(world, fwd) >= need
+    if bool(ok_fwd[0]):
         return s0, 0.0, "none"
-    for d, good in zip(cand[1:], ok[1:]):
+    for d, good in zip(cand[1:], ok_fwd[1:]):
         if bool(good):
             return s0 + float(d), float(d), "forward"
-    for d, good in zip(cand[1:], ok[1:]):
+    back = np.array([at_arc(r, s0 - d, verts, perim) for d in cand])
+    ok_back = world_clearance(world, back) >= need
+    for d, good in zip(cand[1:], ok_back[1:]):
         if bool(good):
             return s0 - float(d), -float(d), "backward"
     return s0, float("nan"), "none"
@@ -375,20 +422,30 @@ def leg_report(world, stops, step=None):
 
 
 def second_leg_collinear(leg_a, leg_b):
-    """True when two legs are (nearly) the same straight line through three stops -- one physical edge.
+    """True when two legs are the same straight line through three stops -- i.e. one physical edge cut in two.
 
     At n = 4 the four stops of the default layout ARE the corners, so the four "legs" are the rectangle's
-    four edges; at n = 12 a leg is a piece of an edge and two consecutive legs are just one edge cut in
-    two, which is worth saying in the report because "6 legs below 0.20 m" reads very differently when
-    three of them are one edge.
+    four edges; at n = 12 a leg is a piece of an edge, and two consecutive legs are usually one edge split
+    in two, which is worth naming in the report because "4 legs below 0.20 m" reads very differently when
+    three of them are one edge.  A leg that ENDS at a corner is not collinear with the next one (that is
+    where the 90 deg turn is), and the comparison must not depend on the slide rule's floating point: the
+    test is therefore |cross| == 0 AND the second leg's midpoint ON the first leg's line, not a bare
+    dot-product threshold -- MEASURED while writing this: a 0.95 cosine threshold called the leg pair
+    1->3 (which turns 63 deg at the corner) collinear, because a 2.333 m leg against a 1.009 m one still
+    scores 0.448 and the dot product alone does not know the difference.
     """
     import numpy as np
-    da = np.array([leg_a["b"][0] - leg_a["a"][0], leg_a["b"][1] - leg_a["a"][1]], dtype=float)
-    db = np.array([leg_b["b"][0] - leg_b["a"][0], leg_b["b"][1] - leg_b["a"][1]], dtype=float)
-    na, nb = float(np.linalg.norm(da)), float(np.linalg.norm(db))
-    if na < 1e-9 or nb < 1e-9:
+    a1, b1 = np.array(leg_a["a"][:2], float), np.array(leg_a["b"][:2], float)
+    a2, b2 = np.array(leg_b["a"][:2], float), np.array(leg_b["b"][:2], float)
+    d1, d2 = b1 - a1, b2 - a2
+    n1, n2 = float(np.linalg.norm(d1)), float(np.linalg.norm(d2))
+    if n1 < 1e-9 or n2 < 1e-9:
         return False
-    return float((da / na) @ (db / nb)) > SECOND_LEG_TAU
+    if abs(float(d1[0] * d2[1] - d1[1] * d2[0])) / (n1 * n2) > 1e-9:
+        return False
+    mid = 0.5 * (a2 + b2)                            # the second leg's midpoint, off the first leg's line?
+    off = abs(float(d1[0] * (mid[1] - a1[1]) - d1[1] * (mid[0] - a1[0]))) / n1
+    return off <= 1e-6
 
 
 def inside_report(world, stops, r, margin=0.0):
@@ -494,6 +551,7 @@ def _print_verify(v, out=sys.stdout):
           % (i, v["arc"][i], q[0], q[1], q[2], c, v["slide"][i], v["how"][i], note))
     f("  STOP MINIMUM over the %d stops: %+.4f m;  stops closer than %.2f m: %d of %d;  inside a "
       "pillar: %d\n" % (v["n"], v["stop_min"], v["footprint"], v["stop_below"], v["n"], v["stop_inside"]))
+    f("  (the slides above are ARC LENGTH along the perimeter; the stop keeps its place on the rectangle)\n")
     f("\n  legs (each leg sampled every %.3f m, endpoints included; the vehicle flies the LEG):\n"
       % v["edge_step"])
     for l in v["legs"]:
@@ -529,7 +587,10 @@ def main() -> int:
                          "file's mission_b.rect.snap_need, else %.2f m.  0 = command the rectangle verbatim"
                          % SNAP_NEED_DEFAULT)
     ap.add_argument("--margin", type=float, default=None,
-                    help="shrink the rectangle this far inside the arena (0 = the owner's bounds exactly)")
+                    help="shrink the rectangle this far inside the arena (0 = the owner's bounds exactly). "
+                         "NOT a clearance knob: the pillars are what the stops must clear, and shrinking "
+                         "moves the stops deeper into the field (MEASURED: 0 -> 4 of 12 stops slid, "
+                         "0.5 -> 8 of 12)")
     ap.add_argument("--half-x", type=float, default=None, help="override the rectangle's half width")
     ap.add_argument("--half-y", type=float, default=None, help="override the rectangle's half height")
     ap.add_argument("--centre", type=float, nargs=2, default=None, metavar=("E", "N"),
