@@ -1,0 +1,49 @@
+SORTIE AO2 -- PATCH 0007 FLIGHT TEST  (2026-10-14, circle, 12 stops, config of AO1)
+====================================================================================
+What changed for this sortie: ego's EXEC_TRAJ exit no longer declares the goal reached when the plan's
+clock has run out while the vehicle is far from the goal (patches/0007-ego-arrival-is-the-vehicle.patch),
+and the FSM's "plan clock out + pull illegal" branch is a 1 Hz DIAG plus a bounded abort instead of the
+bare `pump(0.05); continue` that burned 490 s in AO1.
+
+RESULT: the traps are gone; the mission still stalls, and for the first time the stall is ONE mechanism.
+
+  stops        1 of 12 REACHED (stop 1 in 4.4 s, 0.273 m off), 1 MISSED (stop 2 after 45 s, 2.705 m away,
+               "goal published 41 time(s) for it"), no 'sequence complete'
+  end          ABORT at t = 82.5 s: "no new trajectory on /planner/traj within 60 s after 1 trajectories
+               (sequencer at stop 2)" -- AO1's equivalent sortie ran 530 s and ended in silence
+  A1 3.16 mm (<=20)  A2 3.90 mm (<=50)  A4 24.71 mm (<=50)  C1 0.010 m from the last commanded point
+  C2 min pillar clearance 0.259 m; 0 of 84620 samples inside the 0.20 m footprint (0.00 %)  [PASS]
+  planner      8 committed trajectories; commit gap median 1.02 s, max 2.03 s; ego stall lines 2,
+               adapter stalls 0, withheld 0
+  B4           landed: NO (the abort path lands; the phase log has no 'land' row before the scores ran)
+
+PATCH 0007 DID WHAT IT WAS FOR (measured, not asserted)
+  "[WARN] PLANNER-STALL: the plan's clock is out (t 0.405 s of 0.415 s) but the vehicle is 0.374 m from
+   the goal -- a stalled plan, NOT an arrival; replanning instead of declaring the goal reached"
+  i.e. ego stayed on the target and kept replanning, and the FSM's new DIAG named its refusal every
+  second ("DIAG: 238 message(s), arc 0.006 m, 2 points, first point 5.727 m from the vehicle, stamp new
+  -> refused because: arc 0.006 < 0.10 m") instead of failing silently.  Both halves of the fix are
+  visible in the log of a real sortie.
+
+THE ONE REMAINING MECHANISM (next step, in order)
+  1. THE ADAPTER RE-PROJECTS AN EXPIRED SPLINE INTO A 2-POSE STUB.  Its own line, repeated ~250 times:
+       "published 2 poses on /planner/traj  (t_cur 0.415 / 0.415 s, start 0.1392 m from the vehicle,
+        min pillar clearance 0.334 m, traj dt 0.0148 s, arc step 0.0078 m)"
+     t_cur has already reached duration, so the "remaining" plan is the spline's last instant: 2 poses
+     0.006 m apart (traj.csv: n=2 arc_m=0.005824, points (0.015985,-4.115627) and (0.016943,-4.109883),
+     both ~0.01 m from the vehicle).  The FSM refuses every one of them on --min-traj-m 0.10 and the
+     sortie aborts 60 s later.  ego committed no new spline after traj 8 (bsplines 8 for the whole
+     flight, the last at t = 75.0 s), so there is nothing else to publish.
+     The FSM' own answer for this case is already upstream's: when the plan's clock is out, hover at the
+     last point -- but here the last point is where the vehicle already is, so the mission cannot move.
+     The interface's job is to say "I have no plan" (a stale/empty publish is not a plan), loudly and
+     once, rather than to spam a 6 mm stub 250 times and let the consumer guess.
+  2. THE GOAL SOURCE DISAGREES WITH ITSELF AT THE END.  The adapter's last received goal is
+     "goal W[+1.5918 +3.6696 +2.0000] -> L[+3.6723 -1.5958 +1.8844]  round trip 0.000000 mm" (the
+     sequencer's stop 2, published 41 times), while ego's own end_pt_ stayed at [0.001 -4.001 1.884] --
+     stop 1's goal -- as the last two GOAL-TRACE lines show (have_target=1, then have_target=0, odom
+     [0.023 -4.128 1.786]).  So the new goal was received and converted but never reached ego's
+     waypointCallback, and the 1 Hz re-forward kept re-sending stop 1.  `_goal_src` has two writers
+     (the sequencer's latched goal and the /mission/stop-index-derived goal) -- that is the last of the
+     handshake-shaped layers and it should be reduced to ONE source, the sequencer's.
+  3. Only then is the 3 m/s / corridor-width question worth re-measuring.
