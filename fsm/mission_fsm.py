@@ -698,7 +698,9 @@ class Mission:
     def land(self):
         self.set_phase("land")
         self.bridge.land()
-        self.pump(20.0, until=lambda: not self.bridge.state().armed)
+        # 40 s, not 20: MEASURED 2026-10-14 a Mission B flight was failed with "still armed after LAND"
+        # because the FCU had not disarmed yet when this wait expired.
+        self.pump(40.0, until=lambda: not self.bridge.state().armed)
         st = self.bridge.state()
         self.log("landed: armed=%s mode=%s" % (st.armed, st.mode))
         self.set_phase("done")

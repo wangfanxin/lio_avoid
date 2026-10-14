@@ -32,7 +32,9 @@ def read(world):
     # not to be tighter than the world the planner plans in.  MEASURED 2026-10-14: with 0.5 m the
     # FSM aborted a Mission B flight at N +5.52 m inside a 12 x 12 m arena (walls at +-6.0), i.e. the
     # gate fired on a legitimate trajectory 0.48 m inside the world.
-    geo = min(max(abs(xs[0]), abs(xs[1])), max(abs(ys[0]), abs(ys[1]))) - 0.2
+    geo = min(max(abs(xs[0]), abs(xs[1])), max(abs(ys[0]), abs(ys[1])))  # the arena itself: the
+    # planner refuses paths outside it, so this gate only has to catch a runner -- MEASURED
+    # 2026-10-14: arena-0.2 aborted two Mission B flights at 5.84 and 5.88 m in a 6.0 m arena
     return {"corners": corners, "alt": float(mission.get("takeoff_alt", 2.0) or 2.0),
             "geofence_m": float(geo), "arena": {"x": xs, "y": ys}}
 
