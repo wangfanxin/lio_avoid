@@ -1,10 +1,11 @@
 Mission A, B1 adjudicated: the window is NOT the pad, and the extents ARE at the corners
 date: 2026-10-15   tools: tools/b1-window-probe.py, tools/hover-table.py, tools/corner-dwell-trace.py,
           tools/corner-excursion.py (section 6), tools/metrics.py's own two REPORTED lines
-SECTIONS 6 AND 7 WERE ADDED AFTER THE ROUND THAT WROTE 1-5 DIED: section 6 is the per-corner
-excursion table with its mechanism, section 7 is the RECT11 c3 dwell miss that section 1's own
-figures raised and never explained.  Both were produced by re-running the tools on the same runs;
-nothing in sections 1-5 was edited.
+SECTIONS 6-8 WERE ADDED AFTER THE ROUND THAT WROTE 1-5 DIED: section 6 is the per-corner excursion
+table with its mechanism, section 7 is the RECT11 c3 dwell miss that section 1's own figures raised
+and never explained, and section 8 is the A/B that proves the tools/metrics.py change moves no
+number.  All three were produced by re-running the tools on the same runs; nothing in sections 1-5
+was edited (checked line by line against the committed file).
 the row under adjudication (every clean sortie, unmodified metrics.txt):
    B1 truth box extents over the route: E 2.137-2.155 m, N 1.279-1.324 m
    (command 2.000 / 1.200; target <= 2.10 / 1.30)  [FAIL]
@@ -544,3 +545,87 @@ phase_a_mission_fast.parm WP_SPD 2.0 on a 2.0 x 1.2 m square, whose own header s
 the 6.0 x 4.0 m world) or the FSM's corner tolerance, and both are flight behaviour.  The honest
 statement for the acceptance is: 3 of 4 sorties with 4 of 4 corners, 15 of 16 corner visits, and the
 one miss is this 0.04 s.
+
+================================================================================
+== 8. THE SAFETY PROOF FOR THE tools/metrics.py CHANGE: an A/B on identical inputs
+================================================================================
+The change under test rewrites B1's gated line's wording, adds two REPORTED lines to B1, and writes
+B2's 2-D cross product out by hand.  The claim to check is that NO NUMBER ANYWHERE MOVES.  So both
+versions were run on the same current recordings and the output diffed line by line:
+   A = tools/metrics.py as of the previous HEAD (git show eba1033:tools/metrics.py)
+   B = tools/metrics.py as committed, the change under test
+   inputs = the same tap.csv / lio.csv / phase.csv / BIN, unchanged between the two runs
+   command (_stage/s8-verify-metrics.sh):
+     python3 $V --tap $D/tap.csv --odom $D/lio.csv --phase $D/phase.csv --bin $BIN \
+         --corners="$CORNERS" --world worlds/pillars.yaml
+
+RESULT, per sortie: the diff has exactly THREE hunks, and they are the two additions plus the one
+rewording -- all of them inside B1's own block.
+
+---- missionA-RECT1-noego
+   24c24
+   < B1 truth box extents over the route (14.7 s): E 2.151 m  N 1.287 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [FAIL]
+   ---
+   > B1 truth box extents over the route (14.7 s): E 2.151 m  N 1.287 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner arrival)  [FAIL]
+   25a26,27
+   >    the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 11237 of 17681 samples): E 2.151 m  N 1.277 m  [REPORTED, not gated]
+   >    where the E extent comes from: corner 4 -0.070 m (N -0.024) and corner 2 +0.081 m (N +0.004) from their own commanded point, reached with a peak speed of 1.78 m/s within 1 m of a corner  [REPORTED, not gated]
+---- missionA-RECT6-clean-square
+   24c24
+   < B1 truth box extents over the route (14.6 s): E 2.155 m  N 1.282 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [FAIL]
+   ---
+   > B1 truth box extents over the route (14.6 s): E 2.155 m  N 1.282 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner arrival)  [FAIL]
+   25a26,27
+   >    the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 10597 of 17551 samples): E 2.155 m  N 1.275 m  [REPORTED, not gated]
+   >    where the E extent comes from: corner 4 -0.078 m (N -0.009) and corner 2 +0.077 m (N +0.008) from their own commanded point, reached with a peak speed of 1.75 m/s within 1 m of a corner  [REPORTED, not gated]
+---- missionA-RECT7-hold5
+   24c24
+   < B1 truth box extents over the route (38.2 s): E 2.154 m  N 1.287 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [FAIL]
+   ---
+   > B1 truth box extents over the route (38.2 s): E 2.154 m  N 1.287 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner arrival)  [FAIL]
+   25a26,27
+   >    the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 37470 of 45826 samples): E 2.154 m  N 1.284 m  [REPORTED, not gated]
+   >    where the E extent comes from: corner 4 -0.080 m (N +0.004) and corner 2 +0.073 m (N +0.003) from their own commanded point, reached with a peak speed of 1.74 m/s within 1 m of a corner  [REPORTED, not gated]
+
+AND THE CHECK THAT MATTERS MORE THAN THE DIFF: every acceptance row, hashed on both sides.  A row that
+reproduces gives the same md5 of its own lines; the B1 BLOCK is excluded from the pattern list because
+changing it is the point of the change.
+
+   row pattern        RECT1 (A / B)              RECT6 (A / B)              RECT7 (A / B)
+   ^A1 route          6bc042f7/6bc042f7          e6894413/e6894413          a50110eb/a50110eb
+   ^A2 route          f1e6e1d0/f1e6e1d0          44b80b60/44b80b60          36b3e8de/36b3e8de
+   ^A3 delivered      06792287/06792287          f2bdfa22/f2bdfa22          3bfd8548/3bfd8548
+   wander  rms        606a0709/606a0709          08cfcb4e/08cfcb4e          6e756079/6e756079
+   outliers p99       eba508d1/eba508d1          3fae9cdc/3fae9cdc          3b2e5428/3b2e5428
+   delivery rate      02522ecb/02522ecb          02522ecb/02522ecb          02522ecb/02522ecb
+   ^A4 FCU            6eeb8850/6eeb8850          6e8f091d/6e8f091d          97c0939d/97c0939d
+   ^B2 stra           eb47ad02/eb47ad02          eb47ad02/eb47ad02          eb47ad02/eb47ad02
+   ^   leg            e05a7ff6/e05a7ff6          8e523774/8e523774          ae0c7521/ae0c7521
+   ^B3 corner         9fb96593/9fb96593          9fb96593/9fb96593          9fb96593/9fb96593
+   ^   corner         7ded06af/7ded06af          aa39ff7c/aa39ff7c          fbcbf082/fbcbf082
+   ^C1 final          8353713e/8353713e          9885b536/9885b536          83f95d36/83f95d36
+   ^C2 obstacle       a23f5b7f/a23f5b7f          23a3b881/23a3b881          fef0c64a/fef0c64a
+   ^A1/A2             8ff31ecc/8ff31ecc          fbf41533/fbf41533          e39ab29c/e39ab29c
+
+   every pair above is equal, i.e. A1, A2, A3 (its wander, outliers, rate and verdict), A4, B2's five
+   legs, B3's five corners, C1, C2 and the summary verdict line are character-for-character the same
+   in both versions.  A4 is included on purpose even though this file is about B1: it is the row the
+   other committed defect in this round moved, so it must be shown NOT to move here.
+
+AND B1 ITSELF, the row the change is about:
+   missionA-RECT1-noego       HEAD     E 2.151 m  N 1.287 m  [FAIL]
+                              WORKTREE E 2.151 m  N 1.287 m  [FAIL]
+   missionA-RECT6-clean-square HEAD     E 2.155 m  N 1.282 m  [FAIL]
+                              WORKTREE E 2.155 m  N 1.282 m  [FAIL]
+   missionA-RECT7-hold5       HEAD     E 2.154 m  N 1.287 m  [FAIL]
+                              WORKTREE E 2.154 m  N 1.287 m  [FAIL]
+
+   same extents, same bound, same FAIL.  The only thing that changed inside the gated line is a clause
+   NAMING where the bound comes from -- which is the honest form of a bound that was previously only
+   asserted.  No threshold was raised to make a row pass, and the gated quantity is still the whole
+   route.
+
+ONE MORE THING THE CHANGE FIXES, visible in the A/B's stderr rather than its stdout: B2's np.cross on
+2-component vectors is deprecated in numpy 2 and printed "Arrays of 2-dimensional vectors are
+deprecated" on every run.  Measured: A leaves 2 lines of stderr per run, B leaves 0.  Same formula
+(d_x*r_y - d_y*r_x), same millimetres -- which the '^   leg ' rows above prove.
