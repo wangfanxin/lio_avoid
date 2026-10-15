@@ -877,3 +877,24 @@ planner's own buffer.  Both were caught by asking the artefact for its own conte
 file for how many keys it really has) rather than trusting the edit that produced it.  A duplicate dict key is
 silent in every direction: the file parses, the launch description builds, the node starts, and the wrong number
 is used.
+
+=== `dist0` AT WINDOW 8, FLOWN PROPERLY AT LAST, AND REFUTED (`DIAG28-dist0-08-real`) ===================
+The value the previous round MEANT to test (and did not, because a duplicate dict key ate it -- STATUS row 107),
+flown with the file verified to carry exactly one `dist0` key before take-off:
+
+    run                      dist0 / lambda_collision   truth min     inside 0.20 m        outcome
+    window-8 arm (4 runs)    0.5 / 0.5                  +0.058..+0.167, one -0.276   1887..4749   mean +0.010 m
+    DIAG27                   0.5 / 2.0                  +0.154 m      4234 of 43901    rc=0
+    **DIAG28**               **0.8 / 0.5**              **-0.291 m**  **7987 of 39973 (20%)**  **rc=0**
+
+**Refuted, and in the wrong direction**: 0.8 m of demanded standoff produced the deepest penetration of any
+run and the second-worst footprint fraction, against +0.058..+0.167 m for the same arm at 0.5.  It is reverted to
+upstream's 0.5 and the comment beside it records the flight.
+
+**With this, every value and every code path this planner architecture exposes has been genuinely flown and
+refuted**: the relay window (0/3/8/15 s, best at 8), lambda_fitness (4.0), inflation (0.20 and 0.30 m), the A*
+clearance cost, the collision-sweep coverage, `lambda_collision` (2.0) and now `dist0` (0.8).  The localisation
+has been complete since round 31 -- the map holds the obstacle at the moment of closest approach, the plan goes
+there anyway (four of four), the aircraft follows the plan to 0.003-0.044 m -- and the architecture contains
+nothing left to turn.  What remains is outside it: a real obstacle-distance cost, or a decision that the 0.20 m
+footprint is the wrong bar for this planner.

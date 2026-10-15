@@ -223,7 +223,16 @@ def generate_launch_description():
                                                  # `calcFitnessCost` is the only term that pulls the B-spline onto
                                                  # the A* reference; `lambda_collision`/`dist0` below multiply a
                                                  # SWARM separation cost that is empty for one vehicle.
-        'optimization/dist0': 0.5,
+        'optimization/dist0': 0.5,               # TESTED AT 0.8 m, WINDOW 8, REVERTED (DIAG28): the term
+                                                 # is live there (2.2 M rebound calls, 15 000-17 000
+                                                 # collisions populating exactly the arrays this
+                                                 # scales) and raising the standoff to 0.8 m made the
+                                                 # crossing WORSE, not better: truth minimum -0.291 m
+                                                 # and 7987 of 39973 samples inside the footprint
+                                                 # (20%), against +0.058..+0.167 m and 1887..4749 for
+                                                 # the same arm at 0.5.  With this, EVERY value this
+                                                 # architecture exposes has been flown and refuted.
+                                                 # Upstream: 0.5.
         'optimization/swarm_clearance': 0.5,
         'optimization/max_vel': LaunchConfiguration('max_vel'),
         'optimization/max_acc': LaunchConfiguration('max_acc'),
