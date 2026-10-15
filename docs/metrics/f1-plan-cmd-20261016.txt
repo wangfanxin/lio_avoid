@@ -1,0 +1,218 @@
+F1 — the PLAN box becomes the executor: /plan/cmd flies the aircraft.  EVIDENCE.
+================================================================================
+Written 2026-10-16 by the round that implemented F1 of _stage/refactor-bridge-plan.md section 6 (steps
+S1-S4 were the zero-flight half, commit cf27fd8 and earlier).  Starting HEAD 940cb50, ending HEAD
+<F1-EVIDENCE>.
+
+Two sorties, both through `_stage/rect23-plan-cmd-fly.sh` (waits for idle, kills nothing by name, refuses
+if the stack is busy) and both on the FROZEN EKF parameter set so that THE REFACTOR IS THE ONLY VARIABLE:
+
+    ALT_MODE=lio NAV_SOURCE=lio WORLD=worlds/pillars.yaml
+    MISSION_PARM=params/phase_a_mission_fast.parm
+    EKF_PARM=params/ekf_trust_lio.parm          <- the frozen one, NOT ekf_trust_lio_tight.parm
+    GEOFENCE_M=6.60
+    RECT_HOLD_S: UNSET on purpose -- the dwell must come from the harness DEFAULT
+
+and the harness printed, before the flight:
+
+    dwell     : 5.0 s at every corner -- from THE HARNESS DEFAULT (RECT_HOLD_S was not set); the world
+                file's mission.hold_s is 3.0 and is deliberately NOT what a default sortie flies
+
+which is F1 change 7 (the frozen world's `hold_s: 3.0` used to be what an unset RECT_HOLD_S flew, and
+STATUS row 42 is the measured consequence of that).
+
+
+1. THE ACCEPTANCE SET
+---------------------
+`tools/dwell-audit.py <run> --radius 0.15`, on the truth tap (never on a log -- PLAN.md rule 8):
+
+  run                 c1      c2      c3      c4     verdict
+  RECT23-plan-cmd    13.11   7.99    6.35    7.96    CORNERS HOVERED >= 5.0 s: 4 of 4
+  RECT24-plan-cmd    12.99   7.89    6.34    8.02    CORNERS HOVERED >= 5.0 s: 4 of 4
+  ---- the same, --airborne-m 0.5 (STRICTER: ground time is excluded) ----
+  RECT23-plan-cmd     9.01   7.99    6.35    7.96    CORNERS HOVERED >= 5.0 s: 4 of 4
+  RECT24-plan-cmd     8.89   7.89    6.34    8.02    CORNERS HOVERED >= 5.0 s: 4 of 4
+
+  **F1: 2 of 2 sorties with 4 of 4 corners hovered >= 5.0 s; 8 of 8 corner visits >= 5.0 s**
+  (both measures, which is also the pre-F1 rate: STATUS row 48 = 3 of 4 sorties, 15 of 16 visits).
+
+`tools/metrics.py` (its own output, every row with its denominator):
+
+  row                                RECT23             RECT24            limit        verdict
+  A1 route horizontal rms            3.59 mm            3.45 mm           <= 20        PASS
+  A2 route vertical rms              4.41 mm            4.29 mm           <= 50        PASS
+  A3 continuity (wander/outliers)    E0.524 N0.556      E0.510 N0.560     <= 2.00/ax   PASS
+        (delivery 200.1 Hz, worst gap 4.998 ms, p99 <= 25.22)                                PASS
+  A4 FCU estimate vs truth           17.41 mm           18.34 mm          <= 50        PASS
+        (best-fit lag +10 ms / +24 ms; horizontal, mean removed, 495 of 538 samples)
+  B1 truth box E / N                 2.159 / 1.298 m    2.170 / 1.300 m   2.10 / 1.30  FAIL (E)
+  B2 straightness, worst leg         41.3 mm, 5 of 5    41.4 mm, 5 of 5   <= 50        PASS
+  B3 corner arrival, worst           4.6 mm, 5 of 5     4.1 mm, 5 of 5    <= 100       PASS
+  B4 landing                         'land' + DISARMED at 72.88 s (FCU BIN), no failsafe
+  C1 final point                     0.005 m            0.006 m           reported     PASS
+  C2 obstacle clearance              0 of 55320         0 of 55282        0 of N       PASS
+        (minimum pillar-surface distance 0.547 m / 0.551 m over the whole flight)
+  abort phase                        NONE               NONE
+  leg timeout (plan box)             NONE (5 of 5 ARRIVED, all SETTLED)
+  EKF failsafe                       NONE               NONE
+
+  B1's East extent FAILS on both sorties, exactly as the F1 brief predicted ("B1 will still FAIL -- it is a
+  real measured defect, do not touch its bound").  Its mechanism is STATUS row 50 and is not this round's:
+  the aircraft overshoots the wall a corner sits on by 61-82 mm at the two corners it arrives at 1.7 m/s.
+
+The phase log, as flown, is IDENTICAL in name, count and order to the pre-F1 sorties:
+
+  RECT23: preflight takeoff hold leg1 leg2 leg3 leg4 leg5 land done
+  RECT24: preflight takeoff hold leg1 leg2 leg3 leg4 leg5 land done
+
+which is F1 change 6 (risk R1: `tools/metrics.py` selects the route window as every phase whose name starts
+with `leg` and anchors B1's window at the leg2 entry, so the phases are a metric input, not a log).  The
+leg boundaries are decided by the STREAM now: `trajectory_id` increments once per waypoint (1..5), and the
+FSM turns each new id into `leg<id>`.
+
+Rates, measured (the wire rate is the one F1 was told to keep):
+
+  /plan/cmd published        RECT23 6172 samples, achieved 97.85 Hz over 63.1 s (declared 100)
+                             RECT24 6221 samples, achieved 98.65 Hz over 63.1 s
+  /plan/cmd recorded         RECT23 traj.csv 6172 rows / 63.06 s = 97.88 Hz (no loss)
+  setpoint 84 on the wire    RECT23 2048 setpoints, median interval 20.7 ms  -> 48.31 Hz (asked 50)
+                             RECT24 2049 setpoints, median interval 20.6 ms  -> 48.43 Hz
+  external nav 331 at the FCU 48.33 Hz (VISP/VISV, both sorties, the FCU's own BIN)
+  truth tap 1200.49 Hz; /lio/robo/odom 200.10 Hz
+
+  The relay's own counter agrees with the file's own clock: RECT23 "1903 setpoints on the wire" over the
+  39.3 s route, RECT24 1904.  (S3's shadow declared 100 Hz and emitted 4; F1's stream emits 97.9-98.7.)
+
+
+2. WHAT MOVED, WITH file:line
+-----------------------------
+* `planner/cmd_stream.py::TourPacer` is the PLAN box's executor: a WAYPOINT sequencer over
+  `[c1,c2,c3,c4,c1]` (the entry leg has no dwell -- the tour's dwells belong to its corners), with
+    - the arrival gate ESTIMATE-ONLY (`step(p_w, v_h, now)`: the caller's own odometry, nothing else);
+    - **the dwell clock on the SETTLED arrival** (`_arrive`: inside `--arrive-m` AND below
+      `--settle-speed`, both logged; `--settle-s` bounds the wait) -- F1 change 8;
+    - `--leg-timeout-s` retained, names its reason and advances anyway;
+    - the tour's end is a FIELD (`trajectory_flag = COMPLETED`) and the stream KEEPS publishing the hover.
+* `planner/rectangle_source.py`: publishes `/plan/cmd` from its own `create_wall_timer` on a
+  `MultiThreadedExecutor` (F1 change 1), steps the pacer from EVERY odometry sample (~200 Hz, against the
+  FSM's 50 Hz), and NO LONGER PUBLISHES ANY `nav_msgs/Path`.
+* `bridge/bridge_node.py` (NEW) `CmdRelay`: consumes `/plan/cmd`, checks `header.frame_id` (L, or ego's
+  `world`), writes the newest sample through `send_cmd` at 50 Hz, counts the achieved rate, and names
+  silence (`stalled_reason`) -- the fact that used to be indistinguishable from a completed tour.
+* `bridge/mavlink_impl.py`: `send_cmd(cmd_l, calib, yaw_rad=None, fields="pos")` is THE ONE setpoint entry
+  point.  **THE ENTRY POINTS THAT DIED** (F1 change 2): `send_position` (the corner tour's own writer),
+  `send_position_velocity` (no live caller at HEAD 940cb50 -- the FSM's `posvel` arm fell through to
+  `send_position`), `send_velocity` (only `--follow path`, deleted with the Path).  Their F/W frame
+  contract is gone with them: nothing above the bridge converts a frame any more.
+  `send_external_nav_l` closes the estimator path's L -> wire step the same way.
+* `fsm/mission_fsm.py`: the corner walk is DELETED -- `_on_path`, `_path_in_hand`, `_legs_left`,
+  `_await_next_leg`, `_fly_to_corner`, `legs`, `_corners_of` (F1 change 3), plus `follow_path` and
+  `--follow path` with its nine switches (`--follow-mode`, `--lookahead-*`, `--brake-acc`, `--cross-gain`,
+  `--traj-timeout-s`, `--traj-wait-s`), plus `--closed-m`, `--leg-join-m`, `--approach`, `--arrive-m`,
+  `--settle-*`, `--next-leg-wait-s`.  1187 -> 869 lines.  The STALL GATE STAYS (design section 8 item 8)
+  and now sits beside the command stream's own liveness gate.
+* `tools/record-traj.py` reads `/plan/cmd` (F1 change 5, risk R5) with the same columns and the same
+  meaning: `clr_m` is the clearance of the straight line the newest command implies, and the points file
+  still holds one polyline per leg.  `tools/run-mission.sh` points it there.
+* `tools/run-mission.sh`: `RECT_HOLD_S` defaults to 5.0 and prints where the dwell came from (change 7);
+  `NEXT_LEG_ARG` (the two-clocks-are-one-number derivation) is retired with the interface it existed for.
+* DELETED TOOLS, and why: `tools/test-corner-tour.py` (its subject, the FSM's corner walk, is gone -- its
+  assertions moved into `tools/test-cmd-stream.py`), `tools/hold-design-check.py` (it decides between two
+  Path ENCODINGS; there is no Path), `tools/test-shadow-ab.py` (it proves "the shadow stream does not move
+  the flown Path"; there is no Path and no shadow).
+
+
+3. THE OFFLINE PROOFS (no flight)
+---------------------------------
+  tools/test-s4-l-to-wire.py     15000 cases (3 field arms x 4 calibrations x 1250 poses), repr()-equal to
+                                 the chain F1 DELETED -- which is written out in the test itself, because a
+                                 relocation whose reference lives only in git history is not provable.
+                                 3 negative controls (transpose R_WL, drop t_WL, drop the z sign flip)
+                                 each report 15000-42000 differences and fail.  PASSED
+  tools/selftest-bridge.py       the NED permutation, the yaw, all three masks, `send_external_nav_l`
+                                 byte-equal to the F-fed call it replaced.  PASS
+  tools/test-cmd-stream.py       the tour (5 waypoints, 4 dwells of 5.0 s, none on the entry), the L frame
+                                 under 4 calibrations, the dwell as content (v = 0, a = 0), the SETTLED
+                                 dwell clock, self-clocking at 100 Hz, trajectory_id per waypoint,
+                                 COMPLETED last and sustained, and the leg clocks NOT running while the
+                                 vehicle is on the pad.  4 negative controls fail, including
+                                 **"the SETTLE removed"**: with the old rule the FLOWN dwell at every
+                                 corner falls to 3.96-3.97 s inside the 0.15 m radius -- the RECT11 c3
+                                 defect (4.96 s) reproduced offline.  PASSED
+  tools/test-bridge-contract.py  13 of 13 names the tree uses resolve, are public, are implemented and
+                                 match their signatures.  PASSED
+  tools/test-stall-gate.py       the retained stall gate still names its cause.  PASSED
+  tools/frozen-check.py          49 of 49 unchanged.  tools/docs-budget.py  4 of 5.  both PASS
+
+  BENCH, no airframe (`_stage/f1-ros-smoke.sh`: the plan box alone on a ROS graph):
+      /plan/cmd at **99.94 Hz** (`ros2 topic hz`, window 200), and `tools/record-traj.py
+      --msg position_cmd` recorded 778 messages over 7.77 s = **100.12 Hz** with `frame lio_world`, the
+      commanded point landing at exactly (E 0.500000, N 0.400000, U 2.000000) in W -- the world file's
+      corner 1 -- and `clr_m` 1.045362 m for it.
+
+
+4. COMPARISON WITH THE FROZEN-EKF BASELINES (did the refactor move anything?)
+-----------------------------------------------------------------------------
+  row                 RECT23      RECT24      RECT7       RECT9       RECT10      RECT11
+  A1 [mm]              3.59        3.45        3.42        --          --          3.49
+  A2 [mm]              4.41        4.29        4.21        --          --          4.44
+  A4 [mm]             17.41       18.34       17.92        --          --         18.32
+  B1 E / N [m]        2.159/1.298 2.170/1.300 2.154/1.287 --          --          2.137/1.324
+  B2 worst [mm]       41.3        41.4        29.1        --          --          40.6
+  C1 [m]              0.005       0.006       0.003       --          --          0.006
+  C2 min clr [m]      0.547       0.551       0.562       --          --          0.536
+  C2 in footprint     0 of 55320  0 of 55282  0 of 56696  --          --          0 of 51388
+  dwell default       4 of 4      4 of 4      4 of 4      4 of 4      4 of 4      3 of 4
+  dwell airborne      4 of 4      4 of 4      4 of 4      4 of 4      4 of 4      3 of 4
+
+  **NOTHING MOVED.**  A1/A2/A4/B1/C1/C2 are within a few mm of the baselines (A1 is 0.17 mm BETTER than
+  RECT7), B2's worst leg is the same 40-41 mm the two nearest baselines report, C2's clearance moves by
+  15 mm in the conservative direction (0.547 vs 0.562), and the same single row fails.  What DID change is
+  the dwell's SHAPE: c3 -- the corner RECT11 split into 1.33 s + 4.96 s -- is now 6.35 s / 6.34 s in ONE
+  span on both sorties, because the dwell clock starts on the settled arrival instead of on the first
+  radius crossing.  That is the one place the refactor was aimed, and it moved.
+
+  The A4 of RECT21 (the tight-EKF campaign, NOT this comparison's baseline) is 16.2 mm; RECT23/24 are
+  17.41/18.34 on the frozen EKF, i.e. the tight-EKF track is a separate campaign and was deliberately not
+  mixed into this one.
+
+
+5. WHAT THIS ROUND COULD NOT DO, AND WHAT REGRESSED
+---------------------------------------------------
+* **B1 still FAILS** and its bound was not touched (2.159/2.170 m East against <= 2.10).  It is STATUS
+  row 50's defect and it is unchanged in size.
+* **The `--nav-source truth` calibration flight was updated but NOT flown.**  `calibration_flight()` now
+  builds its targets as an L `CmdSample` through `_manual_from_w` (the one place the FSM still converts a
+  frame, and it must: that flight's purpose is to MEASURE the conversion), and the setpoint goes through
+  `send_cmd`.  No sortie this round used it, so it is code-reviewed but not flight-proven.
+* **`--stall-topic` still has no publisher.**  The gate is retained (design section 8 item 8) and its
+  successor -- `CmdRelay.stalled_reason`, which fires after `--cmd-silence-abort-s` of silence on
+  `/plan/cmd` -- was added and is exercised by the negative controls of `tools/test-cmd-stream.py`'s
+  sibling logic, but NO SORTIE HAS YET KILLED THE PLAN BOX MID-FLIGHT.  That is F2's bench test.
+* **`tools/measure-rates.py`'s setpoint row reads `t_wall` as if it were microseconds** (it looks for a
+  `t_us` column that `setpoints.csv` has never had), so its "setpoint 84" number is meaningless; the honest
+  number is the median interval of the `t_wall` column (48.31/48.43 Hz above).  Not fixed here: it is a
+  measuring-tool defect, not an architecture one, and it reproduces on every pre-F1 run.
+* **`bridge/mavros_impl.py` does not exist** and still does not (design section 8 item 11).  `bridge/base.py`
+  no longer repeats the false claim; `docs/PLAN.md:34` and `docs/ARCHITECTURE.md:225` still describe it in
+  the conditional, which is the honest form until a round retracts it.
+
+
+6. WHERE THE DESIGN DOCUMENT AND THE CODE DISAGREED
+---------------------------------------------------
+1. **The mask.**  `_stage/refactor-bridge-plan.md` section 3.3 prices the interface as "position, velocity,
+   acceleration, yaw, yaw_dot -> msg 84 with the existing POS_VEL_ACC_YAW_MASK".  The CODE and the
+   measurement say that mask is the one thing that BROKE holding (sortie G2: pos=(3.98,0) vel=(0,0)
+   acc=(0,0) at the plan's end and the aircraft flew on at 2.6 m/s for 2.6 m until the geofence abort,
+   against 0.020-0.023 m of stopping error on POS_YAW).  And at HEAD 940cb50 the corner tour's `posvel`
+   default FELL THROUGH to `send_position`, i.e. it flew POS_YAW, so "the existing mask" was not what flew
+   either.  Implemented: `send_cmd(..., fields="pos")` by default -- the mask the evidence was measured at
+   -- with `posvel`/`posvelacc` selectable and documented.
+2. **The stream's frame.**  Section 6 step S3 says "publish `/plan/cmd` (PositionCommand, **W**)" while
+   section 3.3 says L.  Implemented: **L** (the same discrepancy S3 recorded and resolved; F1 confirmed it
+   by making the bridge the only converter).
+3. **`--empty-mark-s` / "stop publishing after COMPLETED".**  S3 findings section 1.4 left a consumer that
+   needs a continuous stream to F1/F2.  Implemented: the stream publishes the hover FOREVER after
+   COMPLETED, because "finished" and "stopped talking" must be different facts for the supervisor.
+4. **The dwell clock.**  The design's section 6 F1 does not mention the settle at all; the F1 brief's
+   change 8 does, with two measured misses behind it.  The code follows the brief.

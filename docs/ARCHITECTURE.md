@@ -59,38 +59,45 @@ the chain as it runs, not a design intent.
                 │ pose + velocity (L)
                 ▼
 ┌═══════════════════════════════════════════════════════════════════════════════════════════┐
-║ BOX 4   planner/rectangle_source.py -- THE TRAJECTORY, and there is no other producer      ║
+║ BOX 4   planner/rectangle_source.py -- THE PLAN **AND ITS EXECUTION**, one box, no other    ║
 ║   in : worlds/pillars.yaml through tools/world-info.py (the one geometry reader)           ║
-║        --calib-file (_stage/calib.json): the SAME measured W<-L the FSM uses               ║
-║        /lio/robo/odom (L)             <- the corner hold's ARRIVAL GATE (L -> W with the   ║
-║                                          same calibration), not a second convention        ║
-║   out: /planner/traj -- nav_msgs/Path in L, pose + yaw per point, per-point stamps         ║
-║        one message per leg when RECT_HOLD_S > 0 (the corner hold, advanced ON ARRIVAL),    ║
-║        else one closed path; an EMPTY path means "there are no more legs"                  ║
+║        --calib-file (_stage/calib.json): the SAME measured W<-L the bridge uses            ║
+║        /lio/robo/odom (L) + /lio/odom (its velocity)                                       ║
+║             <- THE ARRIVAL GATE, THE SETTLE AND THE DWELL: its own waypoint sequencer      ║
+║                (`planner/cmd_stream.py::TourPacer`), ESTIMATE-ONLY.  The truth tap is not  ║
+║                subscribed here, because a real planner has none.                           ║
+║   out: /plan/cmd -- quadrotor_msgs/PositionCommand in L, on its OWN 100 Hz wall timer       ║
+║        position + velocity + acceleration + yaw + yaw_dot + trajectory_id + trajectory_flag ║
+║        the DWELL is CONTENT (position = the corner, velocity = 0); trajectory_id increments ║
+║        once per waypoint; trajectory_flag = COMPLETED is the end of the tour and the stream ║
+║        KEEPS PUBLISHING (so "finished" and "stopped talking" are different facts)           ║
+║   owns: the waypoints, arrival, settle, dwell, leg timeouts, yaw, the command stream        ║
+║   does NOT own: modes, arm/takeoff/LAND, the geofence, the abort, the phase log, the FCU    ║
 ╚═══════════════════════════════════════════════════════════════════════════════════════════╝
-                │ /planner/traj (L)
-                ▼
+                │ /plan/cmd (L)                                          [F1: this arrow replaced
+                ▼                                                         the nav_msgs/Path one]
 ┌═══════════════════════════════════════════════════════════════════════════════════════════┐
-║ BOX 5   fsm/mission_fsm.py + bridge/     scheduling, frames, arrival, FCU communication    ║
-║   in : /planner/traj (L, latched)     <- the corners, converted L -> F once; a NEW leg      ║
-║                                          mid-mission restarts the corner list, and the     ║
-║                                          corner just reached is HELD until it arrives       ║
+║ BOX 5   fsm/mission_fsm.py + bridge/     the supervisor's seat, frames, FCU communication   ║
+║   in : /plan/cmd (L, latched)         <- bridge/bridge_node.py::CmdRelay consumes it and    ║
+║                                          writes the NEWEST sample to message 84 at 50 Hz    ║
 ║        /lio/robo/odom 200 Hz (L)      /lio/odom (the velocity)                             ║
 ║        /sim/truth/odom (W)            <- the geofence gate ONLY (sim-only safety)          ║
 ║        FCU state/pose over MAVLink    [bridge]                                             ║
-║   out: setpoint 84 @50 Hz             [bridge: F -> LOCAL_NED, z becomes DOWN]             ║
-║        external nav 331 (+102) @48 Hz [bridge: LIO -> EKF, NED/FRD labels as AP requires]  ║
+║   out: setpoint 84 @50 Hz             [bridge: send_cmd, L -> LOCAL_NED, z becomes DOWN]    ║
+║        external nav 331 (+102) @48 Hz [bridge: send_external_nav_l, LIO -> EKF]             ║
 ║        /fsm/phase (String) on change                                                       ║
-║   owns: arrival at each corner, the settle, the truth-fed geofence, takeoff, LAND, and a    ║
-║         BOUNDED abort that NAMES the mechanism instead of going silent                     ║
-║   does NOT own: the trajectory (box 4), the estimate (box 3), the physics (box 1)           ║
+║   owns: preflight, takeoff, the truth-fed geofence, LAND, and a BOUNDED abort that NAMES    ║
+║         the mechanism instead of going silent -- INCLUDING "the plan box stopped talking"   ║
+║   does NOT own: the trajectory, the arrival, the settle, the dwell (box 4), the estimate    ║
+║         (box 3), the physics (box 1)                                                       ║
+║   contains NO frame arithmetic any more: every conversion is inside bridge/ (F1)            ║
 ╚═══════════════════════════════════════════════════════════════════════════════════════════╝
 
 ┌───────────────────────────────┐   ┌──────────────────────────────────────────────────────┐
 │ BOX 6   RViz                  │   │ BOX 7   tools/                                       │
 │  shows: /sim/world/markers(W) │   │  recorders: every stream + the truth -> logs/<run>/   │
 │         /lio/cloud_world (L)  │   │  metrics.py: A1-A4 / B1-B4 / C1 / C2, offline         │
-│         /planner/traj (L)     │   │  plot-run.py, dwell-audit.py, sortie-score.py         │
+│         /plan/cmd (L)         │   │  plot-run.py, dwell-audit.py, sortie-score.py         │
 │         /tf, /odom, /fsm/phase│   │  frozen-check.py, docs-budget.py: the two rules,      │
 │  frame: world_w (mission_a.rviz, FROZEN) │        executable                                    │
 └───────────────────────────────┘   └──────────────────────────────────────────────────────┘
@@ -152,8 +159,8 @@ SITL as well, which needs the external-sensor path (SIM_JSON) instead of the bui
 | 1 SITL | MAVLink: setpoints 84, commands 76, external nav 102/331 | MAVLink: 31, 32, 0, 253; truth tap UDP **1200 Hz measured** | the true state, the EKF, the modes, the FCU local frame |
 | 2 `sim/` | truth UDP 1200 Hz; `worlds/*.yaml` | `/livox/lidar` 10 Hz (S), `/livox/imu` 200 Hz (S), `/clock` 48 Hz, `/sim/rtf` 1 Hz, `/sim/truth/odom` 93 Hz (W), `/sim/world/markers` 1 Hz (W) | the world, the sensor models, the clock authority |
 | 3 `lio/` | `/livox/lidar`, `/livox/imu` | `/lio/robo/odom` 200 Hz (pose only), `/lio/odom` 10 Hz (with velocity), `/lio/cloud_world` 10 Hz (the VOXEL map), `/lio/status`, `/tf` | the LIO world frame L and the odometry |
-| 4 `planner/` | `worlds/*.yaml` (through `tools/world-info.py`), `--calib-file` | **`/planner/traj`** (`nav_msgs/Path`, L) | the trajectory — the square's four corners and, when asked, one message per leg for the corner hold |
-| 5 `fsm/`+`bridge/` | `/planner/traj`, `/lio/robo/odom`, `/lio/odom`, `/sim/truth/odom` (geofence only), the FCU's pose/state | setpoints 84, external nav 331/102, `/fsm/phase` | scheduling, arrival, the safety gates, every conversion |
+| 4 `planner/` | `worlds/*.yaml` (through `tools/world-info.py`), `--calib-file`, `/lio/robo/odom` + `/lio/odom` (its own arrival/settle gate) | **`/plan/cmd`** (`quadrotor_msgs/PositionCommand`, L, own 100 Hz timer) | the plan **and its execution**: the waypoints, the arrival gate, the settle, the dwell, the leg timeouts and the COMPLETED statement |
+| 5 `fsm/`+`bridge/` | `/plan/cmd` (the relay's input), `/lio/robo/odom`, `/lio/odom`, `/sim/truth/odom` (geofence only), the FCU's pose/state | setpoints 84, external nav 331/102, `/fsm/phase` | preflight, take-off, the safety gates, the NAMED abort, LAND -- and every frame conversion (the FSM has none) |
 | 6 RViz | everything visual | nothing | display only (`rviz/mission_a.rviz` is frozen) |
 | 7 `tools/` | everything (recorders) and every recording (offline) | logs, tables, figures | the evidence |
 
@@ -168,8 +175,8 @@ Every row is a measured number from a run directory, and the row says where.
 | LIO | clean upstream Super-LIO `f89f48d`: `/lio/robo/odom` (200 Hz, body pose, L, zero twist), `/lio/odom` (10 Hz, with velocity), `/lio/cloud_world` (the 0.25 m voxel map) | 200.1 Hz delivered, `logs/missionA-stepB10-*` |
 | FCU feed | the FSM re-samples the newest LIO pose in its own 50 Hz loop and streams ODOMETRY (331) in NED/FRD | the FCU's own log: **VISP/VISV at 48.2 Hz**, `tools/bin-extnav-rate.py` |
 | EKF | `EK3_SRC1_POSXY/POSZ/VELXY/VELZ/YAW = 6` (external nav), no GPS, no compass; every measurement and process noise set to the MEASURED value in `params/ekf_trust_lio.parm`, with `FS_EKF_THRESH` raised in proportion (it is a RATIO) | `tools/bin-params.py` on the flight BIN |
-| trajectory | `planner/rectangle_source.py` converts the world file's square W -> L with the run's measured calibration and publishes it on `/planner/traj`; `RECT_HOLD_S=5` publishes one leg per message and advances ON ARRIVAL, measured from `/lio/robo/odom` converted L -> W with the same calibration | W->L->W round trip printed in `traj.log`, worst **0.000000 mm**; the published plan's own clearance, read back in W: **0.6000 m** (the world's designed worst case; on RECT7 the live `clr_m` and an independent recomputation agree to **0.000000 m**) |
-| mission | the FSM visits the path's **corners** (`--follow corner`, the default and what every table in `docs/metrics/` was measured with): velocity-free position setpoints, a horizontal arrival test with a documented vertical band, a settle before turning in, and -- with the hold on -- it accepts the next leg mid-mission while HOLDING the corner it is parked on | A1 4.65-4.90 mm, A4 18.6-21.1 mm, **10 of 10 flights**, `docs/metrics/stepB-rectangle-20261013.txt`; the corner hover: **4 of 4 corners >= 5.0 s** and **5 of 5 B2 legs** on `logs/missionA-RECT7-hold5` (`STATUS.md` row 43) |
+| trajectory | **since F1 the PLAN box is also the EXECUTOR.**  `planner/rectangle_source.py` converts the world file's square W -> L with the run's measured calibration and publishes the tour as a **command stream**: five waypoints `[c1,c2,c3,c4,c1]` on `/plan/cmd` at 100 Hz, on its own wall timer.  `planner/cmd_stream.py::TourPacer` decides arrival (`--arrive-m` 0.06 m), settle (`--settle-speed` 0.08 m/s, capped at 3.0 s), the dwell (`--hold-s`) and the leg timeout (20 s) from **its own odometry only** -- `/lio/robo/odom`, converted L -> W with the same calibration | W->L->W round trip printed in `traj.log`, worst **0.000000 mm**; the stream's own clock measured on the bench at **99.94 Hz** against the 100 Hz it declares (the S3 shadow declared 100 and emitted 4); the plan's clearance, recorded in W: **0.6000 m** (the world's designed worst case) |
+| mission | **the route is the PLAN box's and the phases come off the stream**: `bridge/bridge_node.py::CmdRelay` writes the newest sample to MAVLink 84 at 50 Hz, and `fsm/mission_fsm.py` turns each new `trajectory_id` into a `leg` phase -- the same five names, count and boundaries the deleted corner walk produced.  The FSM keeps preflight, take-off, the truth-fed geofence, LAND and the NAMED abort | A1 4.65-4.90 mm, A4 18.6-21.1 mm, **10 of 10 flights**, `docs/metrics/stepB-rectangle-20261013.txt`; the corner hover before F1: **4 of 4 corners >= 5.0 s** and **5 of 5 B2 legs** on `logs/missionA-RECT7-hold5` (`STATUS.md` row 43); the hover under F1: see `STATUS.md` row 52 |
 | last flight with no ego node (RECT1-noego) | the whole pipeline with zero planner processes | A1 4.40 mm, A2 5.96 mm, A4 20.72 mm, **C2 min 0.547 m with 0 of 28425 samples inside the 0.20 m footprint**, C1 0.022 m, B4 landed |
 | scoring | `tools/metrics.py`: A1/A2 (LIO vs truth), A3 (delivered-stream continuity, bounds anchored to the acceptance table), A4 (the FCU's own `XKF1` vs truth, clock-aligned, best-fit lag reported), B1-B4 (truth vs the commanded geometry), **C1** final point, **C2** minimum truth-to-pillar-surface distance from the world file | every line prints its denominator; `tools/batch-summary.py` aggregates them; `tools/dwell-audit.py` measures the corner dwell from the tap |
 
@@ -182,8 +189,13 @@ Every row is a measured number from a run directory, and the row says where.
    aircraft never flew near.  The same rule now also covers the pillar CLEARANCE itself: one definition,
    `tools/world-info.py::PillarWorld`, imported by everything that prints a distance.
 2. **An interface has three properties: name, type and QoS** -- and a fourth one here: **one producer.**
-   A latched, RELIABLE Path is the whole contract; the FSM does not know whether it comes from a file, a
-   mission script or a planner, which is why dropping the planner cost the FSM nothing.
+   A latched, RELIABLE stream is the whole contract; the FSM does not know whether it comes from a file, a
+   mission script or a planner, which is why dropping the planner cost the FSM nothing.  **Since F1 the
+   stream is `/plan/cmd` (`quadrotor_msgs/PositionCommand`, ego's own type), NOT a `nav_msgs/Path`**: the
+   plan box's output is a COMMAND, and keeping a second interface "for compatibility" is how the adapter
+   comes back (the old `planner/ego_adapter.py` existed only to translate ego's native output into a Path).
+   The price paid in the same change: `tools/record-traj.py` had to move with it, or every run would have
+   silently lost its plan-clearance column.
 3. **A number carries its rate, its frame, its window -- and its DELAY is a number too.**  A3's bound was
    written "per sample at 200 Hz" for a stream arriving at 33.3 Hz; A4 grows with speed because the
    velocity is ~80 ms old, and its gate now scores the residual at the best-fit lag rather than at zero.
@@ -210,14 +222,14 @@ tap; the producer's log says only what the producer intended.
 | `/lio/cloud_world` | `sensor_msgs/PointCloud2` | 10 Hz | the LIO's own VOXEL map (0.25 m).  Nothing in the flight path consumes it; it is recorded so a clearance number can be checked against the map the trajectory was built from | **L** | box 3 -> box 7, RViz |
 | `/lio/status` | `diagnostic_msgs/DiagnosticArray` | 1 Hz | measured scan rate, effective points, degeneracy lambda2/lambda1, map size | -- | box 3 -> box 5 gate, box 7 |
 | `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | 200 Hz / static | `world_w -> odom -> base_link -> mid360_link` | -- | box 5 (static pair), box 3 (odom edge) |
-| `/planner/traj` | **`nav_msgs/Path`** | per-point stamps; republished while the source runs; latched (TRANSIENT_LOCAL, depth 20 on the consumer) | pose + yaw per point, each point stamped with the instant the mission means it to be reached.  Dense enough to difference for velocity | **L** | box 4 -> box 5 |
-| `/fsm/phase` | `std_msgs/String` | on change + 1 Hz | preflight / takeoff / hold / leg1..N / land / abort / done (N = 5 for the square with the corner hold: the entry pad -> c1 plus the four square legs) | -- | box 5 -> box 7 (window segmentation) |
-| setpoint 84 | MAVLink | **50 Hz** | sampled position (+ optional velocity/accel/yaw/yaw_rate), `LOCAL_NED` | F, NED on the wire | box 5 -> box 1 |
+| `/plan/cmd` | **`quadrotor_msgs/PositionCommand`** | **100 Hz published, 50 Hz consumed** (its own wall timer; latched TRANSIENT_LOCAL, depth 5) | position/velocity/acceleration + yaw + yaw_dot, the frame in `header.frame_id`, `trajectory_id` = ONE PER WAYPOINT, `trajectory_flag` = READY while flying and **COMPLETED** at the end of the tour.  The dwell is content: position = the corner, velocity = 0.  Since F1 this is the ONLY plan interface -- the `nav_msgs/Path` that used to be here is deleted | **L** (`lio_world`; ego's name for the same frame, `world`, is accepted by configuration) | box 4 -> box 5 (bridge/bridge_node.py) |
+| `/fsm/phase` | `std_msgs/String` | on change + 1 Hz | preflight / takeoff / hold / leg1..N / land / abort / done (N = 5 for the square: the entry pad -> c1 plus the four square legs).  The `leg` phases come from the stream's `trajectory_id`, and `tools/metrics.py` windows A1-A3/B1-B3/B4/C1 with them | -- | box 5 -> box 7 (window segmentation) |
+| setpoint 84 | MAVLink | **50 Hz** | sampled position (+ optional velocity/accel/yaw/yaw_rate, `--setpoint-mode`), `LOCAL_NED`.  One entry point since F1: `bridge.send_cmd(cmd_l, calib)`, which does the L -> wire conversion itself | F, NED on the wire | box 5 (relay) -> box 1 |
 | command 76 | MAVLink | on demand | arm / takeoff / land / mode / simple accel calibration | -- | box 5 -> box 1 |
-| vision 102 / odometry 331 | MAVLink | **48.2 Hz measured at the FCU** (`VISP`/`VISV` in its own log) | LIO pose + velocity (+attitude) | F, NED on the wire with the FRD *labels* ArduPilot requires | box 5 -> box 1 |
+| vision 102 / odometry 331 | MAVLink | **48.2 Hz measured at the FCU** (`VISP`/`VISV` in its own log) | LIO pose + velocity (+attitude), through `bridge.send_external_nav_l` since F1 | F, NED on the wire with the FRD *labels* ArduPilot requires | box 5 -> box 1 |
 | telemetry 32 / 31 | MAVLink | **50 Hz** | FCU local position/velocity (**z DOWN**) / attitude (FRD body -> NED) | F / B | box 1 -> box 5 |
 | 0 / 253 | MAVLink | 1-2 Hz / on event | armed, mode, health / text | -- | box 1 -> box 5 |
-| `/planner/stalled` | `std_msgs/Bool` | -- | **KEPT, NEEDS A DECISION**: a trajectory source saying "I have stopped producing plans".  The FSM still subscribes and still turns it into a named abort, but the dropped planner chain was its only publisher, so today nothing raises it | -- | (nobody) -> box 5 |
+| `/planner/stalled` | `std_msgs/Bool` | -- | **KEPT IN F1 ON PURPOSE**: a trajectory source saying "I have stopped producing plans".  The FSM still subscribes and still turns it into a named abort, but the dropped planner chain was its only publisher, so today nothing raises it.  Its successor -- `CmdRelay.stalled_reason`, the command stream's own liveness -- was added beside it in the same step and names a silent plan box | -- | (nobody) -> box 5 |
 
 With `BRIDGE=mavros` the MAVLink rows become mavros topics (`/mavros/local_position/pose` 30-50 Hz ENU,
 `/mavros/state` 1 Hz, setpoints on `/mavros/setpoint_position/local`, vision on

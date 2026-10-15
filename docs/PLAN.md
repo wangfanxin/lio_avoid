@@ -19,10 +19,10 @@ Every result reports **how many of how many** flights completed and diverged.
 The owner's later requirement, which Mission A now carries as well: **hover at every corner**
 (`RECT_HOLD_S=5`).  **DEMONSTRATED 2026-10-15** on `logs/missionA-RECT7-hold5`: `tools/dwell-audit.py`
 prints **4 of 4 corners hovered >= 5.0 s**, and 4 of 4 again with the stricter airborne-only measurement
-(`STATUS.md` row 43).  The mechanism: the producer publishes one leg per message and advances ON ARRIVAL
-(measured from `/lio/robo/odom`), holding each corner `--hold-s` before it publishes the next leg; the FSM
-accepts the next leg mid-mission and keeps commanding the corner it is parked on until it arrives -- that
-interval is the hover.
+(`STATUS.md` row 43).  **RE-DEMONSTRATED 2026-10-16 on the refactored architecture** (`STATUS.md` row 52),
+where the dwell is no longer a convention between two processes but content of ONE command stream: the PLAN
+box commands `position = the corner, velocity = 0` for `--hold-s`, after the vehicle has ARRIVED inside
+`--arrive-m` (`STATUS.md` row 55).
 
 ## 2. Decisions on record
 
@@ -38,7 +38,7 @@ interval is the hover.
 | 8 | **LIO input is a standard `PointCloud2`** with fields x,y,z,intensity,time and `lidar_type: 3` | the Livox `CustomMsg` path in this fork **drops the per-point time**, i.e. no motion compensation; the standard path keeps it |
 | 9 | **Real MID-360 scan pattern** (`scan_mode/mid360.csv`, 200 kHz, non-repetitive) | measured: azimuth 0-360 deg, elevation -7.16..+52.16 deg, 5 us per point |
 | 10 | **GPU ray casting parked**, CPU only | the GPU port failed its own correctness check (2.98 m disagreement); CPU does 20 000 rays in 9.8 ms |
-| 11 | **Rectangle first** (`/planner/traj`, `nav_msgs/Path`, frame L, §4.1) | user's call: prove the whole chain on the square before adding a planner.  **Closed 2026-10-15**: a planner was built behind that interface and flown, then DROPPED by the owner; the interface itself is what made the drop a deletion instead of a rewrite (not one line of the FSM changed) |
+| 11 | **Rectangle first** (`/plan/cmd`, `quadrotor_msgs/PositionCommand`, frame L, §4.1) | user's call: prove the whole chain on the square before adding a planner.  **Closed 2026-10-15**: a planner was built behind that interface and flown, then DROPPED by the owner; the interface itself is what made the drop a deletion instead of a rewrite (not one line of the FSM changed).  **AMENDED 2026-10-16 (F1)**: the interface became the COMMAND STREAM the design had specified (`_stage/refactor-bridge-plan.md` §3.3) -- a `nav_msgs/Path` says where to go but not what to command, so it needs an executor on the other side, and that executor is the box a whole-replacement swaps out.  The Path and the FSM's corner walk are DELETED (`STATUS.md` row 52) |
 | 12 | **Setpoints and telemetry at 50 Hz** (`SR1_POSITION = 50`, `SR1_EXTRA1 = 50`; vision 50 Hz) | 50 Hz is the firmware's own declared ceiling for the stream-rate parameters, and the bridge verifies the achieved rates with its own counters (`ARCHITECTURE.md` §6) |
 | 13 | **The truth tap speaks SITL-native NED/FRD** | user's call on my recommendation (2026-10-13): the wire format is the simulator's own, and every conversion then lives in one place (`common/frames.py`) |
 | 14 | **The vehicle spawns facing North** | user's call (2026-10-13), `FRAMES.md` §2: the FCU local NED is the textbook `(N, E, -U)` permutation with no yaw anywhere, and L = W rotated -90 deg.  The spawn condition is **asserted from the truth tap before every take-off**, never assumed |
@@ -85,66 +85,71 @@ worlds/pillars.yaml ──► sim/lidar_imu.py ──► /livox/lidar + /livox/i
    SITL ── truth tap ──► sim/truth_rx.py ──► /sim/truth/odom (W)               │
     ▲        (1200 Hz, NED/FRD)                  │                             │
     │                                            │                             ▼
-    │                                     (metrics only)         planner/rectangle_source.py
-    │                                                              (W -> L, the square's 4 corners
-    │                                                               on /planner/traj, nav_msgs/Path)
+    │                                     (geofence gate only)   planner/rectangle_source.py
+    │                                                              THE PLAN **AND ITS EXECUTION**:
+    │                                                              the square's five waypoints in L,
+    │                                                              its OWN arrival gate + settle +
+    │                                                              dwell from /lio/robo/odom
     │                                                                           │
-    │                                                                           ▼
-    │                                                              fsm/mission_fsm.py --follow corner
-    │                                                                (L -> F, 50 Hz GUIDED setpoints,
-    └──── MAVLink 84 / 76 / 102 / 331 ◄──────────────────────────────  geofence, arrival, LAND)
-                     bridge/mavlink_impl.py
+    │                                                              /plan/cmd (L, 100 Hz, its own timer)
+    │                                                                           │
+    │                                                              bridge/bridge_node.py (relay, 50 Hz)
+    │                                                                           │
+    └──── MAVLink 84 / 76 / 102 / 331 ◄──────────── fsm/mission_fsm.py ─────────┘
+                     bridge/mavlink_impl.py          (preflight, takeoff, hold, the `leg` phases
+                                                      read off the stream, geofence, LAND, abort)
 ```
 
-The one edge not drawn: with the corner hold ON the producer also **reads** `/lio/robo/odom` — the same LIO
-pose, converted L -> W with the same `--calib-file` — to decide when a leg has been flown.  That is what
-paces the dwell (§4.1), and it is why the hold no longer depends on a speed estimate.
+The one edge not drawn: the PLAN box **reads** `/lio/robo/odom` — the same LIO pose, converted L -> W with
+the same `--calib-file` it publishes with — to decide when a leg has been flown.  That is the arrival gate,
+the settle and the dwell (§4.1), and it is the whole reason the plan box is an executor rather than a
+publisher.  It never reads the truth tap: a planner swapped in here has no truth tap to read.
 
-Nothing plans.  The trajectory is the world file's square, published as a Path; the FSM visits its corners;
-ArduPilot GUIDED flies the setpoints; the truth tap judges the result.  There is no planner process, no
-planner workspace and no planner message type anywhere in the tree.
+Nothing plans.  The trajectory is the world file's square, published as a command stream; the plan box's own
+sequencer visits its waypoints and holds each one; ArduPilot GUIDED flies the setpoints; the truth tap judges
+the result.  There is no planner process, no planner workspace and no planner message type anywhere in the
+tree.
 
-### 4.1 The trajectory interface (frozen — one producer, and it is the rectangle)
+### 4.1 The trajectory interface (the PLAN box's output — one producer, and it is the rectangle)
+
+**AMENDED 2026-10-16 (F1).**  Until F1 this was a `nav_msgs/Path` on `/planner/traj` and the FSM was the
+executor.  A Path says where the vehicle should be but not what to command, so it needs an executor on the
+other side — and under the owner's amendment ("EXECUTOR 应该是 PLAN 的一部分") that executor is the box a
+whole-replacement swaps out.  The interface is now the command stream ego's own `traj_server` publishes, and
+the Path, the FSM's corner walk and `--follow path` are deleted with it.
 
 | item | value |
 |---|---|
-| topic | **`/planner/traj`** |
-| type | **`nav_msgs/Path`** (poses with per-point stamps), frame **L** |
-| rate | points at >= 20 Hz of trajectory time; published from start-up and re-published, so a consumer that joins late still finds a path |
-| content | position + yaw per point, dense enough that the FSM can difference it for velocity and acceleration |
-| producer | `planner/rectangle_source.py` — the square from `worlds/pillars.yaml`, with the corner hold (`RECT_HOLD_S`) |
-| FSM's obligations | convert L -> F once, stream 50 Hz setpoints, enforce the safety gates (truth-fed geofence, corner arrival, bounded abort with the mechanism named), publish `/fsm/phase` |
-| producer's obligations | take the geometry from the world file through `tools/world-info.py`, convert W -> L with the **same** `--calib-file` the FSM uses, and keep the path inside the arena |
+| topic | **`/plan/cmd`** |
+| type | **`quadrotor_msgs/msg/PositionCommand`** (vendored, byte-identical to ego's: `ros_ws/src/quadrotor_msgs`), frame **L** (`header.frame_id = lio_world`; ego's name for the same frame, `world`, is accepted by configuration) |
+| rate | published at **100 Hz** on the plan box's own wall timer; **consumed at 50 Hz** — the wire rate stays 50 Hz (decision 12, `ARCHITECTURE.md` §6) |
+| fields used | position, velocity, acceleration, yaw, yaw_dot, `trajectory_id`, `trajectory_flag` |
+| the leg | `trajectory_id` **increments once per waypoint**, and that is what the consumer turns into the `leg1..leg5` phases the metrics window with (risk R1) |
+| the dwell | **content**: position = the corner, velocity = 0, for `--hold-s`, and the clock starts when the vehicle has ARRIVED AND SETTLED at the corner |
+| the end of the tour | `trajectory_flag = TRAJECTORY_STATUS_COMPLETED`, and the stream **keeps publishing** the hover afterwards — so "finished" and "stopped talking" are different facts and the consumer can tell them apart (`bridge/bridge_node.py::CmdRelay.stalled_reason` names the second) |
+| producer | `planner/rectangle_source.py` + `planner/cmd_stream.py` — the square from `worlds/pillars.yaml`, with the corner hold (`RECT_HOLD_S`, **5.0 by harness default**) |
+| producer's obligations | take the geometry from the world file through `tools/world-info.py`, convert W -> L with the **same** `--calib-file` the bridge uses, and keep the plan inside the arena |
+| consumer's obligations | `bridge/bridge_node.py` relays it to message 84 at 50 Hz through the ONE entry point (`bridge.send_cmd(cmd_l, calib)`); `fsm/mission_fsm.py` derives the phase log from it, keeps the truth-fed geofence, and keeps a NAMED abort for silence |
 
-**The corner hold's shape on this interface (added 2026-10-15, and it is a CONVENTION on the same message
-type, not a new type).**  With the hold on, the producer publishes **one leg per message** and advances ON
-ARRIVAL: it subscribes `/lio/robo/odom` (200 Hz, L), converts it to W with the same `--calib-file` it
-publishes with, arms each leg's flight clock when the vehicle is within `--leg-start-m` of the leg's START
-corner, and publishes the next leg only after the vehicle is inside `--arrive-m` of the leg's end **and**
-`--hold-s` has elapsed since that arrival (`--leg-timeout-s` bounds the wait and names its reason).  So:
+**The corner hold's shape on this interface.**  The plan box commands **one waypoint at a time** out of the
+tour `[c1, c2, c3, c4, c1]` (the first waypoint is the ENTRY: the aircraft starts on the pad, and the tour's
+dwells belong to the corners of the tour, so the entry leg has none — the same five `leg` phases the FSM's
+corner walk produced).  A leg's flight clock arms when the vehicle has left the pad and is within
+`--leg-start-m` of the leg's start; the arrival is declared when the vehicle is inside `--arrive-m` **and**
+slower than `--settle-speed`, with `--settle-s` as the bound; `--leg-timeout-s` bounds the wait and names its
+reason.  Every one of those decisions is made from `/lio/robo/odom` — the plan box's own odometry — and
+`tools/dwell-audit.py` judges the result from the truth tap, never from either log.
 
-* an **OPEN** path (first point != last) is **one leg** of a tour and more will follow;
-* a **CLOSED** path is the **whole tour** in one message — the shape mission A's frozen tables were flown
-  with — and the mission ends when its corners are visited;
-* an **EMPTY** path means **there are no more legs** (published after the last dwell), so the consumer ends
-  the tour on a statement instead of on a guessed timeout (`--next-leg-wait-s`, derived from the same
-  `RECT_HOLD_S` in `tools/run-mission.sh`, is the safety net).
+**What the interface deliberately does not carry**: a republish rate a slow planner can meet, a
+WITHHOLD-with-a-reason for an expired plan, the re-projection of a plan onto the vehicle, the station
+sequence and its observer.  All of it went in the 2026-10-15 cleanup.  The clearance contract is unchanged
+and still enforced where it always was: **C2 measures it on the flight's own truth**, and the square's own
+geometry holds **0.600 m** to the nearest pillar by construction.  The PLAN's own clearance column is
+`traj.csv`'s `clr_m`, which F1 re-pointed at this stream in the same change (§7 risk R5).
 
-The FSM holds the corner it has reached while it waits for the next leg — that interval, streamed at 50 Hz
-as the position setpoint, **is the hover**, and it is judged from the truth tap by `tools/dwell-audit.py`,
-never from either log.
-
-**What the interface no longer carries, because there is no planner to carry it** (all of it went in the
-2026-10-15 cleanup, and `STATUS.md`'s last section says what it was for): a republish rate that a slow
-planner can meet, a WITHHOLD-with-a-reason for an expired or degenerate plan, `--start-max` and the
-re-projection of a plan onto the vehicle, the `< 0.10 m of arc` usability test, `/planner/stalled`, the
-station sequence and its observer.  The clearance contract is unchanged and still enforced where it always
-was for mission A: **C2 measures it on the flight's own truth**, and the square's own geometry holds
-**0.600 m** to the nearest pillar by construction.
-
-Why a `nav_msgs/Path` and not a bespoke message: it is the smallest thing that carries a trajectory, it
-needs no new package, and it kept a planner's message types out of the flight-critical code for as long as
-there was a planner.
+Why the adopted type and not a bespoke one: it is what ego already publishes and what upstream's own
+consumer (`so3_control`) reads, so a planner drops in with a launch remap instead of an adapter — and the
+adapter that translated ego's output into a Path is exactly what this change deleted.
 
 ## 5. Work order, and where it stands
 

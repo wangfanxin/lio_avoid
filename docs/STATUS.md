@@ -69,42 +69,38 @@ the metrics file that carries it is named.
 | 50 | **B1's East extent is a REAL excursion, not a window artefact -- and it is the position loop's arrival ring** | The standing hypothesis was that B1's window began at the PAD, so the entry leg was inside the box and the 154 mm was the pad's lateral offset.  **Both halves are refuted from each run's own tap**: `t_route0` is the leg2 phase, i.e. the arrival at corner 1, and the entry leg is leg1 -- the phase BEFORE it (had it been inside, E would read ~2.58 m, not 2.154); and restricting the same window to the corner visits reads **E 2.194 m, LARGER not smaller**.  The mechanism, per corner visit (`tools/corner-excursion.py` and the hold-window measurement in `docs/metrics/B1-adjudication-20261015.txt` section 6): the two corners arrived at speed overshoot the wall they sit on by **E +0.0610..+0.0817 m at 1.67-1.76 m/s (c2, c4)**, the one arrived at 1.27-1.29 m/s by **N +0.0020..+0.0386 m (c3)**; the peak arrives **4.1-4.2 s after arrival** and the fraction surviving at the end of the hold is **0.05-0.27** on RECT7/9/10 -- a decaying ring, not an offset.  The control is the same measurement on RECT1/RECT6, which arrive at the same speed and see the same peak but have no dwell to settle in: **0.90-1.00 survives and the aircraft never comes back within 10 mm**.  The slow arm flies the same world and square (WP_SPD 0.25) with B1 PASS 10 of 10 at E 2.024-2.060 / N 1.247-1.291 m against the same bound, at ~7x lower arrival speed.  **NO BOUND CHANGED**: `tools/metrics.py` still gates the whole route at 2.10/1.30 and still prints FAIL, now beside the corner-visit extent and the excursion, which are marked REPORTED |
 | 51 | **the evidence file did not agree with the evidence: `metrics.txt` was written while its inputs were still being written** | `tools/run-mission.sh` stopped the FSM, ran `tools/metrics.py`, and only then let its EXIT trap stop SITL and the recorders -- so the metrics read a tap that was still growing and a BIN that was still open.  MEASURED on every 2026-10-15 sortie: the committed file quotes **0.4-1.3 s less tap** than the flight produced (RECT9 **90294** while the recorder's own `truth_report.txt` and the closed file both say **94020**; RECT1 62516 vs 65092; RECT7 91300 vs 95098; RECT16 61062 = 61062 = 61062).  **No acceptance row moved** -- A1/A2/A3/B1/B2/B3/C1/C2 are computed over the route window and the missing samples are all after it, and a HEAD-vs-worktree A/B on RECT1/RECT6/RECT7 reproduces every one of those lines byte-for-byte.  What moved is the run-summary sample count and the whole A4 block, whose vertical alignment interpolates the tap (RECT7 A4 519 of 561 -> 548 of 590, 17.92 -> 24.00 mm, **PASS either way**).  The fix is a **wrap-up ordering**: `sim/truth_rx.py` flushes per row AND tests its stop flag in the socket-timeout branch (it used to test it only after a successful receive, so a quiet SITL at the normal end of a sortie meant SIGKILL and a lost `truth_report.txt` -- **RECT15's console carried `WARNING: the truth recorder did not stop within 10 s and was killed -- tap.csv may be short`, and that flight has no `truth_report.txt` at all**, which is why the reports of RECT1/RECT6/RECT11 are missing too), and `tools/run-mission.sh::stop_stack` stops and WAITS for SITL and the recorder **before** the metrics run.  **Proven by two control flights, RECT16 and RECT17: `metrics.txt` BYTE-IDENTICAL to a recomputation from the frozen inputs (md5 663d42f5.. and 9462dc83..), the summary count equal to `truth_report`'s "seen" AND the closed tap's row count, mtimes in the right order, nothing SIGKILLed, and the ordinary rows unchanged.**  Every affected run is restated next to its own file as `metrics-restated.txt`, originals untouched.  Evidence `docs/metrics/tap-vs-metrics-20261015.txt`, whose section 7 keeps the two independent defects apart |
 
+| 52 | **F1: the PLAN box became the EXECUTOR -- `/plan/cmd` flies the aircraft, the `nav_msgs/Path` and the FSM's corner walk are DELETED** | commit `4b5b004`.  `planner/rectangle_source.py` publishes `quadrotor_msgs/PositionCommand` on `/plan/cmd` from **its own 100 Hz wall timer** (measured **99.94 Hz** on the bench, against 4 Hz for the S3 shadow that rode the producer's `--rate 4` loop); `planner/cmd_stream.py::TourPacer` owns the five waypoints `[c1,c2,c3,c4,c1]`, the **estimate-only** arrival gate, the **settle**, the dwell and the leg timeout; `bridge/bridge_node.py` (new) consumes the stream and writes the newest sample to **MAVLink 84 at 50 Hz** (measured 48.31/48.43 Hz from `setpoints.csv`'s own clock); `fsm/mission_fsm.py` reads `trajectory_id` for its `leg` phases and `trajectory_flag = COMPLETED` for the end of the tour, and **1187 -> 869 lines** went with the corner walk (`_on_path`, `_path_in_hand`, `_legs_left`, `_await_next_leg`, `_fly_to_corner`, `legs`, `_corners_of`, and `follow_path` + `--follow path` with its nine switches).  **The bridge has ONE setpoint entry point now: `send_cmd(cmd_l, calib)`** -- `send_position`, `send_position_velocity` and `send_velocity` are deleted, so nothing above the bridge converts a frame (`send_external_nav_l` closed the estimator path's L -> wire step too).  Three tools died with their subjects: `tools/test-corner-tour.py`, `tools/hold-design-check.py`, `tools/test-shadow-ab.py`.  Evidence `docs/metrics/f1-plan-cmd-20261016.txt`; figure `docs/figures/f1-plan-cmd-RECT23-RECT24.png` |
+| 53 | **THE HOVER SURVIVES THE REFACTOR: 2 of 2 sorties with 4 of 4 corners >= 5.0 s, and the dwell clock now starts on SETTLED** | `RECT23-plan-cmd` / `RECT24-plan-cmd`, both on the **FROZEN** `params/ekf_trust_lio.parm` so the refactor is the only variable, both with `RECT_HOLD_S` **unset** -- the harness printed `dwell: 5.0 s ... from THE HARNESS DEFAULT` (the frozen world's `mission.hold_s` is 3.0 and is now deliberately not what a default sortie flies, row 42).  `tools/dwell-audit.py` on the truth tap: **4 of 4** each (default: c1 13.11/12.99, c2 7.99/7.89, c3 **6.35/6.34**, c4 7.96/8.02 s; `--airborne-m 0.5`: 9.01/8.89, 7.99/7.89, 6.35/6.34, 7.96/8.02 s) -- **8 of 8 corner visits**, against row 48's pre-F1 15 of 16.  **c3 is the fix's own evidence**: it was the corner RECT11 split into 1.33 s + 4.96 s, and it is now one 6.35 s span, because the dwell clock starts when the vehicle is inside `--arrive-m` **AND** below `--settle-speed` (both printed at every arrival) instead of on the first radius crossing.  The offline control proves the mechanism: with the settle removed the FLOWN dwell falls to 3.96 s at every corner.  Everything else is unmoved -- A1 3.59/3.45 mm, A2 4.41/4.29, A3 PASS, A4 17.41/18.34 (+10/+24 ms lag), B2 5 of 5 legs (worst 41.3/41.4 mm), B3 5 of 5 corners <= 4.6 mm, B4 landed + DISARMED at 72.88 s, C1 0.005/0.006 m, **C2 0 of 55320 / 0 of 55282 samples inside the 0.20 m footprint** (min pillar distance 0.547/0.551 m), **no ABORT, no leg timeout, no EKF failsafe**, and the phase log is `preflight takeoff hold leg1..leg5 land done` -- identical names, count and boundaries to the pre-F1 sorties (risk R1).  **B1 still FAILS** (E 2.159/2.170 against <= 2.10) -- the known defect of row 50, bound untouched |
+
 ## Next, in order
 
-1. **The B1 excursion, now that it has a measured mechanism** (rows 50, and `docs/metrics/`
-   `B1-adjudication-20261015.txt` sections 6-7).  It is the front item because it is the last *failing*
-   acceptance row of the working pipeline and it is no longer a puzzle: the aircraft overshoots the wall a
-   corner sits on by **61-82 mm at the two corners it arrives at 1.7 m/s**, the peak lands **4.1-4.2 s
-   after arrival**, and it decays to 5-16 mm inside the dwell -- i.e. the loop's arrival ring, held open by
-   the dwell.  The slow arm flies the same world and square inside the bound (10 of 10).  The cheap levers,
-   in order of how little they change: (a) fly the square with the arm whose `WP_SPD` matches its
-   geometry -- `phase_a_mission_fast.parm`'s own header says 2.0 m/s belongs to the 6.0 x 4.0 m world;
-   (b) widen the FSM's corner tolerance so arrival is declared nearer the corner, which starts the hold
-   clock later in the ring (RECT11's c3 is the measured instance of the opposite); (c) leave it and record
-   the excursion as the configuration's known cost at this speed.  Whichever is chosen, B1's bound is NOT
-   the thing to move.
-2. **B2's leg 4 is the same defect's other face and should be fixed with it**: RECT1/RECT6/RECT8 fail leg 4
-   at 118.8-132.6 mm, and on the dwell sorties the same leg passes at 11.9-29.4 mm.  So one mechanism is
-   already carrying two rows; a lever that moves the ring (item 1) must be judged on both.
-3. **Re-fly the corner hover after any change to the approach speed or the corner tolerance**, because the
-   rate is now established (row 48: 3 of 4 sorties, 15 of 16 visits) and only a change would invalidate it.
-   The same batch should re-run the pre-hold regression sortie (row 47) so the accepted configuration keeps
-   its denominator.
-4. **Re-run the frozen batch after any change to the flight code**, so the mission-A numbers keep their
-   denominators: `tools/run-mission-batch.sh 10` + `tools/batch-summary.py`.  The hold fix (row 43) changed
-   the flight code, so this is due.  NOTE added 2026-10-15: the harness fix of row 51 changes what a
-   `metrics.txt` CONTAINS (its summary count and A4 block are now computed on a frozen tap), so a batch run
-   after it will produce files whose summary/A4 lines are not comparable with the frozen batch's -- the
-   acceptance rows are.  Restate, do not re-judge.
-5. **The `mavros` transport does not exist, and three documents used to say it did.**  `ls bridge/` is
-   `base.py` and `mavlink_impl.py` -- **there is no `bridge/mavros_impl.py`** -- while `bridge/base.py`'s own
-   header said "ONE shape, two implementations (`BRIDGE=mavlink|mavros`)", `fsm/mission_fsm.py` imported
-   `MavrosBridge` as the non-mavlink branch, and this file plus `ARCHITECTURE.md` described it as "written,
-   unflown".  So `BRIDGE=mavros` raised `ModuleNotFoundError` at the first call and the documentation said
-   it was a working-but-unflown path.  The code and the two documentation sites are corrected (2026-10-15);
-   writing the implementation is deliberately left to the unit that owns `bridge/`, and the flight behind it
-   remains the open item: `BRIDGE=mavlink` is the only flown path, and it is the one half of the transport
-   interface with no flight behind it.
+1. **F2 -- the supervisor becomes an independent process, and `fsm/mission_fsm.py` disappears.**  Its own
+   MAVLink endpoint, its own inputs (truth + link status only), the authority for preflight/arm/takeoff/
+   mode/LAND/RTL, the truth-fed geofence and a NAMED abort; the plan box declares completion with
+   `trajectory_flag = COMPLETED` and only the supervisor sends message class 76.  **The second MAVLink
+   endpoint is a NEW capability and must be bench-verified BEFORE it is flown** (two clients, their own 511
+   rate requests, no interference) -- if that bench test fails, F2 stops there rather than flying an
+   unverified link.  The bench must also kill the plan box mid-mission and require a NAMED abort: today a
+   dead plan box and a finished tour differ only because F1 added `CmdRelay.stalled_reason`, and that
+   change of behaviour has not yet been demonstrated on a running stack.
+2. **F3 -- the acceptance re-flight and the rate.**  Re-fly with the final architecture, then 3 more
+   sorties, and report "N of M sorties with 4 of 4 corners hovered >= 5.0 s" with the corner-visit
+   denominator, C2 with its denominator per sortie, and what the whole refactor changed against the
+   pre-refactor baselines.  The pre-F1 rate to beat is row 48's 3 of 4 sorties / 15 of 16 visits.
+3. **B1's East extent is still the last failing acceptance row** (rows 50, 52-53: 2.159/2.170 m against
+   <= 2.10 on the two F1 sorties, i.e. unchanged by the refactor).  It is the position loop's arrival ring
+   at the two corners arrived at ~1.7 m/s, the peak lands 4.1-4.2 s after arrival, and the dwell holds it
+   open.  The levers are the arm's `WP_SPD` (the slow arm flies the same square inside the bound 10 of 10)
+   or the arrival speed; the bound itself is NOT the thing to move.
+4. **Re-run the frozen batch after any change to the flight code** (`tools/run-mission-batch.sh 10` +
+   `tools/batch-summary.py`), so the mission-A numbers keep their denominators.  F1 changed the flight
+   code, so this is due again.
+5. **`--nav-source truth` (the calibration flight) is code-reviewed but NOT flight-proven since F1** moved
+   its setpoint onto the `send_cmd` path (`docs/metrics/f1-plan-cmd-20261016.txt` section 5).  One sortie
+   with `NAV_SOURCE=truth` would close it.
+6. **`tools/measure-rates.py`'s "setpoint 84" row is meaningless** (it reads `setpoints.csv`'s `t_wall`
+   column as if it were microseconds); the honest number is that column's median interval.  A measuring-tool
+   defect, not an architecture one, and it reproduces on every pre-F1 run too.
 
 ## Open questions, and the things kept for a decision
 
