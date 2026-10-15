@@ -570,3 +570,33 @@ looks like the right direction.  **What does not survive**: "consistent sign" --
 deeper than every window-3 run, so a single crossing still says nothing about the configuration, exactly as the
 spread (sd ~0.14 m) predicted two rounds ago.  **And C2 remains unmet in all fifteen ego crossings**: the best
 footprint count is DIAG21's 1887 of 47406, against a row that asks for zero.
+
+=== THE PERSISTENCE LEVER IS NOT MONOTONE: 15 s IS WORSE THAN 8 s (`DIAG24`, `DIAG25`) ===================
+The arm means had risen monotonically with the union window (0 -> 3 -> 8 s: -0.180, -0.005, +0.010 m), so the
+next point on that curve was a longer window.  Two runs at 15 s:
+
+    DIAG24-window15     truth min **+0.155 m**   2025 of 41353 inside the footprint    rc=0
+    DIAG25-window15b    truth min **-0.278 m**  14925 of 58041 inside (**36%**)        **rc=1**
+
+so the arm is 1 of 2 with a mean of **-0.062 m** -- worse than window 8 on every count, and its failing run is
+both the deepest penetration and by far the worst footprint fraction of the seventeen crossings (36% against a
+previous worst of 17.5%).  The complete arms:
+
+    arm         runs   clearances                                    cleared   mean
+    window 0      6    -0.279 -0.169 -0.071 -0.277 -0.129 -0.164     0 of 6    -0.180 m
+    window 3      3    +0.150 +0.056 -0.222                          2 of 3    -0.005 m
+    **window 8**  4    +0.058 +0.167 -0.276 +0.089                   **3 of 4**  **+0.010 m**
+    window 15     2    +0.155 -0.278 (rc=1)                          1 of 2    -0.062 m
+
+**What the curve says**: persistence helps up to about 8 s and then hurts.  The likely reason is the one the
+relay's own design implies -- the union is cropped to +-5.5 m around the vehicle, so a 15 s window at this
+mission's speeds accumulates viewpoints from positions the vehicle has already left, and the map then holds
+obstacle from a past pose that the current plan must route around; the bigger cloud also costs the map more
+writes per message (27 per accepted point), and one of the two runs ended rc=1.
+
+**And C2 remains unmet in all seventeen ego crossings.**  The best is still DIAG21's 1887 of 47406 against a row
+that asks for zero.  The two remaining routes are the ones the last four rounds have narrowed to: the collision
+check's COVERAGE and failure mode (round 21: the plan's worst point at window 8 sits in space the map calls
+OCCUPIED, which `check_collision_and_rebound` exists to prevent and does not -- it sweeps only the first
+two-thirds of the control points and drops a colliding segment when its rebound A* fails), or a mechanism
+different from map persistence altogether.
