@@ -246,21 +246,53 @@ class MavlinkBridge(Bridge):
         return False
 
     def takeoff(self, alt_m: float) -> bool:
-        """Take off to `alt_m` ABOVE THE PAD, whatever datum the FCU's global altitude uses.
+        """Take off to `alt_m` ABOVE THE PAD, sent VERBATIM as `packet.z` (SETTLED BY BENCH 2026-10-15).
 
-        MEASURED 2026-10-13: the guard in `ArduCopter/takeoff.cpp:29` is
-        `takeoff_alt_m <= copter.current_loc.alt * 0.01` -- the requested altitude is compared against
-        the FCU's own GLOBAL altitude, which with an origin at 584 m is an AMSL number.  A request for
-        0.8 m is then "a takeoff downwards": MAV_RESULT_FAILED, no statustext at all, and it looks like
-        a mystery rather than a unit problem.  The datum is therefore read from the FCU's own telemetry
-        (`GLOBAL_POSITION_INT.alt - relative_alt`) and added here, so the caller keeps speaking plain
-        height above the pad.
+        THE DEFECT THIS REPLACES.  Until this commit the request was sent as `datum + alt_m` (2.50 m
+        became 586.59 m with the origin at 584 m), on the reading that the guard in
+        `ArduCopter/takeoff.cpp:29` -- `takeoff_alt_m <= copter.current_loc.alt * 0.01` -- compares the
+        request against an AMSL-scale number, so that a small height-above-the-pad request is "a takeoff
+        downwards".  The guard reading was wrong and the compensation was the bug: the SAME number is
+        handed to the executor, `Mode::_TakeOff::start_m`, which computes
+        `take_off_complete_alt_m = get_pos_estimate_U_m() + alt_m` (`takeoff.cpp:51-57`) -- it ADDS what
+        it is given.  So `datum + alt_m` made the FCU aim at ~586 m above home.  On `RECT25-kill-plan`
+        the FCU's own `CTUN.DAlt` ramped at 2 m/s from +0.215 to +9.874 m on a 2.50 m command; the
+        aircraft climbed to 9.6 m and came back to 2.0 m only when the plan's setpoints arrived.
+
+        THE OLD MEASUREMENT'S CONDITION, AND WHY IT DIFFERED.  The docstring here used to record a
+        2026-10-13 measurement: a request for 0.8 m -> MAV_RESULT_FAILED with no statustext.  That
+        measurement was taken BEFORE the EKF origin existed (`set_ekf_origin` did not exist yet).  With
+        no origin, `ModeGuided::do_user_takeoff_start_m` cannot convert the altitude from ABOVE_HOME to
+        ABOVE_ORIGIN and the command fails -- which is the failure this class now documents at
+        `set_ekf_origin`, and it has nothing to do with the requested number.  The 2026-10-13 reading
+        was a real failure attributed to the wrong cause.
+
+        THE BENCH THAT SETTLED IT (`_stage/f2b-takeoff-bench.sh clean 2.5`, rc=0, SITL on the mission's
+        own parameter set with the EKF origin set first, `tools/test-takeoff-contract.py --variant
+        clean`), the FCU's own words and its own log:
+            [12.01] datum (alt_amsl - alt_rel) = 584.019 m;  FCU local pos = [+0.000 -0.000 +0.044] F
+            [12.01] MAV_CMD_NAV_TAKEOFF packet.z = 2.500 m  (the requested height, verbatim)
+            [12.07] COMMAND_ACK for MAV_CMD_NAV_TAKEOFF: result 0 (ACCEPTED)
+            [14.08] AIRBORNE: truth z +0.366 m, FCU U +0.356 m, landed_state 3, 2.06 s after the command
+            [26.16] watch done: truth peak +2.713 m, FCU U peak +2.682 m, setpoints sent 0
+            CTUN: Alt peak +2.684 m; DAlt peak +2.525 m
+            ACCEPTANCE: |adopted DAlt - request| = 0.055 m (bound 1.00 m); overshoot +0.025 m
+        So the guard does NOT need a datum-scale number: `current_loc.alt` is itself alt-above-home
+        (`ArduCopter/inertia.cpp:24-30` sets exactly that), `* 0.01` makes the comparison
+        metres-against-metres, and on the pad the threshold is ~0.002 m -- 2.50 passes it with room to
+        spare.  The executor's contract (alt-above-home, `mode_guided.cpp:157-188`) is the guard's
+        contract, and it is the caller's contract too, so the request goes out verbatim.
+
+        The datum is still COMPUTED AND LOGGED, because it is the number that used to be sent: a
+        regression would otherwise be invisible in the log until the aircraft was at 9 m.
         """
         datum = self._state.alt_amsl_m - self._state.alt_rel_m
-        target = datum + alt_m if abs(datum) >= 1.0 else alt_m
+        target = alt_m
         if abs(datum) >= 1.0:
-            self.log("bridge/mavlink: takeoff %.2f m above the pad = %.2f m on the FCU's own datum "
-                     "(%.1f m)" % (alt_m, target, datum))
+            self.log("bridge/mavlink: takeoff %.2f m above the pad sent VERBATIM as packet.z; the FCU "
+                     "datum (alt_amsl - alt_rel) is %.1f m and is NOT added (adding it was the defect: "
+                     "the executor ADDS packet.z to its own up-estimate, takeoff.cpp:51-57)"
+                     % (alt_m, datum))
         # param3 = 1.  The handler computes `must_navigate = is_zero(packet.param3)` and passes it to
         # `has_user_takeoff`; with the default 0 GUIDED refuses to start a takeoff before it has a
         # navigation target -- MAV_RESULT_FAILED, no statustext, and the three guards that ARE visible
