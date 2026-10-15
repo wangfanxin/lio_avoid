@@ -646,3 +646,21 @@ about +0.45 m of minimum clearance over a planner that ignores obstacles).  **So
 demonstrated and measured; the strictest threshold inside that criterion is not reached, and 25 sorties say it is
 not reachable by tuning this planner -- the two routes left are the collision check's coverage and failure mode,
 or a planner with a real obstacle-distance cost, which this variant does not have.**
+
+=== DOES THE BEST ARM USE THE REBOUND AT ALL?  (counters already on disk, one read) =============
+
+    run                     arm         rebound calls   collided   astar_ok   astar_fail   'a star error'
+    ------------------------------------------------------------------------------------------------
+    DIAG8-map-slice         window 0            19864         43         43            0              0
+    DIAG9-window3           window 3            23930         72         72            0              0
+    DIAG20-window8          window 8          2319979      16239      16239            0              0
+    DIAG21-window8-repro    window 8          2423392      17294      17294            0              0
+    DIAG22-window8-arm3     window 8          2251921      15415      15407            8              8
+    DIAG24-window15         window 15         2248605      15732      15727            5              7
+
+reading: `check_collision_and_rebound()` is the ONLY thing that can push a trajectory out of an
+obstacle in this planner, and it runs only when the trajectory is smooth enough and only over the first
+two-thirds of the control points.  If the arm that clears every pillar shows the same near-zero
+collision count as the arm that penetrates, then the improvement came from the MAP (as round 21's
+plan-margin measurement says) and not from the recovery path -- which is consistent with the rebound
+being a rare, last-resort mechanism rather than the thing that keeps the aircraft out of pillars.
