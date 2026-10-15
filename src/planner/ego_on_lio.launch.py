@@ -123,6 +123,11 @@ def generate_launch_description():
         'grid_map/cy': 243.44969177246094,
         'grid_map/fx': 387.229248046875,
         'grid_map/fy': 387.229248046875,
+        # DEAD PARAMETER, named here so nobody waits for output that will never come: `grid_map/show_occ_time`
+        # is declared (`grid_map.cpp:42`) and read (`:79`) but its only USE is a COMMENTED-OUT log
+        # (`:750-752`).  There is no way to time ego's occupancy update from inside the node -- a round of
+        # this project assumed otherwise and the plan_env audit refuted it.  It is set anyway, so that this
+        # file's parameter set can still be diffed against upstream's and come out equal.
         'grid_map/show_occ_time': False,
         # The DEPTH-FILTER and RAY-FUSION blocks are INERT here (`use_depth_filter` False, `pose_type` 0 --
         # nothing on the depth path is ever called), and they are set anyway so that this file's parameter

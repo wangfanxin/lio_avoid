@@ -1,0 +1,77 @@
+THE EGO ADAPTER IN A LIVE LOOP, PARKED: does it turn REAL ego output into OUR contract?
+2026-10-15 14:29:51Z   HEAD at the time: 5c6d1f5 (this round not yet committed)
+
+WHAT THIS SETTLES.  The parked pregate proved ego SEES our cloud and odometry and PLANS.  What had never
+run is the other half: planner/ego_source.py sampling that B-spline and publishing /plan/cmd with a
+trajectory_id per WAYPOINT and a synthesised, sustained COMPLETED.  The stack is PARKED: no arming, no
+bridge, no supervisor -- the adapter is judged as a CONTRACT PRODUCER, not as a controller.  Script:
+_stage/ego-adapter-parked.sh.
+
+THE TOUR IS A SCRATCH ONE (_stage/ego-pad-tour.yaml: four waypoints, every one within the arrival gate
+of the pad).  A tour at the real rectangle stalls at waypoint 1 because a parked vehicle never arrives,
+which is CORRECT behaviour and teaches the contract nothing -- run 2 shows exactly that.
+
+=== DEFECT 1, FROM RUN 2: a NameError that hid a QoS mismatch ==================================
+   Traceback (most recent call last):
+     File "/mnt/d/distill_self/lio_avoid/src/planner/ego_source.py", line 457, in <module>
+       sys.exit(main())
+     File "/mnt/d/distill_self/lio_avoid/src/planner/ego_source.py", line 453, in main
+/mnt/d/distill_self/_stage/make-adapter-evidence.sh: line 26: DurabilityPolicy: command not found
+   ...  was never imported.  Its offline --selftest passed, because that selftest has
+   no ROS in it; every one of the seventeen gates passed, because none of them starts a ROS node.
+
+=== DEFECT 2, FROM RUN 3: the publisher's QoS is part of the contract ==========================
+   The bridge subscribes to /plan/cmd TRANSIENT_LOCAL (bridge/bridge_node.py:113-115) so that a consumer
+   starting AFTER the planner -- the F2 start-up order -- still finds the newest sample; the recorder
+   does the same (tools/record-traj.py:123-128).  The adapter published through
+   create_publisher(T, topic, 10), the integer overload, i.e. VOLATILE: the bridge would have received
+   NOTHING from an ego planner.  The contract now states the QoS, and tools/test-planner-swap.py checks
+   that every producer AGREES WITH THE FLOWN PLAN BOX rather than with a constant.
+
+=== THE RUN THAT WORKED ========================================================================
+--- the adapter's own log ---
+   ego_source: goals go to /move_base_simple/goal in frame lio_world; ego's trajectory is read from planning/bspline
+   ego_source: THE BRIDGE AND THE SUPERVISOR DO NOT KNOW THIS IS EGO -- they read /plan/cmd
+   ego_source: ARRIVED at waypoint 1 (0.192 m), dwelling 2.0 s
+   ego_source: goal 1 of 4 -> [ 0.104 -0.151 -0.066] (L)
+   ego_source: next waypoint 2 of 4
+   ego_source: ARRIVED at waypoint 2 (0.191 m), dwelling 2.0 s
+   ego_source: goal 2 of 4 -> [-0.096 -0.151 -0.066] (L)
+   ego_source: next waypoint 3 of 4
+   ego_source: goal 3 of 4 -> [-0.096  0.149 -0.066] (L)
+   ego_source: ARRIVED at waypoint 3 (0.189 m), dwelling 2.0 s
+   ego_source: next waypoint 4 of 4
+   ego_source: ARRIVED at waypoint 4 (0.189 m), dwelling 2.0 s
+   ego_source: goal 4 of 4 -> [ 0.104  0.149 -0.066] (L)
+   ego_source: TOUR COMPLETE -- the stream now carries trajectory_flag = COMPLETED and KEEPS TALKING (it does not stop asking for more)
+
+--- what reached /plan/cmd (the every-message file the RECORDER wrote, so this is the wire) ---
+   rows: 3896
+   distinct trajectory_id, in order of first appearance: ['1', '2', '3', '4']
+      (ONE PER WAYPOINT -- not one per replan: ego itself increments per committed plan and replans at ~1 Hz, planner_manager.cpp:680, so the consumer's `leg` phases would have multiplied 14-fold)
+   flags: {'1': 801, '3': 3095}   (1 = READY, 3 = COMPLETED)
+   frames seen: ['lio_world']
+   the last 10 flags: ['3', '3', '3', '3', '3', '3', '3', '3', '3', '3']
+   ends with a sustained COMPLETED: True
+   the stream NEVER went silent after COMPLETED (it is still publishing): True
+
+--- and the FSM it was talking to ---
+   [ego_planner_node-1] [FSM]: state: WAIT_TARGET
+   [ego_planner_node-1] [FSM]: state: WAIT_TARGET
+   [ego_planner_node-1] [FSM]: state: WAIT_TARGET
+
+=== WHAT THIS PROVES, AND WHAT IT DOES NOT =====================================================
+PROVES: the adapter publishes OUR contract from REAL ego B-splines -- frame lio_world, trajectory_id
+once per waypoint, a sustained COMPLETED that keeps talking -- and the recorder (which subscribes
+exactly as the bridge does) received all of it.
+DOES NOT PROVE: anything with the aircraft moving, and nothing with the bridge or the supervisor
+attached.  PLANNER=ego under the safety chain is still unexercised, and PLANNERS.md section 5 says so.
+
+=== THE AUDITS THIS ROUND ADDED ================================================================
+   _stage/ego-audit-bspline-opt-and-path-searching.md  (222 lines)
+   _stage/ego-audit-plan-manage-and-plan-env.md  (607 lines)
+   Two of their findings changed the docs rather than confirming them:
+     * fsm/thresh_no_replan_meter defaults to -1.0, which makes the FSM's arrival test unsatisfiable
+       (ego_replan_fsm.cpp:19, :963-977) -- so the launch file's 1.0 is load-bearing, not tuning;
+     * grid_map/show_occ_time is DEAD (declared grid_map.cpp:42, read :79, used only in a
+       COMMENTED-OUT log at :750-752) -- so ego cannot be asked to time its own occupancy update.

@@ -328,7 +328,7 @@ def _ros_main(args) -> int:
               % os.path.relpath(os.path.abspath(__file__)))
         return 2
     from rclpy.node import Node
-    from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+    from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
     from geometry_msgs.msg import PoseStamped
     from nav_msgs.msg import Odometry
     from quadrotor_msgs.msg import PositionCommand
@@ -354,9 +354,29 @@ def _ros_main(args) -> int:
           % (args.goal_topic, FRAME_L, args.bspline_topic))
     print("ego_source: THE BRIDGE AND THE SUPERVISOR DO NOT KNOW THIS IS EGO -- they read %s" % args.cmd_topic)
 
-    pub = node.create_publisher(PositionCommand, args.cmd_topic, 10)
+    # THE PUBLISHER'S QoS IS PART OF THE CONTRACT, AND THE FIRST VERSION OF THIS LINE GOT IT WRONG.
+    # MEASURED 2026-10-15, in the second parked adapter run: the recorder printed
+    #   "New subscription discovered on topic '/plan/cmd', requesting incompatible QoS. No messages will be
+    #    sent to it. Last incompatible policy: DURABILITY"
+    # and `/plan/cmd` reached nobody.  The contract is RELIABLE + KEEP_LAST(5) + TRANSIENT_LOCAL, and BOTH
+    # consumers require it: the BRIDGE subscribes latched (`bridge/bridge_node.py:113-115`) so that a
+    # consumer starting AFTER the plan box -- which is the F2 start-up order -- still finds the newest
+    # sample, and `tools/record-traj.py:123-128` does the same.  `create_publisher(..., 10)` is the integer
+    # overload, i.e. RELIABLE **VOLATILE**, and a VOLATILE publisher cannot match a TRANSIENT_LOCAL
+    # subscriber: the bridge would simply never have heard from an ego planner.  The flown plan box says the
+    # same thing in the same words at `planner/rectangle_source.py:329-335`; this is the same QoS, and
+    # `tools/test-planner-swap.py` now checks that the two producers AGREE on it rather than trusting that
+    # they do.
+    pub_qos = QoSProfile(depth=5, history=HistoryPolicy.KEEP_LAST,
+                         reliability=ReliabilityPolicy.RELIABLE,
+                         durability=DurabilityPolicy.TRANSIENT_LOCAL)
+    pub = node.create_publisher(PositionCommand, args.cmd_topic, pub_qos)
+    # THE B-SPLINE SUBSCRIPTION'S QoS MUST MATCH EGO'S PUBLISHER, and that one is VOLATILE, not latched:
+    # `create_publisher<Bspline>("planning/bspline", 10)` (`ego_replan_fsm.cpp:147`).  A TRANSIENT_LOCAL
+    # subscriber CANNOT MATCH a VOLATILE publisher, so asking for durability here would have produced a node
+    # that ran and never received a single plan, saying nothing.
     qos = QoSProfile(depth=10, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.RELIABLE,
-                     durability=DurabilityPolicy.TRANSIENT_LOCAL)
+                     durability=DurabilityPolicy.VOLATILE)
     goal_pub = node.create_publisher(PoseStamped, args.goal_topic, 10)
     last_goal_sent = None
 

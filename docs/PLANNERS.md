@@ -15,6 +15,15 @@ planner; `ego` has an adapter and has NOT been flown on this stack since F1/F2 (
     topic      /plan/cmd
     type       quadrotor_msgs/msg/PositionCommand
     frame      header.frame_id = "lio_world"      (the bridge also accepts ego's name, "world")
+    qos        RELIABLE + KEEP_LAST(5) + **TRANSIENT_LOCAL** (latched).  THIS IS PART OF THE CONTRACT.
+               Both consumers subscribe latched — the BRIDGE (`src/bridge/bridge_node.py:113-115`) and the
+               recorder (`src/tools/record-traj.py:123-128`) — so that a consumer starting AFTER the planner,
+               which is the start-up order, still finds the newest sample instead of waiting for the next
+               leg.  A planner that publishes VOLATILE (the default of `create_publisher(T, topic, 10)`)
+               connects to NOTHING: MEASURED 2026-10-15, the first ego adapter did exactly that and the
+               console said `requesting incompatible QoS ... Last incompatible policy: DURABILITY` while
+               `/plan/cmd` reached no one.  `src/tools/test-planner-swap.py` now checks that every producer
+               agrees with the flown one on this, rather than trusting that they do.
     rate       >= 20 Hz; ours publishes at 100 Hz on its own wall timer and the bridge samples the newest
                at 50 Hz (`wire.csv`), so anything >= 20 Hz is indistinguishable on the wire
     content    position = the point being flown to, in L (metres)
@@ -202,6 +211,28 @@ FOUR TRAPS RATHER THAN FACTS, each read in that tree and each able to waste a so
    (`uniform_bspline.cpp:144,166`).  So "the planner respected our limits" is a claim about the
    FEASIBILITY CHECK, not about the optimiser, and the FCU remains the only thing that bounds the flight.
 
+AND THREE MORE FROM THE `plan_manage`/`plan_env` AUDIT, each of which changes what a swapper may assume
+(`_stage/ego-audit-plan-manage-and-plan-env.md`):
+
+* **ARRIVAL NEEDS THE VEHICLE, NOT JUST THE CLOCK — and there is an unset default that hangs the FSM.**  The
+  arrival test itself is on the trajectory's clock (`ego_replan_fsm.cpp:946-948`), but PATCH 0007 vetoes it
+  against the vehicle: `if (goal_dist > no_replan_thresh_) → REPLAN_TRAJ` (`:963-977`).  With the parameter's
+  DECLARED default of **−1.0** (`:19`) that condition is always true, so **arrival is never declared and the
+  FSM livelocks** — loudly, but livelocks.  This is the second reason the launch file sets parameters it
+  "could have left alone": `fsm/thresh_no_replan_meter: 1.0` is load-bearing, not tuning.
+* **OCCUPANCY IS STICKY OUTSIDE A SMALL BOX.**  The cloud path clears `occupancy_buffer_inflate_` only within
+  `camera_pos ± grid_map/local_update_range` (`grid_map.cpp:826-827,234`), so a cell marked occupied STAYS
+  occupied once the vehicle moves away — the map is an accumulating obstacle memory, not a sliding window.
+  Inside that box it is rebuilt from each scan, which is why the relay's decimation is safe (the map cannot
+  represent finer than 0.1 m anyway) and why a stale cloud is worse than a coarse one.
+* **SOME PARAMETERS IN THAT TREE ARE DEAD, AND `show_occ_time` IS ONE OF THEM.**  `fsm/planning_horizen_time`
+  (`:21,30`), `manager/max_jerk` (`planner_manager.cpp:17,26`) and `grid_map/{show_occ_time, min_ray_length,
+  virtual_ceil_yp, virtual_ceil_yn, depth_filter_tolerance}` are declared and read but never used
+  (`grid_map.cpp:79` → the only use is a COMMENTED-OUT log at `:750-752`).  So a swapper cannot time ego's
+  occupancy update by asking for it: **this note said earlier that ego "can print it" and the audit refuted
+  that** — the parameter exists and does nothing.  Setting a dead parameter is not harmful; BELIEVING it is
+  what costs a round.
+
 WHAT ITS MAP DEMANDS OF US — the wiring, read in this tree, and the one item that will silently ruin a
 sortie if it is missed:
 
@@ -269,18 +300,23 @@ a claim about one adapter.
   does is asserted offline — but **"ego flies Mission A" is NOT demonstrated.**
 * Mission B's own record stands as it was written (`docs/metrics/ego-*.txt`, `phaseB-*.txt`): the anchoring
   defect, the clock defect, the map pool exhaustion.  Nothing in this file supersedes those measurements.
-* **The launch file HAS now been fed live data and HAS produced a B-spline — and it still has never flown.**
-  MEASURED 2026-10-15 in `logs/ego-pregate-20261015_221405` (a PARKED stack: SITL, the simulated MID-360, the
-  LIO, the relay and `ego_planner_node`; no arming, no supervisor, no bridge, no `/plan/cmd`): the relay
-  carried **100 scans, 1 945 868 → 847 564 points (43.6 % kept), 0 cropped**, the FSM left `INIT` for
-  `WAIT_TARGET` and its `no odom.` line count fell from **11 to 1** — so both remaps in §4.2 deliver — and a
-  goal in L on `/move_base_simple/goal` produced a real `planning/bspline` message (`order: 3`, `traj_id:
-  14`, knots starting at −0.6 s, i.e. ego's own negative-start convention) with the FSM cycling
-  `EXEC_TRAJ ↔ REPLAN_TRAJ`.  `src/tools/test-planner-knob.py`'s dry run covers the harness's side of this
-  and `tests/…`/`docs/metrics/ego-pregate-20261015.txt` the rest.  What is still NOT demonstrated: the
-  ADAPTER end to end (`ego_source.py` sampling that spline and publishing `/plan/cmd` under a running
-  supervisor) and, of course, flight.  The parked pregate answers "does ego see our cloud and our odometry,
-  and does it plan"; it does not answer "does the contract hold while the aircraft moves".
+* **The launch file HAS now been fed live data, the ADAPTER has produced the contract from real ego output,
+  and it still has never flown.**  MEASURED 2026-10-15, on a PARKED stack (SITL, the simulated MID-360, the
+  LIO, the relay and `ego_planner_node`; no arming, no supervisor, no bridge):
+  (a) the relay carried **100+ scans, 1 945 868 → 847 564 points (43.6 % kept), 0 cropped**, the FSM's
+  `no odom.` count fell from **11 to 1** — so both remaps in §4.2 deliver — and a goal in L produced a real
+  `planning/bspline` (`order: 3`, `traj_id: 14`, knots starting at −0.6 s), which our evaluator rebuilds
+  without modification (`docs/metrics/ego-pregate-20261015.txt`);
+  (b) with `planner/ego_source.py` in the loop, a four-waypoint tour produced **`trajectory_id` 1→4, one per
+  WAYPOINT**, and a **sustained COMPLETED that keeps talking** on `/plan/cmd`, recorded off the wire by the
+  same recorder the flights use (`docs/metrics/ego-adapter-20261015.txt`).  That run also found the two
+  defects that stood in the way, and both are the kind only a live loop finds: a `NameError` for an
+  unimported `DurabilityPolicy` (every offline gate passed, because none of them starts a ROS node), and
+  UNDER it a silent QoS mismatch — the adapter published `VOLATILE` while the bridge subscribes
+  `TRANSIENT_LOCAL`, so **the bridge would have received nothing from an ego planner.**  That is now in the
+  contract above and checked against the flown plan box by `src/tools/test-planner-swap.py`.
+  What is still NOT demonstrated: **the assembly** — `PLANNER=ego` with the bridge and the supervisor
+  attached, and therefore the abort path, and of course flight.
 * **And the pregate found a defect that had nothing to do with ego.**  `sim/lidar_imu.py` and
   `planner/rectangle_source.py` both defaulted `--world` to a path built by climbing one level out of the
   CODE root — correct before the code moved under `src/`, and `<repo>/src/worlds/…` afterwards, which does

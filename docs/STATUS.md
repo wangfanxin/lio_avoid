@@ -116,17 +116,18 @@ the metrics file that carries it is named.
    flown on `params/ekf_trust_lio.parm`, and the promoted configuration is a SEPARATE, named file with its
    own four sorties.  Any future acceptance claim must say which of the two it was flown on — the manifest
    carries both, and `tools/run-mission.sh` prints the override and this repo's own HEAD at start-up.
-6. **THE EGO SORTIE IS THE ONE PIECE OF THE PLANNER GOAL THAT IS NOT DONE — and it is now ONE step away, not
-   two.**  The launch file exists and is checked (`src/planner/ego_on_lio.launch.py` +
-   `src/tools/install-ego-launch.py`: 67 parameters, 0 undeclared); the cloud path exists
-   (`src/planner/cloud_relay.py`, and the PARKED pregate measured it carrying 100+ scans at 43.6 % kept,
-   0 cropped); the harness starts the second process (`EGO_STACK=1`); and ego has now been **fed live data
-   and produced a real B-spline in L** (`docs/metrics/ego-pregate-20261015.txt`).  What is left is the
-   ADAPTER end to end: `ego_source.py` sampling that spline and publishing `/plan/cmd` **while a supervisor
-   is watching**, which is the first thing that can abort a flight.  The honest order is another parked run
-   with `ego_source.py` in the loop (so its arrival/settle/COMPLETED logic sees real ego output and the
-   supervisor sees a real contract), and only then a sortie.  Until that, `PLANNER=ego` is a wiring that has
-   been proved in every part but never assembled under the safety chain.
+6. **THE EGO SORTIE IS THE ONE PIECE OF THE PLANNER GOAL THAT IS NOT DONE — and every part of it has now been
+   exercised on its own, live.**  The launch file is checked (67 parameters, 0 undeclared); the cloud path is
+   measured (`src/planner/cloud_relay.py`: 100+ scans at 43.6 % kept, 0 cropped); the harness starts the
+   second process (`EGO_STACK=1`); ego has been **fed live data and answered with a real B-spline in L**; and
+   the ADAPTER has now **turned real ego output into our contract in a parked live loop** — four waypoints,
+   `trajectory_id` 1→4 once per waypoint, and a sustained COMPLETED that keeps talking
+   (`docs/metrics/ego-adapter-20261015.txt`, and the two defects that run found were a `NameError` hiding a
+   `VOLATILE`-vs-`TRANSIENT_LOCAL` QoS mismatch on `/plan/cmd`, which would have left the bridge deaf to an
+   ego planner).  What has NEVER happened is the assembly: `PLANNER=ego` with the BRIDGE and the SUPERVISOR
+   attached.  The honest order is a parked run WITH the supervisor's gates live (its preflight will refuse to
+   arm without a truth tap, which is itself the check) or a sortie with a low expectation and the supervisor
+   free to abort — and the abort path is the one thing about ego that has never been seen to work.
 
 ## Open questions, and the things kept for a decision
 

@@ -42,6 +42,7 @@ import importlib.util
 import argparse
 import math
 import os
+import re
 import subprocess
 import sys
 import time
@@ -342,6 +343,50 @@ def main() -> int:
     if not sup.abort_reason or "STOPPED TALKING" not in sup.abort_reason:
         bad.append("S2: the supervisor must ALSO treat silence after COMPLETED as an abort -- if this fails "
                    "while the bridge's N3 passes, the two copies of the rule have drifted apart")
+    print()
+
+    # ---------------------------------------------------------------- the QoS, which is part of the contract
+    #
+    # WHY THIS IS HERE AND NOT IN A COMMENT.  The contract is not only a topic and a frame: `/plan/cmd` is
+    # published RELIABLE + KEEP_LAST(5) + TRANSIENT_LOCAL, because BOTH consumers subscribe latched
+    # (`bridge/bridge_node.py:113-115` and `tools/record-traj.py:123-128`) so that a consumer starting after
+    # the planner still finds the newest sample.  MEASURED 2026-10-15: the first ego adapter published with
+    # `create_publisher(T, topic, 10)` -- the integer overload, i.e. VOLATILE -- and the bridge would have
+    # received NOTHING from it; the console said "requesting incompatible QoS ... DURABILITY" while the
+    # topic looked healthy.  Nothing offline caught it, because the swap test drove the consumer object
+    # directly and never asked what the PRODUCER put on the wire.
+    #
+    # So the producers' own declarations are read here and compared AGAINST THE FLOWN ONE.  Comparing them
+    # to a constant would let all three drift together; comparing them to `rectangle_source.py` means the
+    # reference is the planner every accepted sortie flies.
+    print("THE CONTRACT'S QoS, IN THE PRODUCERS' OWN SOURCE (the flown plan box is the reference)\n")
+
+    def declared_qos(path):
+        """(durability, reliability, depth) of the publisher that feeds the contract, read from the source."""
+        s = open(path, encoding="utf-8").read()
+        dur = re.search(r"durability\s*=\s*DurabilityPolicy\.(\w+)", s)
+        rel = re.search(r"reliability\s*=\s*ReliabilityPolicy\.(\w+)", s)
+        dep = re.search(r"QoSProfile\(depth\s*=\s*(\d+)", s)
+        # the integer overload is the trap: `create_publisher(T, topic, 10)` means RELIABLE + VOLATILE
+        int_overload = re.search(r"create_publisher\(\s*\w+\s*,\s*[\w.\[\]\"]+\s*,\s*\d+\s*\)", s)
+        return (dur.group(1) if dur else ("VOLATILE" if int_overload else None),
+                rel.group(1) if rel else ("RELIABLE" if int_overload else None),
+                int(dep.group(1)) if dep else (10 if int_overload else None))
+
+    ref = declared_qos(os.path.join(ROOT, "planner", "rectangle_source.py"))
+    print("   the flown plan box   rectangle_source.py   durability=%s reliability=%s depth=%s" % ref)
+    for label, rel_path in (("the ego adapter", "planner/ego_source.py"),):
+        got = declared_qos(os.path.join(ROOT, rel_path))
+        print("   %-20s %-21s durability=%s reliability=%s depth=%s"
+              % (label, rel_path, got[0], got[1], got[2]))
+        if got != ref:
+            bad.append("%s publishes the contract with %s, but the flown plan box uses %s -- a consumer "
+                       "subscribing latched would receive NOTHING from it"
+                       % (rel_path, got, ref))
+    if ref[0] != "TRANSIENT_LOCAL":
+        bad.append("the REFERENCE (rectangle_source.py) no longer declares TRANSIENT_LOCAL (%s): the bridge's "
+                   "latched subscription would stop receiving, which is a stack-wide defect, not a swap one"
+                   % (ref,))
     print()
 
     # ---------------------------------------------------------------- negative controls
