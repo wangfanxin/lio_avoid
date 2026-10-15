@@ -87,13 +87,17 @@ class EgoPlanBox:
     """
 
     def __init__(self, targets_l, hold_s=5.0, arrive_m=0.060, settle_mps=0.080, rate_hz=100.0,
-                 start_wall=None, log=None, stale_s=2.0, yaw_mode="velocity"):
+                 start_wall=None, log=None, stale_s=2.0, yaw_mode="velocity", max_start_age_s=60.0):
         self.targets = np.asarray(targets_l, dtype=float).reshape(-1, 3)
         self.hold_s = float(hold_s)
         self.arrive_m = float(arrive_m)
         self.settle_mps = float(settle_mps)
         self.rate_hz = float(rate_hz)
         self.stale_s = float(stale_s)
+        #: how far a spline's `start_time` may be from this clock before it is REFUSED as a different clock
+        #: domain.  Generous, because the point is to catch epoch-vs-monotonic, not to police latency.
+        self.max_start_age_s = float(max_start_age_s)
+        self.n_refused_tb = 0
         self.yaw_mode = yaw_mode
         self.log = log or (lambda s: None)
         self.t0 = time.monotonic() if start_wall is None else float(start_wall)
@@ -127,8 +131,25 @@ class EgoPlanBox:
         self._sequence(now)
 
     def on_spline(self, order, knots, pos_pts, traj_id, start_wall, now=None):
-        """One `Bspline` message.  `start_wall` is its `start_time` in the SAME clock as `now`."""
+        """One `Bspline` message.  `start_wall` is its `start_time` in the SAME clock as `now`.
+
+        THE TIME BASE IS CHECKED, BECAUSE A WRONG ONE IS INVISIBLE.  `bspline_derivs` CLAMPS outside the
+        spline's domain -- correct behaviour, and it is what turned this adapter's first real sortie into a
+        400 s hang: ego's `start_time` is on the SYSTEM clock (epoch seconds, `ego_replan_fsm.cpp:845`) while
+        the sampler ran on `time.monotonic()`, so `t = now - start_wall` was about -1.79e9, every sample
+        clamped to the START of the trajectory, and the vehicle was commanded to where it already was.  The
+        command looked like a plausible position, the stream looked healthy, and the plan never arrived.
+        A time base that is not within a plausible age of `now` is REFUSED here and SAID OUT LOUD.
+        """
         now = time.monotonic() if now is None else now
+        age = now - float(start_wall)
+        if not (-self.max_start_age_s <= age <= self.max_start_age_s):
+            self.n_refused_tb += 1
+            self.log("ego_source: REFUSING a spline whose start_time is %.3g s from this clock -- a "
+                     "CLOCK-DOMAIN mismatch (epoch vs monotonic?), and sampling it would silently clamp to "
+                     "the trajectory's START.  Convert the message's clock before calling on_spline."
+                     % age)
+            return False
         s = Spline(order, knots, pos_pts, traj_id, start_wall, now)
         if s.duration != s.duration or s.duration <= 0.0:
             self.log("ego_source: REFUSING a spline whose domain is %.3f s" % s.duration)
@@ -264,6 +285,36 @@ def _selftest() -> int:
     s2 = box.sample(now=t0 + dur)
     print("   with a spline (domain %.2f s): positions along it %s (ego's own traj_id was 7; ours is %s)"
           % (dur, np.round(xs, 3), s2.trajectory_id))
+
+    # --- 2b. THE CLOCK DOMAIN.  This is the assertion whose absence cost a sortie: a spline stamped in
+    #     ANOTHER clock must be REFUSED, not sampled.  Without the refusal the evaluator clamps to the
+    #     trajectory's start and the vehicle is commanded to where it already is -- a plausible-looking
+    #     position, a healthy-looking stream, and a plan that never arrives.
+    print()
+    print("   THE CLOCK DOMAIN (the defect that hung the first assembled ego sortie):")
+    fresh = EgoPlanBox([[0.6, 0.0, 0.5]], hold_s=1.0, start_wall=t0, log=lambda s: None)
+    epoch_like = 1.792e9                                   # what `builtin_interfaces/Time` really looks like
+    accepted = fresh.on_spline(order, knots, pts, traj_id=1, start_wall=epoch_like, now=t0)
+    print("      a spline stamped %.3g against a clock reading %.3g: accepted=%s, refused=%d"
+          % (epoch_like, t0, accepted, fresh.n_refused_tb))
+    if accepted:
+        bad.append("a spline whose start_time is 1.79e9 s from this clock was ACCEPTED -- sampling it clamps "
+                   "to the trajectory's start, which is the defect this assertion exists for")
+    if fresh.n_refused_tb != 1:
+        bad.append("the refusal was not counted (%d)" % fresh.n_refused_tb)
+    # and the same spline, converted, MUST be accepted -- the guard must not refuse everything
+    mono_like = t0 + 0.05
+    ok_again = fresh.on_spline(order, knots, pts, traj_id=1, start_wall=mono_like, now=t0)
+    if not ok_again:
+        bad.append("a spline whose start_time IS in this clock was refused -- the guard is too strict")
+    print("      the same spline converted into this clock: accepted=%s" % ok_again)
+    # and the CONVERSION itself, as arithmetic
+    epoch_now, mono_now, start_epoch = 1.792e9, 21288.0, 1.792e9 - 0.25
+    start_mono = start_epoch + (mono_now - epoch_now)
+    print("      conversion: start_time %.6f (epoch) -> %.6f (monotonic), age at receipt %.3f s"
+          % (start_epoch, start_mono, mono_now - start_mono))
+    if abs((mono_now - start_mono) - 0.25) > 1e-6:
+        bad.append("the clock conversion does not preserve the age (%.6f)" % (mono_now - start_mono))
     if s2.trajectory_id != 1:
         bad.append("the id must be OUR per-waypoint id, not ego's per-replan id (got %s)" % s2.trajectory_id)
     if not all(a <= b + 1e-9 for a, b in zip(xs, xs[1:])):
@@ -391,9 +442,27 @@ def _ros_main(args) -> int:
             box.on_odom(box.p, v)
 
     def on_bspline(m):
-        t0 = m.start_time.sec + 1e-9 * m.start_time.nanosec
+        """Ego's plan, with its TIME BASE TRANSLATED into this process's clock.
+
+        THE ONE PLACE THE TWO CLOCKS CAN BE TIED TOGETHER, and the first version of this adapter did not do
+        it.  `start_time` is a `builtin_interfaces/Time` on the SYSTEM clock (`rclcpp::Clock().now()`,
+        `ego_replan_fsm.cpp:845`); `EgoPlanBox` samples on `time.monotonic()`.  Reading both clocks at the
+        SAME INSTANT gives the offset, and the conversion is exact:
+
+            start_wall(monotonic) = start_time(epoch) + (monotonic_now - epoch_now)
+
+        MEASURED, and this is what the first assembled ego sortie cost: without it, `t = now - start_wall`
+        was about -1.79e9 s, `bspline_derivs` CLAMPED every sample to the trajectory's START, the vehicle was
+        commanded to where it already was, the tour never left waypoint 1, and the supervisor waited 400 s
+        for a COMPLETED that could not come.  `EgoPlanBox.on_spline` now refuses an implausible time base, so
+        the same mistake can only be loud.
+        """
+        epoch_now = node.get_clock().now().nanoseconds * 1e-9      # ego's clock, read now
+        mono_now = time.monotonic()                                # this process's clock, read now
+        start_epoch = m.start_time.sec + 1e-9 * m.start_time.nanosec
+        start_mono = start_epoch + (mono_now - epoch_now)
         box.on_spline(m.order, np.array(m.knots), np.array([[q.x, q.y, q.z] for q in m.pos_pts]),
-                      m.traj_id, t0)
+                      m.traj_id, start_mono, now=mono_now)
 
     node.create_subscription(Odometry, args.odom_topic, on_odom, 10)
     node.create_subscription(Odometry, args.odom_vel_topic, on_odom_vel, 10)

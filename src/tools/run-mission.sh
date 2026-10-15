@@ -303,13 +303,24 @@ echo "   geofence  : $GEOFENCE_M m, take-off altitude $TAKEOFF_ALT m"
 echo "   dwell     : ${RECT_HOLD_S} s at every corner -- from ${RECT_HOLD_FROM}; the world file's"
 echo "               mission.hold_s is ${WORLD_HOLD_S} and is deliberately NOT what a default sortie flies"
 echo "   take-off  : ${TAKEOFF_PROFILE}"
-if [ -n "$VERTICAL_ARG" ]; then
-    echo "               the plan's first target is a VERTICAL leg to ${TAKEOFF_ALT} m, held ${VERTICAL_HOLD_S} s"
-    echo "               (that hold IS the A4 window, which is what keeps A4 comparable with docs/metrics/)"
-elif awk "BEGIN{exit !($TAKEOFF_COMMAND_M != $TAKEOFF_ALT)}"; then
-    echo "               VERTICAL_FIRST=0: the plan has NO climb leg, so the first setpoint is corner 1 and"
-    echo "               the aircraft climbs IN TRANSIT -- the A4 window is then a climb, not a hover"
-fi
+# THE CLIMB-LEG LINES DESCRIBE THE PLANNER THAT IS ACTUALLY RUNNING, not the one the take-off profile was
+# written for.  MEASURED while preparing the first `PLANNER=ego` sortie: `VERTICAL_ARG` is built for the
+# rectangle's argv and the ego argv does not carry it, so this used to print "the plan's first target is a
+# VERTICAL leg to 2.50 m" for a tour whose first target is corner 1 -- a banner that lies about the flight is
+# worse than no banner, because the banner is what a pilot reads.
+case "$PLANNER_ARGS" in
+    *--vertical-first-m*)
+        echo "               the plan's first target is a VERTICAL leg to ${TAKEOFF_ALT} m, held ${VERTICAL_HOLD_S} s"
+        echo "               (that hold IS the A4 window, which is what keeps A4 comparable with docs/metrics/)"
+        ;;
+    *)
+        if awk "BEGIN{exit !($TAKEOFF_COMMAND_M != $TAKEOFF_ALT)}"; then
+            echo "               NO vertical leg in $PLANNER's argv: the first setpoint is the planner's own"
+            echo "               first target ($PLANNER_WHAT)"
+            echo "               and the aircraft climbs IN TRANSIT -- the A4 window is then a climb, not a hover"
+        fi
+        ;;
+esac
 echo "   run dir   : $OUT"
 echo
 
