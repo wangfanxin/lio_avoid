@@ -1,0 +1,131 @@
+PLANNER SWAP -- one contract, three planners -- evidence, 2026-10-15 13:52:08Z
+HEAD at the time of the run: d7ceb19  (this round is not committed yet)
+
+WHAT IS CLAIMED.  That /plan/cmd is the planner contract and not a description of ONE planner:
+three different producers -- our TourPacer+CmdStream, a minimal third-party-style planner, and the
+ego adapter (planner/ego_source.py, sampling its own B-spline evaluator) -- are pushed through the
+REAL consumer object (bridge/bridge_node.py CmdRelay) and the consumer's rules hold for all three.
+
+WHAT IS NOT CLAIMED.  No flight.  No ego binary was run: the ego adapter is exercised against a
+B-spline built the way planner_manager builds one, not against ego_planner_node itself.  A real ego
+sortie needs an ego-side launch file that does not exist yet (docs/PLANNERS.md section 3.2).
+
+AND THE EVALUATOR UNDERNEATH IT IS ATTACKED, NOT DESCRIBED.  The adapter's positions come from
+planner/bspline.py, so this round also built src/tools/test-bspline-mutations.py: nine single-token
+defects injected into the evaluator, every one of which must make its selftest FAIL.  The FIRST
+version of that selftest let THREE of the nine survive (a mis-indexed derivative knot difference, a
+dropped degree factor, a wrong getTimeSum domain) -- all three invisible because the selftest had
+only a UNIFORM knot vector, where a shifted knot window is the same numbers.  The second case (spans
+0.4 / 0.5 / 0.4 s) and the central-difference reference were added because of that measurement.
+
+=== the full output of src/tools/test-planner-swap.py ==============================
+PLANNER SWAP TEST -- one contract, three planners, the same consumer code
+
+A: the Mission A tour (ours)
+   samples 1423 published at 100 Hz   ids [1, 2, 3, 4, 5]   flags: READY 1393, COMPLETED 30
+   the relay: received 1423, REFUSED 0, sent 1422
+   ends with COMPLETED sustained over the last 10 samples: True
+   the stall gate after the end: does NOT fire
+
+B: a minimal third-party planner
+   samples  675 published at 50 Hz   ids [1, 2, 3, 4]   flags: READY 600, COMPLETED 75
+   the relay: received 675, REFUSED 0, sent 674
+   ends with COMPLETED sustained over the last 10 samples: True
+   the stall gate after the end: does NOT fire
+
+C: the ego adapter (ego_source.py)
+   samples  860 published at 100 Hz   ids [1, 2, 3]   flags: READY 701, COMPLETED 159
+   the relay: received 860, REFUSED 0, sent 859
+   ends with COMPLETED sustained over the last 10 samples: True
+   the stall gate after the end: does NOT fire
+
+NEGATIVE CONTROLS (each must FAIL in exactly one way)
+
+N1  truncated before COMPLETED, then 10 s of silence
+    stall gate: THE PLAN BOX HAS STOPPED TALKING: nothing on /plan/cmd for 10.0 s (limit 3.0 s) after 338 messages at 0.0 Hz, trajectory_id 3, last flag 1 -- a plan box that is DONE says so in the message (trajectory_flag = COMPLETED); silence is not completion
+
+N2  one sample in a frame the relay does not know ('nope'), the rest in lio_world
+    refused 1, reason 'nope'
+
+N3  a planner declares COMPLETED, then goes silent -- which the contract FORBIDS: COMPLETED is a
+    field, not permission to stop talking.  (This control first asserted the opposite.  It failed.)
+    stall gate: FIRES -- as it must
+
+THE WIRE'S OWN RULE
+   199 samples relayed; the fields the relay owns are position + yaw
+
+THE PLANNERS' OWN SELFTESTS (arithmetic + contract, no ROS)
+
+   planner/bspline.py (the evaluator, vs Cox-de Boor)         rc=0  BSPLINE SELFTEST PASSED: two cases, three references (hand-k
+   planner/ego_source.py --selftest (the /plan/cmd contract)  rc=0  EGO SOURCE SELFTEST PASSED: the contract, from ego's spline,
+
+PLANNER SWAP TEST PASSED: 3 planners, one contract, the consumer's rules hold for all of them
+rc=0
+
+=== the gate battery, all offline gates ===========================================
+### HEAD
+d7ceb19
+### working tree
+ M docs/PLAN.md
+ M docs/STATUS.md
+ M src/tools/docs-budget.py
+ M src/tools/run-mission.sh
+?? docs/PLANNERS.md
+?? docs/figures/archive/traj-xyzt-RECT48-accept-planner-knob.png
+?? docs/figures/traj-xy-PLANSWAP-contract.png
+?? docs/figures/traj-xy-RECT48-accept-planner-knob.png
+?? docs/metrics/planner-swap-20261016.txt
+?? src/planner/bspline.py
+?? src/planner/ego_source.py
+?? src/tools/check-doc-citations.py
+?? src/tools/test-bspline-mutations.py
+?? src/tools/test-planner-knob.py
+?? src/tools/test-planner-swap.py
+
+python3 src/tools/frozen-check.py              rc=0  frozen set: 53 of 53 files unchanged
+python3 src/tools/docs-budget.py               rc=0  documentation budget: 5 of 5 used
+python3 src/tools/check-doc-citations.py --quiet rc=0  DOC CITATION CHECK PASSED: 44 citation(s) across 5 document(s) resolve to real lines (33 by basename; 30 had more than one candidate and were checked against all of them)
+python3 src/tools/test-layout.py               rc=0  LAYOUT TEST PASSED: the code root, the project root and every tool agree
+python3 src/tools/test-cmd-stream.py           rc=0  CMD-STREAM TEST PASSED
+python3 src/tools/test-stall-gate.py           rc=0  stall-gate test: PASS
+python3 src/tools/test-supervisor-authority.py rc=0  SUPERVISOR-AUTHORITY TEST PASSED
+python3 src/tools/test-bridge-contract.py      rc=0  BRIDGE-CONTRACT TEST PASSED
+python3 src/tools/test-s4-l-to-wire.py         rc=0  S4 L->WIRE A/B PASSED
+python3 src/tools/test-planner-swap.py         rc=0  PLANNER SWAP TEST PASSED: 3 planners, one contract, the consumer's rules hold for all of them
+python3 src/tools/test-planner-knob.py         rc=0  PLANNER-KNOB TEST PASSED: the default is the flown planner with the flown argv, ego selects the adapter, and every wrong name is refused before anything starts
+python3 src/tools/test-bspline-mutations.py    rc=0  BSPLINE MUTATION TEST PASSED: 9 of 9 defects caught, and the unmutated source passes
+python3 src/planner/bspline.py                 rc=0  BSPLINE SELFTEST PASSED: two cases, three references (hand-known line, central difference, Cox-de Boor)
+python3 src/planner/ego_source.py --selftest   rc=0  EGO SOURCE SELFTEST PASSED: the contract, from ego's spline, with no ego and no ROS
+python3 src/common/frames.py                   rc=0  selftest: PASS
+
+### failures: 0
+
+=== the figure ====================================================================
+docs/figures/traj-xy-PLANSWAP-contract.png -- three panels, top view in L, drawn by importing
+the three builders FROM the test (a figure drawn from a copy drifts from the test).
+sha256: 90121d05bbe8bb7b79c29a63dc68ec30f631030a835c701cca8e3cf07a0aee4e
+
+=== the sortie that went through the selector =====================================
+docs/figures/traj-xy-RECT48-accept-planner-knob.png -- the flown default, launched through
+PLANNER=rectangle.  Its rows, from its own metrics.txt:
+A1 route horizontal rms      3.29 mm   (target <= 20)
+A2 route vertical rms        1.77 mm   (target <= 50, mean removed)
+   horizontal rms     7.83 mm  (<= 50, mean removed) at the best-fit lag +74 ms; zero lag would be    28.50 mm
+   vs the LIO pose it was fed (same fit A1 uses): horizontal rms    26.31 mm, vertical rms    29.04 mm   (LIO vs truth is A1 above)
+   A4-v the FCU's own EKF (XKF1 V)   horizontal rms   21.60 mm/s over 536 samples at the position row's lag; its OWN best-fit lag is -8 ms (20.90 mm/s); vertical 33.36 mm/s
+   A4-v the velocity it was FED (VISV) horizontal rms   83.29 mm/s over 2521 samples at the position row's lag; its OWN best-fit lag is -128 ms (25.43 mm/s); vertical 67.49 mm/s
+B1 truth box extents over the route (34.5 s): E 2.115 m  N 1.251 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner arrival)  [FAIL]
+C2 obstacle clearance over the whole flight (46 pillars from pillars.yaml): minimum pillar-surface distance 0.569 m;  0 of 60654 samples inside the 0.20 m footprint  [PASS]
+C1 final point: the aircraft stopped 0.019 m from the last commanded point (0.500, 0.400)  [PASS]
+A1/A2/B1 FAIL: B1   (A1 3.29 mm <= 20, A2 1.77 mm <= 50, B1 E 2.115 <= 2.10, N 1.251 <= 1.30, aborted False)
+and the plan's own waypoint list (the FIRST one is the vertical climb leg, which only reaches the
+plan box if --vertical-first-m survived the restructuring -- this is what the knob test asserts on
+the argv, confirmed in flight):
+   commanded waypoints: 6 distinct targets in 7197 messages
+      w1  traj_id=1   E  +0.0000  N  +0.0000  U  +2.5000
+      w2  traj_id=2   E  +0.5000  N  +0.4000  U  +2.0000
+      w3  traj_id=3   E  +2.5000  N  +0.4000  U  +2.0000
+      w4  traj_id=4   E  +2.5000  N  +1.6000  U  +2.0000
+      w5  traj_id=5   E  +0.5000  N  +1.6000  U  +2.0000
+      w6  traj_id=6   E  +0.5000  N  +0.4000  U  +2.0000
+sha256: 43af54a8d36eaad34e1a560bb2c2c0f69ffc92e0bb476b87d7c1d08895a84f9e

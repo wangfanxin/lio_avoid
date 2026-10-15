@@ -189,15 +189,17 @@ adapter that translated ego's output into a Path is exactly what this change del
 
 ## 7. Documentation budget (a hard rule from the user, 2026-10-13)
 
-**At most 5 markdown documents in `docs/`, ever.**  Currently 4:
+**At most 5 markdown documents in `docs/`, ever.**  Currently 5:
 
 1. `PLAN.md` — this file: goal, decisions, acceptance, order, rules
 2. `ARCHITECTURE.md` — components, dataflow, topics, TF tree, transport, safety gates
 3. `FRAMES.md` — coordinate conventions, the wire facts, where conversions live, the test matrix
 4. `STATUS.md` — current state, evidence, next steps
+5. `PLANNERS.md` — the `/plan/cmd` planner contract, who owns which safety duty, and how to swap a planner
+   (added 2026-10-16 with the planner-swap work; the registry in `tools/docs-budget.py` carries it)
 
-The fifth slot stays free.  A new subject does **not** get a new file: it goes into whichever of the four
-owns it, and if a fifth file is ever created, another must be merged away in the same change.  This is
+THE BUDGET IS NOW FULL.  A new subject does **not** get a new file: it goes into whichever of the five owns
+it, and if a sixth file is ever created, another must be merged away in the same change.  This is
 executable, and it is run before every commit:
 
 ```

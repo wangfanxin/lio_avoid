@@ -145,6 +145,83 @@ else
     SUP_TRIGGER="--trigger-on-airborne"
 fi
 
+# WHICH NAVIGATION SOURCE, AND THEREFORE WHICH CALIBRATION.  This decides the L->W file the plan box, the
+# bridge and the plan recorder all take, so it is settled HERE -- before anything is started and before the
+# sortie lock is taken -- rather than in the middle of the start-up sequence where it used to live.  It moved
+# because the planner's own argv is built below and must carry the SAME `--calib-file` as the rest of the
+# stack: with the predicted transform in one place and the measured one in another, every commanded corner
+# moved 51 mm in N.
+NAV_SOURCE="${NAV_SOURCE:-lio}"
+CALIB_ARG=""
+TRAJ_CALIB_ARG=""
+if [ "$NAV_SOURCE" = "lio" ]; then
+    CALIB="$ROOT/../_stage/calib.json"
+    if [ ! -f "$CALIB" ]; then
+        echo "no calibration file at $CALIB -- run once with NAV_SOURCE=truth first"
+        exit 1
+    fi
+    CALIB_ARG="--calib-file $CALIB"
+    TRAJ_CALIB_ARG="--calib-file $CALIB"
+fi
+
+# WHO PLANS.  The planner is a PLUGIN: everything downstream -- the bridge, the supervisor, the FCU --
+# reads only `/plan/cmd` (quadrotor_msgs/PositionCommand, frame L, `trajectory_id` per waypoint,
+# `trajectory_flag` 1 while flying and 3 when the mission is over).  `PLANNER=` chooses the producer, and
+# which one ran is PRINTED in the banner below, because a sortie must never be readable as "some planner".
+#   rectangle  the Mission A rectangle we fly and score (`planner/rectangle_source.py`)
+#   ego        ego-planner behind the same contract    (`planner/ego_source.py`)
+#   <path.py>  any file that publishes the contract
+# Nothing in the bridge or the supervisor changes with this switch: `tools/test-planner-swap.py` drives the
+# SAME consumer code with three different planners and asserts exactly that.
+PLANNER="${PLANNER:-rectangle}"
+PLANNER_TOPIC="${PLANNER_TOPIC:-/plan/cmd}"
+case "$PLANNER" in
+    rectangle)
+        PLANNER_FILE="$REPO/planner/rectangle_source.py"
+        PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S $VERTICAL_ARG $SHAPING_ARG ${CMD_ARGS:-}"
+        PLANNER_WHAT="the Mission A tour on the rectangle (our own plan box)"
+        ;;
+    ego)
+        PLANNER_FILE="$REPO/planner/ego_source.py"
+        PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S ${CMD_ARGS:-}"
+        PLANNER_WHAT="ego-planner-swarm behind the /plan/cmd contract (adapter; NOT flown on this stack since F1/F2)"
+        ;;
+    */*|*.py)
+        PLANNER_FILE="$PLANNER"
+        PLANNER_ARGS="${CMD_ARGS:-}"
+        PLANNER_WHAT="a planner named by path -- the harness knows nothing about its internals"
+        ;;
+    *)
+        echo "unknown PLANNER='$PLANNER' -- use rectangle, ego, or a path to a .py" >&2
+        exit 4
+        ;;
+esac
+if [ ! -f "$PLANNER_FILE" ]; then
+    # the NAME AS GIVEN, not an internal label: a caller who typed a path must read that path back
+    echo "PLANNER='$PLANNER': no file at $PLANNER_FILE" >&2
+    exit 4
+fi
+# only now, so the message above can quote what the caller actually typed
+case "$PLANNER" in
+    rectangle|ego) ;;
+    *) PLANNER="custom" ;;
+esac
+# A KNOB THAT CANNOT BE CHECKED BREAKS SILENTLY, and this one did.  MEASURED 2026-10-16 while writing it:
+# the first version of the block above stood ~40 lines EARLIER, where `$VERTICAL_ARG` and `$TRAJ_CALIB_ARG`
+# did not exist yet, so under `set -u` the harness died on the first unbound variable -- `PLANNER=rectangle`,
+# the DEFAULT, could not start at all, and nothing in the tree would have noticed until a sortie failed to
+# launch.  `tools/test-planner-knob.py` now runs this script with PLANNER_DRY_RUN=1 for every value and
+# asserts the argv below, and the dry run exits BEFORE the sortie lock is taken so it cannot leave one.
+if [ "${PLANNER_DRY_RUN:-0}" = "1" ]; then
+    echo "PLANNER_DRY_RUN=1 -- nothing started, no lock taken, no SITL, no ROS"
+    echo "   planner        : $PLANNER -- $PLANNER_WHAT"
+    echo "   file           : $PLANNER_FILE"
+    echo "   topic          : $PLANNER_TOPIC (quadrotor_msgs/PositionCommand, frame lio_world)"
+    echo "   argv           : $PLANNER_ARGS"
+    echo "   what would run : python3 $PLANNER_FILE $PLANNER_ARGS"
+    exit 0
+fi
+
 set +u
 source /opt/ros/humble/setup.bash
 source "$WS/install/setup.bash"
@@ -196,6 +273,9 @@ echo "   ardupilot : $(git -C "$AP" describe --tags --always) $(git -C "$AP" rev
 echo "   super_lio : $(git -C /home/fanxin/lio_avoid/src/Super-LIO rev-parse --short HEAD)  liblio $(md5sum "$WS/install/super_lio/lib/liblio.so" | cut -c1-16)"
 echo "   config    : lio/config/livox_360.yaml + apm_lio_only,sitl_basics,${ALT_MODE}_posz,$MISSION_NAME,$EKF_NAME"
 echo "   override  : $EXTRA_NAME   (appended LAST to --defaults: the last value wins)"
+echo "   planner   : $PLANNER -- $PLANNER_WHAT"
+echo "               $PLANNER_FILE  ->  $PLANNER_TOPIC (quadrotor_msgs/PositionCommand, frame lio_world)"
+echo "               (the BRIDGE and the SUPERVISOR do not know which planner this is: they read the topic)"
 echo "   world     : $WORLD  ($CORNERS)"
 echo "   airframe  : sim model '$SITL_MODEL' against FRAME_TYPE 1 (X) -- the two must agree (see SITL_MODEL above)"
 printf 'model=%s\nfirmware=FRAME_CLASS 1 / FRAME_TYPE 1 (X mixer)\nrule=the SITL model names the motor geometry; it must match FRAME_TYPE\n' \
@@ -341,23 +421,11 @@ REC_PID=$!
 python3 "$REPO/tools/record-cloud.py" --topic /lio/cloud_world --csv "$OUT/cloud.csv" \
     --decimate 40 --scans 3 > "$OUT/reccloud.log" 2>&1 &
 RECC_PID=$!
-# WHICH NAVIGATION SOURCE, AND THEREFORE WHICH CALIBRATION -- decided HERE, before the recorders start,
-# because tools/record-traj.py needs the same L->W calibration the FSM and the producer use (it writes
-# every geometric column in W; without it clr_m is nan and says so).
-NAV_SOURCE="${NAV_SOURCE:-lio}"
-CALIB_ARG=""
-TRAJ_CALIB_ARG=""
-if [ "$NAV_SOURCE" = "lio" ]; then
-    CALIB="$ROOT/../_stage/calib.json"
-    if [ ! -f "$CALIB" ]; then
-        echo "no calibration file at $CALIB -- run once with NAV_SOURCE=truth first"
-        exit 1
-    fi
-    CALIB_ARG="--calib-file $CALIB"
-    # the trajectory source must invert the SAME transform the FSM applies (see planner/rectangle_source.py):
-    # with the predicted one here and the measured one there, every commanded corner moved 51 mm in N
-    TRAJ_CALIB_ARG="--calib-file $CALIB"
-fi
+# WHICH NAVIGATION SOURCE, AND THEREFORE WHICH CALIBRATION -- MOVED.  `NAV_SOURCE`, `CALIB`,
+# `CALIB_ARG` and `TRAJ_CALIB_ARG` are decided in the parameter block near the top of this script, before
+# anything is started or locked, because the planner's own argv is built there and needs the same
+# `--calib-file`.  Nothing here re-decides them; this comment stays so the next reader does not look for
+# the decision where it used to be.
 # THE PLAN, recorded next to the truth.  Without it "the gate cannot see the truth" is an argument, not a
 # measurement: MEASURED 2026-10-14 the truth spent 55.9 % of a 12-stop flight inside the 0.20 m contract
 # while every published path had been verified clear, and there was no record of those paths to compare
@@ -383,9 +451,8 @@ echo "== flying =="
 # five waypoints as a `quadrotor_msgs/PositionCommand` stream on /plan/cmd (100 Hz, its own wall timer),
 # decides ARRIVAL + SETTLE + DWELL itself from `/lio/robo/odom`, and declares the tour complete with
 # `trajectory_flag = COMPLETED`.
-python3 "$REPO/planner/rectangle_source.py" --world "$WORLD" $TRAJ_CALIB_ARG \
-    --hold-s "$RECT_HOLD_S" $VERTICAL_ARG $SHAPING_ARG \
-    ${CMD_ARGS:-} > "$OUT/traj.log" 2>&1 &
+# PLANNER=$PLANNER (see the knob block): the file is chosen there and named in the banner above.
+python3 "$PLANNER_FILE" $PLANNER_ARGS > "$OUT/traj.log" 2>&1 &
 TRAJ_PID=$!
 
 # THE BRIDGE, ITS OWN PROCESS AND ITS OWN ENDPOINT (serial0).  It carries the estimator feed (331) from the

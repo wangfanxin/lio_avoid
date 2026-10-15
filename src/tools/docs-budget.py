@@ -30,6 +30,7 @@ DOCS = os.path.join(PROJ, "docs")
 EXPECTED = {
     "PLAN.md": "goal, decisions, acceptance, order, rules",
     "ARCHITECTURE.md": "components, dataflow, topics, TF, transport, safety",
+    "PLANNERS.md": "the /plan/cmd planner contract, the safety split, and how to swap a planner",
     "FRAMES.md": "coordinate conventions, wire facts, where conversions live, tests",
     "STATUS.md": "current state, evidence, next steps",
 }
