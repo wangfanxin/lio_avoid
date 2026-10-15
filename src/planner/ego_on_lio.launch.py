@@ -74,8 +74,17 @@ def generate_launch_description():
                               description='-- and outside it reads as OCCUPIED'),
         DeclareLaunchArgument('map_size_z', default_value='5.0',
                               description='ground_height .. virtual_ceil_height'),
-        DeclareLaunchArgument('ground_height', default_value='-0.02',
-                              description='a few cm below the pad, IN L (the upstream -0.01 assumes z~0 is ground)'),
+        DeclareLaunchArgument('ground_height', default_value='-0.50',
+                              description='THE MAP Z ORIGIN.  It was -0.02 until a MEASURED defect: at -0.02 the '
+                                          'map box is [-0.02, 4.98], so a vehicle that touches down -- whose '
+                                          'odometry z reads about -0.02, exactly the ground plane -- falls '
+                                          'OUTSIDE its own map, isInMap fails, getInflateOccupancy returns -1, '
+                                          'and the collision check reads -1 as OCCUPIED '
+                                          '(bspline_optimizer.cpp:1329).  DIAG12: 1 058 710 "the drone is in '
+                                          'obstacle", GEN_NEW_TRAJ 19 049 against EXEC_TRAJ 207, 370 s of '
+                                          'deadlock.  At -0.50 the box is [-0.50, 4.50]: a landed vehicle is '
+                                          'inside it, the 4.2 m pillars are still inside it, and the virtual '
+                                          'ceiling lands at 2.9 m, above the 1.88 m the missions fly.'),
         DeclareLaunchArgument('virtual_ceil_height', default_value='3.00',
                               description='our ceiling in L: above the 2.50 m mission altitude, below the 6.60 m geofence'),
         DeclareLaunchArgument('max_vel', default_value='2.0',
@@ -109,23 +118,24 @@ def generate_launch_description():
         'grid_map/local_update_range_x': 5.5,
         'grid_map/local_update_range_y': 5.5,
         'grid_map/local_update_range_z': 4.5,
-        'grid_map/obstacles_inflation': 0.099,   # ONE VOXEL, and the budget is now measured at BOTH ends:
-                                                #   * upstream's own value is 0.099 (`advanced_param.launch.py:148`),
-                                                #     i.e. `inf_step = ceil(0.099/0.1) = 1` cell -- the smallest a
-                                                #     0.10 m map can express;
-                                                #   * TWO cells (0.20 m, DIAG12) collapses the search: **1 030 645**
-                                                #     `a star error` and 1 058 710 `the drone is in obstacle` in one
-                                                #     crossing, a 646 MB log, and the 420 s watchdog killed the
-                                                #     sortie;
-                                                #   * THREE cells (0.30 m, DIAG7) collapses it the same way: 2789
-                                                #     rebound A* errors, 316 670 'terminal point in obstacle'.
-                                                # The reason two cells is worse than three in that count is the RELAY
-                                                # WINDOW: `cloud_relay.py --window` already thickens the map with
-                                                # the union of recent scans, so the inflation budget must SHRINK,
-                                                # not grow.  **There is no value between 1 and 2 cells**, so the
-                                                # map cannot supply the C2 row's 0.20 m footprint; the margin has to
-                                                # come from the plan itself.  See STATUS rows 74 and 79 and
-                                                # `docs/metrics/ego-margin-budget-20261016.txt`.
+        'grid_map/obstacles_inflation': 0.099,   # ONE VOXEL, and the two-cell question is now ANSWERED rather
+                                                # than open.  Two cells was flown twice: DIAG12 hung in a
+                                                # z-boundary deadlock (a landed vehicle outside the map, since
+                                                # fixed in `ground_height`), and DIAG13 -- with that fix in
+                                                # place, so no confound -- flew properly to 2.6 m and produced
+                                                # only **10** `a star error` against DIAG12's 1 030 645.  **The
+                                                # corridor DOES survive two cells**; the earlier "the channel
+                                                # closed" reading is refuted.  What two cells breaks is the
+                                                # VEHICLE: `the drone is in obstacle` fired **112 729** times
+                                                # because a point within 0.20 m of a marked cell is occupied, so
+                                                # the machine's own position keeps reading as an obstacle, the FSM
+                                                # stops, it sinks, lands, and a landed vehicle is an obstacle to
+                                                # itself for ever.  So the C2 row's 0.20 m footprint is blocked by
+                                                # an EGO-SIDE semantics problem (a start inside the inflated map
+                                                # is treated as fatal), not by geometry.  See STATUS rows 81-82.
+                                                # The 0.30 m attempt (DIAG7) stays refuted on its own terms:
+                                                # 2789 rebound A* errors and a vehicle that flew through the
+                                                # field to 0.1 m altitude.
         'grid_map/local_map_margin': 10,
         'grid_map/ground_height': LaunchConfiguration('ground_height'),
         'grid_map/virtual_ceil_height': LaunchConfiguration('virtual_ceil_height'),

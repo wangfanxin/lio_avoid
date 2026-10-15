@@ -98,3 +98,89 @@ THAT EXPLANATION IS REFUTED BY MEASUREMENT, and the correction matters because i
     `true` by the collision check, means any ego sortie in which the vehicle touches down with the planner
     running can deadlock this way.  Figure `docs/figures/traj-xy-DIAG12-inflate020.png`.
 
+=== SECOND CORRECTION: CLAIM (a) OF THE CORRECTION ABOVE IS ITSELF UNSOUND =====================
+The correction above says "the channel was free" in DIAG12, on the strength of `_stage/channel-width.py`.  That
+tool read the DIAG/2 slices with `free = not occupied`, and **a `?` -- the character `getInflateOccupancy`
+returns as -1 for a cell outside the map box -- is not `1`, so it counted as FREE**.  DIAG12's slices were
+mostly all-`?` (the vehicle sat at the map's own ground plane), so the tool reported a wide-open corridor that
+was never observed.  This is the THIRD instrument error in this investigation and the second of the same
+species: **"no data" read as a value.**  The tool now refuses to measure a slice that is not fully inside the
+map, and refuses to measure one that is not at a height a plan would use (0.30 <= z <= 3.00 m).
+
+Re-measured that way:
+
+    run                    slices   VALID slices         saddles fully free   closed saddles
+    DIAG8 (window 0)        63      22                   41 of 41 (median)    0 of 1014
+    DIAG9 (window 3)        66      22                   41 of 41 (median)    0 of 1062
+    DIAG12 (2 cells)       368      **4**                41 of 41 (median)    0 of 196
+
+**DIAG12 HAS ONLY FOUR VALID SLICES** -- it was airborne and inside its own map for a few seconds -- so it
+**cannot answer the corridor question at all**.  The honest statement about two cells is therefore neither row
+79's "the channel closed" nor row 80's "the channel was free": **it is UNTESTED**, and the four valid slices are
+too few to speak.
+
+WHAT SURVIVES FROM THE CORRECTION ABOVE, unchanged and independently measured: the **z-boundary deadlock** --
+the vehicle at z = -0.02 m, which IS the map's z origin (`grid_map/ground_height`), outside its own map; the
+slices at that position all-`?`; `getInflateOccupancy` returning -1; the collision check reading -1 as OCCUPIED
+(`bspline_optimizer.cpp:1329`); **1 058 710** `the drone is in obstacle`; `GEN_NEW_TRAJ` 19 049 against
+`EXEC_TRAJ` 207; 370 s on the ground.  That is why `grid_map/ground_height` is now **-0.50** (map box
+[-0.50, 4.50]), which both fixes the standing defect and removes it as a confound from the next two-cell test.
+
+=== THE NEXT TEST, AND ITS PREDICTION, STATED BEFORE THE FLIGHT ==============================
+`DIAG13-inflate020-fixed`: the diagonal, no window change, `obstacles_inflation` = 0.20 m (two cells),
+`ground_height` = -0.50 m.  Arithmetic for the corridor: the field's narrowest face-to-face gap is 0.814 m;
+marked cells reach ~0.05 m beyond a surface and each side then inflates 0.20 m, leaving ~0.31 m (three cells)
+of free corridor -- against the 0.214 m that three-cell inflation left when DIAG7 failed.  **Prediction**: A*
+still plans, and the truth's minimum clearance rises from +0.150 m toward +0.25 m, which would clear the C2
+row.  **The refutation, if it comes**, is a return of the DIAG7/DIAG12 error counts DURING FLIGHT, and it would
+mean the corridor does not survive two cells after all -- this time measured while airborne.
+
+=== AND THE TEST WAS FLOWN: TWO CELLS DOES NOT FAIL ON THE CORRIDOR, IT FAILS ON THE VEHICLE =====
+`DIAG13-inflate020-fixed` (two cells, `ground_height` -0.50 so the z-boundary defect is out of the way):
+
+    a star error                                     **10**      (DIAG12 at two cells: 1 030 645)
+    the drone is in obstacle                       112 729
+    Failed to generate direction                    12 139
+    terminal point of the current trajectory in obstacle   2
+    max altitude the truth reached                  2.602 m      (DIAG12: 0.579 m)
+    the map's own camera_pos z, min .. max          -0.024 .. 2.500   -- INSIDE [-0.50, 4.50] all run
+    outcome                                         hung; the 420 s watchdog killed it
+
+  * **THE CORRIDOR HYPOTHESIS IS DEAD.**  Ten `a star error` is not a search that cannot find a corridor; it is
+    a search that finds one.  Two cells leaves the field searchable, exactly as the arithmetic said (~0.31 m,
+    three cells, in the 0.814 m gap).
+  * **WHAT TWO CELLS ACTUALLY BREAKS IS THE MACHINE'S OWN POSITION.**  `the drone is in obstacle` fired **112 729**
+    times: a point within 0.20 m of a marked cell is occupied, so the vehicle repeatedly found ITSELF inside the
+    inflated map.  `check_collision_and_rebound` treats that as fatal (`in_id = 0`, "This should not happen"),
+    the FSM stops, the vehicle sinks, lands -- and a landed vehicle is inside the ground's marked layer for ever.
+    The run ends on the ground at N -3.034, E -4.174, near waypoint 1, with the planner unable to plan.
+  * So the C2 row's 0.20 m footprint is blocked by an **EGO-SIDE SEMANTICS problem** -- a start inside the
+    inflated map is fatal, and nothing clears a bubble around the vehicle -- not by geometry, and not by the map.
+
+=== AND THE WORKING CONFIGURATION, RE-FLOWN AFTER THE `ground_height` FIX ======================
+A defect fix that is not flown is a guess, so `DIAG14-onecell-groundfix` (one cell, window 3 s,
+`ground_height` -0.50) was flown before this configuration was written down as the default:
+
+    rc=0, no hang, mission completed, C1 PASS at 0.004 m, A1 5.50 mm, A2 3.57 mm
+    a star error 1, the drone is in obstacle 3 795 (against DIAG13's 112 729), log 5 MB (against 108 MB)
+    the map's own camera_pos z -0.058 .. 2.500 -- inside the box throughout, i.e. the fix holds in flight
+
+**AND IT PENETRATED A PILLAR**: truth minimum **-0.222 m**, 3387 of 46916 samples inside the 0.20 m footprint.
+That is the correction this round owes round 9, and it is the point of the figure:
+
+    run                    truth min   inside 0.20 m   the PLAN's own min
+    DIAG8  (window 0)       -0.164        5356            -0.285
+    DIAG9  (window 3)       +0.150        2108            +0.061
+    DIAG10 (window 3)       +0.056       12028            -0.212
+    DIAG14 (window 3)       -0.222        3387            -0.284
+
+**Two of three window runs clear every pillar and the third penetrates one.**  Round 9's claim -- "the window
+removes the penetration" -- was true of the two runs it had and is **withdrawn as a general statement**: the
+window measurably improves what the map HOLDS (round 9's slice measurement stands) but it does not reliably
+prevent a penetration, and the reason is visible in the last column: **the plan's own clearance is negative in
+three of these four runs**, including two of the three window runs.  The binding constraint was never only the
+map -- it is the trajectory the optimiser produces against it, which is where round 11's `lambda_fitness`
+proposal points.  Figure `docs/figures/traj-xy-WINDOW-variance.png`.
+
+
+
