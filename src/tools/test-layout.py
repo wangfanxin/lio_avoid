@@ -45,6 +45,12 @@ NO_HELP = {
     "measure-rates2.py": "argv[1] is a run dir",
 }
 VENDORED = ("lio-fork-local", "quadrotor_msgs", "patches", "__pycache__")
+#: files that are NOT modules of this package even though they end in `.py`.  `planner/ego_on_lio.launch.py`
+#: lives here so that it is versioned with the stack it configures, but it is a ROS 2 launch description: it
+#: is COPIED into the ego checkout and imported there, under `launch`'s own rules, by
+#: `tools/install-ego-launch.py` -- which is the tool that checks it.  Importing it as
+#: `planner.ego_on_lio.launch` can only ever fail.
+NOT_MODULES = ("ego_on_lio.launch.py", "advanced_param.launch.py")
 
 
 def walk_modules():
@@ -54,6 +60,8 @@ def walk_modules():
             if not f.endswith(".py"):
                 continue
             rel = os.path.relpath(os.path.join(root, f), CODE)
+            if f in NOT_MODULES or f.endswith(".launch.py"):
+                continue
             mod = rel[:-3].replace("/", ".")
             if mod.endswith(".__init__"):
                 mod = mod[:-9]

@@ -144,9 +144,14 @@ Three more things a swapper must know, all read from this tree:
   `traj_server` is launched by `single_run_in_sim.launch.py:142-154` and `run_in_sim.launch.py:88-100`
   (and indirectly by the swarm files), but those also start ego's own simulator (`so3_quadrotor_simulator`,
   `so3_control`, `poscmd_2_odom`, `pcl_render_node`), which would fight ArduPilot for the same topics.
-  A swap must therefore start `ego_planner_node` + `traj_server` and NOT include `simulator.launch.py` — or
-  take the route `planner/ego_source.py` takes, which samples the B-spline itself and never runs
-  `traj_server`.  Both are legitimate; ours is the second.
+  **THIS IS NOW ANSWERED, NOT JUST DIAGNOSED**: this repository ships
+  **`src/planner/ego_on_lio.launch.py`**, which starts `ego_planner_node` and nothing else — no
+  `traj_server`, no simulator, no map generator, no swarm bridge — with our topic names, our map box and
+  our ceiling, and it is installed into the ego checkout by
+  **`src/tools/install-ego-launch.py`** (copy → `colcon build --symlink-install --packages-select
+  ego_planner` → check).  The route it takes is the SECOND one below: the contract is produced by
+  `planner/ego_source.py`, which samples the B-spline itself.  The `traj_server` route remains legitimate —
+  start it yourself, remap `position_cmd:=/plan/cmd`, and set `traj_server/time_forward: 1.0`.
 * **the planner's trajectory is a TIMED spline whose start is NOT the vehicle** — `reboundReplan`'s else
   branch resamples the previous trajectory from `t_cur` and never re-anchors to `start_pt`
   (`planner_manager.cpp:140-208`; `start_pt` is read only for the goal-proximity early-out at `:55` and the
@@ -170,19 +175,34 @@ sortie if it is missed:
 | no distance-to-obstacle query exists: occupancy is boolean, unknown reads as FREE, and the hard margin is the inflation radius | `grid_map.h:346-366`, grep for ESDF/SDF/distance in the tree returns nothing; `optimization/dist0` is a soft cost | a clearance claim comes from OUR world file and our C2 row, never from ego's map |
 | the "odom or depth lost" watchdog only arms when depth fusion is on, i.e. never in cloud-only mode | `grid_map.cpp:714-726` | ego has no way to notice that its map stopped updating: the supervisor's plan-silence gate is the only detector, which is another reason the adapter must keep publishing |
 
-A MINIMAL LAUNCH FOR EGO ON THIS STACK — the parameters that are decided by our world rather than by
-taste, all with the launch default it replaces:
+A MINIMAL LAUNCH FOR EGO ON THIS STACK — **written, and it is `src/planner/ego_on_lio.launch.py`**.  The
+parameters below are the ones decided by our world rather than by taste; every other parameter is upstream's
+own value, and the launch file says so in place.  Column two is the `advanced_param` default it replaces:
 
 | parameter | advanced_param default | set it to | why |
 |---|---|---|---|
 | `fsm/flight_type` | 2 (preset waypoints + `/traj_start_trigger`) | **1** (manual, one goal on `/move_base_simple/goal`) | our adapter owns the tour and sends one goal at a time; the trigger topic is hard-coded (`ego_replan_fsm.cpp:162`) |
 | `fsm/realworld_experiment` | False | **True** | `have_trigger_ = !flag_realworld_experiment_` (`ego_replan_fsm.cpp:35`): with False the FSM does not wait for a trigger and can start planning from the pad |
-| `grid_map/ground_height` | −0.01 | a few cm below the pad's z **in L** | the code forces `max_z = max(max_z, ground_height_)` (`grid_map.cpp:496,897`) and the launch's −0.01 assumes the pad sits at z≈0 of the odometry frame |
-| `grid_map/virtual_ceil_height` | 2.9 | our ceiling in L | written into the inflated map as an x-y plane (`grid_map.cpp:908-914`) |
-| `grid_map/map_size_x/y/z` | 42 / 30 / 5 m | the size of L we intend to use | the whole box is allocated at start-up (~94 MB per map, plus ~56 MB of A* pool) |
-| `manager/max_vel`, `manager/max_acc` | 2.0 / 3.0 | our own limits | propagated to `optimization/*` and `bspline/limit_*`; note they are SOFT penalties in the optimiser, not constraints |
-| `traj_server/time_forward` | C++ default **−1.0** (not set by advanced_param) | **1.0** | the yaw look-ahead point is `t_cur + time_forward_` (`traj_server.cpp:80`): at −1.0 the yaw comes from a direction one second in the PAST.  Only matters on the `traj_server` route, which this adapter does not take |
+| `grid_map/ground_height` | −0.01 | **−0.02** (a few cm below the pad's z **in L**) | the code forces `max_z = max(max_z, ground_height_)` (`grid_map.cpp:496,897`) and the launch's −0.01 assumes the pad sits at z≈0 of the odometry frame |
+| `grid_map/virtual_ceil_height` | 2.9 | **3.00** — our ceiling in L | written into the inflated map as an x-y plane (`grid_map.cpp:908-914`); above the 2.50 m mission altitude and below the 6.60 m geofence |
+| `grid_map/map_size_x/y/z` | 42 / 30 / 5 m | **16 / 16 / 5 m** — the size of L we use | the whole box is allocated at start-up (~94 MB per map, plus ~56 MB of A* pool for the upstream size), and the arena is ±6 m |
+| `grid_map/use_depth_filter`, `grid_map/pose_type` | True / 1 | **False / 0** | there is no camera: `pose_type` 1 builds a `message_filters` synchroniser that can never fire and `use_depth_filter` True arms a watchdog nothing feeds |
+| `manager/max_vel`, `manager/max_acc` | 2.0 / 3.0 | our own limits (`--max-vel`/`--max-acc` arguments) | propagated to `optimization/max_*` and `bspline/limit_*`; note they are SOFT penalties in the optimiser, not constraints |
+| `traj_server/time_forward` | C++ default **−1.0** (not set by advanced_param) | **1.0** | the yaw look-ahead point is `t_cur + time_forward_` (`traj_server.cpp:80`): at −1.0 the yaw comes from a direction one second in the PAST.  Only matters on the `traj_server` route, which this file does not take — so it is not set at all, and that is a decision |
 | `manager/drone_id` | 0 | keep ≥ 0 | `drone_id <= -1` switches the swarm topic name (`ego_replan_fsm.cpp:127-134`) |
+
+**HOW THE FILE IS CHECKED, AND WHY THAT IS NOT A FORMALITY.**  `src/tools/install-ego-launch.py` copies it
+into the ego checkout, runs `colcon build --symlink-install --packages-select ego_planner` (launch files
+there are INDIVIDUALLY symlinked, so a new one is invisible until the package is rebuilt), then checks every
+parameter name it sets against the list the NODE declares.  **A launch file that sets a parameter the node
+never declares does nothing at all, and says nothing** — the sortie simply flies a default.  That check found
+four real omissions in the first version of this file: upstream `advanced_param.launch.py` also sets
+`optimization/max_vel`, `optimization/max_acc` and the four `optimization/lambda_*` weights, and a file that
+leaves them out gets the C++ defaults instead.  MEASURED after the fix: **67 parameters set, 0 of them
+undeclared by the node (which declares 75)**, with the remaining eight at their declared defaults and each
+one named as a decision (`docs/metrics/ego-launch-20261016.txt`).  The node starts from this file — its own
+console reaches `[FSM]: state: INIT` and `wait for goal or trigger` — and **nothing beyond that is claimed:
+no cloud, no odometry, no goal, no flight.**
 
 And one package to ignore entirely: `rosmsg_tcp_bridge` is a multi-machine swarm relay (TCP 8080 ring + UDP
 8081 broadcast), it is not launched by any launch file in that tree, it is not even built in `planner_ws`,
@@ -209,6 +229,13 @@ a claim about one adapter.
   does is asserted offline — but **"ego flies Mission A" is NOT demonstrated.**
 * Mission B's own record stands as it was written (`docs/metrics/ego-*.txt`, `phaseB-*.txt`): the anchoring
   defect, the clock defect, the map pool exhaustion.  Nothing in this file supersedes those measurements.
+* **The launch file is installed and the node starts from it; that is the whole of what is proven about it.**
+  Nothing has fed it a cloud or an odometry message, it has been given no goal, and it has produced no
+  B-spline on this stack.  Two things stand between here and a sortie, and neither is a launch parameter:
+  a **decimated, RELIABLE** publisher for `/lio/cloud_world` (the map's whole update runs inline in the cloud
+  callback, and its subscription is RELIABLE, so the raw registered scan must not be forwarded as-is), and a
+  way for `tools/run-mission.sh` to start the SECOND process an ego sortie needs, since its planner slot
+  starts exactly one.  Until those exist, `PLANNER=ego` selects the adapter and nothing else.
 * The acceptance rows (A1–A4, B1–B3, C1, C2) are defined against a commanded rectangle and a leg phase log.
   A planner that does not fly a rectangle can be swapped in, but those rows then measure something else —
   which is why a swap must state which rows still apply.

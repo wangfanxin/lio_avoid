@@ -1,0 +1,255 @@
+EGO ON THIS STACK -- the launch file, installed, parsed, STARTED, and its parameters checked
+2026-10-15 14:00:31Z
+
+WHAT THIS IS.  docs/PLANNERS.md section 4.2 said a real ego sortie was blocked on a launch file that
+does not exist: advanced_param.launch.py starts only ego_planner_node and produces no PositionCommand,
+and the launch files that DO start traj_server also start ego's own simulator, which would fight
+ArduPilot for the same topics.  This round writes that launch file --
+  src/planner/plan_manage/launch/ego_on_lio.launch.py   (in the ego checkout)
+-- and checks it as far as it can be checked WITHOUT FLYING:
+  1. python syntax;
+  2. the LaunchDescription itself builds under ROS 2 Humble (13 arguments, 1 LogInfo, 1 Node);
+  3. it installs into planner_ws (launch files are individually symlinked, so a new one needs a build);
+  4. 'ros2 launch ego_planner ego_on_lio.launch.py --show-args' PARSES it;
+  5. THE NODE STARTS FROM IT -- its own console is below: it reaches '[FSM]: state: INIT' and
+     'wait for goal or trigger', which is exactly right for flight_type 1 with nothing publishing;
+  6. EVERY parameter this file sets is a parameter the NODE DECLARES (a launch file that names a
+     parameter the node never declares does nothing at all, and says nothing).
+
+WHAT IS *NOT* CLAIMED: no flight, no cloud, no odometry, no goal.  What is proven is that the launch
+file is well formed, that it starts the planner on this stack's ROS 2, and that every name in it is a
+name the node answers to.
+
+=== 1-4: syntax, the launch description, the workspace install, and ros2's own parse ===========
+'/mnt/d/distill_self/_stage/ego_on_lio.launch.py' -> '/home/fanxin/lio_avoid/src/ego-planner-swarm/src/planner/plan_manage/launch/ego_on_lio.launch.py'
+
+############ 1. python syntax
+py_compile OK
+
+############ 2. does the launch DESCRIPTION build, with ROS Humble loaded?
+launch description built: 15 entities {'DeclareLaunchArgument': 13, 'LogInfo': 1, 'Node': 1}
+arguments: bspline_topic=[<launch.substitutions.text_substitution.TextSubstitution object at 0x72d8cd5eb5b0>], cloud_topic=[<launch.substitutions.text_substitution.TextSubstitution object at 0x72d8cd5eb520>], drone_id=[<launch.substitutions.text_substitution.TextSubstitution object at 0x72d8cd5eb280>], ground_height=[<launch.substitutions.text_substitution.TextSubstitution object at 0x72d8cd5eb7f0>], map_size_x=[<launch.substitutions.text_substitution.TextSubstitution object at 0x72d8cd5eb640>], map_size_y=[<launch.substitutions.text_substitution.TextSubstitution object at 0x72d8cd5eb6d0>], map_size_z=[<launch.substitutions.text_substitution.TextSubstitution object at 0x72d8cd5eb760>], max_acc=[<launch.substitutions.text_substitution.TextSubstitution object at 0x72d8cd5eb9a0>], max_vel=[<launch.substitutions.text_substitution.TextSubstitution object at 0x72d8cd5eb910>], odom_topic=[<launch.substitutions.text_substitution.TextSubstitution object at 0x72d8cd5eb490>], odom_vel_topic=[<launch.substitutions.text_substitution.TextSubstitution object at 0x72d8cd5eb430>], planning_horizon=[<launch.substitutions.text_substitution.TextSubstitution object at 0x72d8cd5eba30>], virtual_ceil_height=[<launch.substitutions.text_substitution.TextSubstitution object at 0x72d8cd5eb880>]
+rc=0
+
+############ 3. install it into the workspace (launch files are individually symlinked)
+colcon rc=0  (tail)
+Starting >>> ego_planner
+Finished <<< ego_planner [0.57s]
+
+Summary: 1 package finished [0.70s]
+lrwxrwxrwx 1 fanxin fanxin 77 Oct 15 21:54 /home/fanxin/lio_avoid/planner_ws/install/ego_planner/share/ego_planner/launch/ego_on_lio.launch.py -> /home/fanxin/lio_avoid/planner_ws/src/plan_manage/launch/ego_on_lio.launch.py
+
+############ 4. ros2 launch must at least PARSE it (--show-args does not start anything)
+Arguments (pass arguments as '<name>:=<value>'):
+
+    'drone_id':
+        must be >= 0: a negative id switches the swarm topic name
+        (default: '0')
+
+    'odom_vel_topic':
+        10 Hz, pose AND the twist the FSM needs for its >0.1 m/s gate
+        (default: '/lio/odom')
+
+    'odom_topic':
+        200 Hz, pose only: all the MAP reads
+        (default: '/lio/robo/odom')
+
+    'cloud_topic':
+        the registered scan, ALREADY in L (no TF is applied)
+        (default: '/lio/cloud_world')
+
+    'bspline_topic':
+        what ego publishes and our adapter samples
+        (default: 'planning/bspline')
+
+    'map_size_x':
+        the map box is FIXED, centred on the L origin
+        (default: '16.0')
+
+    'map_size_y':
+        -- and outside it reads as OCCUPIED
+        (default: '16.0')
+
+rc=0
+
+=== 5: the node's console, from the launch file, with nothing publishing ======================
+the node declared these parameters:
+        fsm/emergency_time
+        fsm/fail_safe
+        fsm/flight_type
+        fsm/planning_horizen_time
+        fsm/planning_horizon
+        fsm/realworld_experiment
+        fsm/thresh_no_replan_meter
+        fsm/thresh_replan_time
+        fsm/waypoint0_dwell_s
+        fsm/waypoint0_x
+        fsm/waypoint0_y
+        fsm/waypoint0_z
+        fsm/waypoint_advance_m
+        fsm/waypoint_loop
+        fsm/waypoint_num
+        fsm/waypoint_start_alt
+        grid_map/cx
+        grid_map/cy
+        grid_map/depth_filter_margin
+        grid_map/depth_filter_maxdist
+        grid_map/depth_filter_mindist
+        grid_map/depth_filter_tolerance
+        grid_map/frame_id
+        grid_map/fx
+        grid_map/fy
+        grid_map/ground_height
+        grid_map/k_depth_scaling_factor
+        grid_map/local_map_margin
+        grid_map/local_update_range_x
+        grid_map/local_update_range_y
+        grid_map/local_update_range_z
+        grid_map/map_size_x
+        grid_map/map_size_y
+        grid_map/map_size_z
+        grid_map/max_ray_length
+        grid_map/min_ray_length
+        grid_map/obstacles_inflation
+        grid_map/odom_depth_timeout
+        grid_map/p_hit
+        grid_map/p_max
+        grid_map/p_min
+        grid_map/p_miss
+        grid_map/p_occ
+        grid_map/pose_type
+        grid_map/resolution
+        grid_map/show_occ_time
+        grid_map/skip_pixel
+        grid_map/use_depth_filter
+        grid_map/virtual_ceil_height
+        grid_map/virtual_ceil_yn
+        grid_map/virtual_ceil_yp
+        grid_map/visualization_truncate_height
+        manager/control_points_distance
+        manager/drone_id
+        manager/feasibility_tolerance
+        manager/max_acc
+        manager/max_jerk
+        manager/max_vel
+        manager/planning_horizon
+        manager/use_distinctive_trajs
+        optimization/dist0
+        optimization/lambda_collision
+        optimization/lambda_feasibility
+        optimization/lambda_fitness
+        optimization/lambda_smooth
+        optimization/max_acc
+        optimization/max_vel
+        optimization/order
+        optimization/swarm_clearance
+      bspline/limit_acc
+      bspline/limit_ratio
+      bspline/limit_vel
+      fsm/emergency_time
+      fsm/fail_safe
+      fsm/flight_type
+      fsm/planning_horizen_time
+      fsm/planning_horizon
+      fsm/realworld_experiment
+      fsm/thresh_no_replan_meter
+      fsm/thresh_replan_time
+      fsm/waypoint0_x
+      fsm/waypoint_num
+      grid_map/cx
+      grid_map/cy
+      grid_map/depth_filter_margin
+      grid_map/depth_filter_maxdist
+      grid_map/depth_filter_mindist
+      grid_map/depth_filter_tolerance
+      grid_map/frame_id
+      grid_map/fx
+      grid_map/fy
+      grid_map/ground_height
+      grid_map/k_depth_scaling_factor
+      grid_map/local_map_margin
+      grid_map/local_update_range_x
+      grid_map/local_update_range_y
+      grid_map/local_update_range_z
+      grid_map/map_size_x
+      grid_map/map_size_y
+      grid_map/map_size_z
+      grid_map/max_ray_length
+      grid_map/min_ray_length
+      grid_map/obstacles_inflation
+      grid_map/p_hit
+      grid_map/p_max
+      grid_map/p_min
+      grid_map/p_miss
+      grid_map/p_occ
+      grid_map/pose_type
+      grid_map/resolution
+      grid_map/show_occ_time
+      grid_map/skip_pixel
+      grid_map/use_depth_filter
+      grid_map/virtual_ceil_height
+      grid_map/visualization_truncate_height
+      manager/control_points_distance
+      manager/drone_id
+      manager/feasibility_tolerance
+      manager/max_acc
+      manager/max_jerk
+      manager/max_vel
+      manager/planning_horizon
+      manager/use_distinctive_trajs
+      optimization/dist0
+      optimization/lambda_collision
+      optimization/lambda_feasibility
+      optimization/lambda_fitness
+      optimization/lambda_smooth
+      optimization/max_acc
+      optimization/max_vel
+      optimization/swarm_clearance
+      prediction/lambda
+      prediction/obj_num
+      prediction/predict_rate
+      fsm/waypoint0_dwell_s
+      fsm/waypoint0_y
+      fsm/waypoint0_z
+      fsm/waypoint_advance_m
+      fsm/waypoint_loop
+      fsm/waypoint_start_alt
+      grid_map/odom_depth_timeout
+      grid_map/virtual_ceil_yn
+      grid_map/virtual_ceil_yp
+      optimization/order
+
+its console (the launch file's own LogInfo first, then the FSM):
+   [INFO] [launch]: All log files can be found below /home/fanxin/.ros/log/2026-10-15-22-00-33-747015-fanxin-128422
+   [INFO] [launch]: Default logging verbosity is set to INFO
+   [INFO] [launch.user]: ego_on_lio: ONE node (ego_planner_node).  NOT started, on purpose: traj_server (the contract is produced by src/planner/ego_source.py instead -- see this file's header), ego's own simulator, map_generator, and rosmsg_tcp_bridge.  Wiring: odom_world <- /lio/odom (the twist the FSM gate needs); grid_map/odom <- /lio/robo/odom (pose only); grid_map/cloud <- /lio/cloud_world (must be in L: there is no TF).
+   [INFO] [ego_planner_node-1]: process started with pid [128423]
+   ...
+   [WARNING] [launch]: user interrupted with ctrl-c (SIGINT)
+   [INFO] [ego_planner_node-1]: sending signal 'SIGINT' to process[ego_planner_node-1]
+   [ego_planner_node-1] [INFO] [1792072863.586714224] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+   [ERROR] [ego_planner_node-1]: process has died [pid 128423, exit code -2, cmd '/home/fanxin/lio_avoid/planner_ws/install/ego_planner/lib/ego_planner/ego_planner_node --ros-args -r __node:=drone_0_ego_planner_node --params-file /tmp/launch_params_8jxl11ka -r odom_world:=/lio/odom -r grid_map/odom:=/lio/robo/odom -r grid_map/cloud:=/lio/cloud_world -r planning/bspline:=planning/bspline -r grid_map/occupancy_inflate:=drone_0_grid/grid_map/occupancy_inflate -r goal_point:=drone_0_plan_vis/goal_point -r global_list:=drone_0_plan_vis/global_list -r init_list:=drone_0_plan_vis/init_list -r optimal_list:=drone_0_plan_vis/optimal_list -r a_star_list:=drone_0_plan_vis/a_star_list'].
+
+=== 6: the comparison, in BOTH directions ====================================================
+launch file sets 67 parameter(s); the node declares 75
+
+SET BY THE LAUNCH FILE AND **NOT DECLARED BY THE NODE** (0) -- each one would do nothing:
+
+DECLARED BUT NOT SET BY US (8).  Each is a NAMED decision, not an oversight -- and the list is short on purpose:
+   fsm/waypoint0_dwell_s
+   fsm/waypoint_advance_m
+   fsm/waypoint_loop
+   fsm/waypoint_start_alt
+   grid_map/odom_depth_timeout
+   grid_map/virtual_ceil_yn
+   grid_map/virtual_ceil_yp
+   optimization/order
+
+   of those: the four `fsm/waypoint*` entries belong to the in-tree patch's waypoint sequencer, which
+   `fsm/flight_type 1` (MANUAL_TARGET) never enters; `grid_map/odom_depth_timeout` and the two
+   `virtual_ceil_y*` switches are on the DEPTH path, which is off; and `optimization/order` is not
+   set by `advanced_param.launch.py` either -- so leaving it keeps parity with the upstream file.
+compare rc=0
+
+=== the file, as installed ===================================================================
+0c7fdb8a8d80144c90c70e8012c75890  /home/fanxin/lio_avoid/src/ego-planner-swarm/src/planner/plan_manage/launch/ego_on_lio.launch.py
