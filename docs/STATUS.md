@@ -57,20 +57,27 @@ the metrics file that carries it is named.
 | 38 | the deletion did not break the recorder chain -- caught by verifying, not by assuming | `tools/record-traj.py` imported `planner/ego_adapter.py` for its pillar clearance, so deleting the adapter would have killed the recorder at start-up and left the flight with no `traj.csv`.  The rule now lives once, in `tools/world-info.py::PillarWorld`, imported by every tool that prints a distance.  Offline check: a point 0.50 m from pillar 0 reads **0.500000 m** through all entry points, and the accepted sortie's own published plan, converted L->W with the run's calibration, has min clearance **0.6000 m** -- the world's designed worst case |
 | 39 | **the last flight with no ego node: the square, cleanly** | `logs/missionA-RECT1-noego`, `WORLD=worlds/pillars.yaml`, `MISSION_PARM=phase_a_mission_fast.parm`, `EKF_PARM=ekf_trust_lio.parm`, `ALT_MODE=lio`, `NAV_SOURCE=lio`, `GEOFENCE_M=6.60`.  **A1 4.40 mm, A2 5.96 mm, A4 20.72 mm; B3 all four corners 0.8-7.2 mm; C1 0.022 m; C2 minimum pillar clearance 0.547 m with 0 of 28425 samples inside the 0.20 m footprint [PASS]; B4 landed.**  A3 FAILs on its wander bound (E 0.527 / N 0.540 / U 2.049 mm against <= 2.00) -- reported, and the same on every flight of this airframe; B1 FAILs at E 2.151 m against <= 2.10 (the assertion that the last corner is exactly the first, flown as a 5th leg) |
 | 40 | **the corner hold: implemented, flown three times, NOT yet demonstrated** | the owner's requirement is a 5 s hover at every corner (`RECT_HOLD_S=5`).  Measured from the truth tap by `tools/dwell-audit.py`: **1 of 4 corners hovered >= 5 s in each of RECT1-noego, RECT2-hold5 and RECT3-hold5** -- and the producer's own log claimed three holds in RECT3 while the track flew only pad -> c2 -> c3.  One defect was found and fixed on the way (`2d60a65`: `densify()` closes the loop it is given, so reusing it per leg made every "leg" an out-and-back c1->c2->c1 -- RECT2's B1 reported an N extent of **0.074 m** over a 7.7 s route, i.e. it never left the first corner, which makes its clean C2 trivial rather than evidence).  RECT3 flew after that fix and still reached only c2 and c3 (B2 legs 2.613 m and 1.196 m long, corners c1 318 mm / c4 1501 mm away) |
+| 41 | **the cleaned pipeline flies the square: `RECT6-clean-square`, rc=0** | `logs/missionA-RECT6-clean-square`, the same configuration as row 39 with the corner hold explicitly OFF (`RECT_HOLD_S=0`).  **5 leg phases, all five corner visits reached (3.6 / 0.4 / 4.1 / 5.6 / 3.6 mm); A1 4.57 mm, A2 6.42 mm, A4 21.19 mm; B2 4 of 5 legs (leg 4, the second long one, 124.6 mm); C1 0.031 m; C2 minimum pillar clearance 0.552 m with 0 of 28214 samples inside the 0.20 m footprint [PASS]; B4 landed; fsm rc=0, metrics rc=0.**  Beside row 39's numbers (4.40 / 5.96 / 20.72, 0.547 m, 0 of 28425) the two flights are the same flight: same passes, same three known failures (B1's East extent 2.155 vs 2.151 m against <= 2.10, B2's leg 4, A3's wander bound), which is what "the cleanup changed nothing measurable" means |
+| 42 | **the world file's frozen `hold_s: 3.0` makes the DEFAULT configuration fly one leg, not the square** | `worlds/pillars.yaml` carries `mission.hold_s: 3.0` and is FROZEN; commit `c33e852` made `planner/rectangle_source.py` READ it, so with no `--hold-s` the producer publishes **one leg per message**.  The FSM reads the published path ONCE (`legs()`), so it flies the leg in hand -- **2 corners** -- and lands: MEASURED on `RECT4-clean` (5.0 s dwell, 2 leg phases) and `RECT5-clean` (the world's 3.0 s dwell, 2 leg phases), both rc=0, C2 PASS, B4 landed, and both having visited only c2 and c3 while the producer logged all four legs.  Every flight between `c33e852` and this row (RECT2/RECT3/RECT4/RECT5) is in that mode; RECT1-noego (07:40, before the commit) is not, which is why it is the square.  This is a defect of the corner-hold design, NOT of the 2026-10-15 cleanup -- and it means the tree cannot fly the square in its default configuration until either the FSM re-reads the path per leg or a world with `hold_s: 0` is used |
 
 ## Next, in order
 
-1. **Fly the corner hold again, from the cleaned pipeline, and measure the dwell from the tap.**  The next
-   flight is `RECT4-clean` (`_stage/rect4-clean-fly.sh`): same configuration as RECT1-noego plus
-   `RECT_HOLD_S=5`.  It must show **C2 = 0 samples inside the 0.20 m footprint** and **B4 landed** (the
-   cleanup's acceptance), and the dwell audit must say how many of the 4 corners were actually hovered.
-   If the corners are still missed, the legs must advance on ARRIVAL rather than on the producer's timer --
-   that is the decision `tools/dwell-audit.py` was written to force.
-2. **B2's turning legs** (39 of 50): the measured cause is a lightly damped lateral response at 0.25 m/s;
-   the candidates are a velocity feed-forward into the corner and a slower corner approach.
-3. **Re-run the frozen batch after any change to the flight code**, so the mission-A numbers keep their
+1. **Make the corner hold follow the whole square, then measure the dwell from the tap.**  The blocker is
+   now exact (row 42): the producer publishes one leg per message and the FSM reads the path once, so the
+   hold mode flies two corners and lands.  Either `legs()` re-reads the published path when a new one
+   arrives, or the hold moves into the FSM (one message per leg is the producer's contract either way).
+   `tools/dwell-audit.py` is what will judge it: 4 of 4 corners hovered >= 5 s, measured on `tap.csv`.
+   **Until then, fly the square with `RECT_HOLD_S=0`** (row 41) -- that configuration is verified and is the
+   one the acceptance numbers come from.
+2. **B2's turning legs** (4 of 5 in the last two flights; 39 of 50 in the frozen batch): the measured cause
+   is a lightly damped lateral response at 0.25 m/s; the candidates are a velocity feed-forward into the
+   corner and a slower corner approach.
+3. **B1's East extent** (2.155 m against <= 2.10 on both of the last two flights, i.e. the same failure as
+   the frozen batch's 4-of-10 legacy bound): the 5th "corner" is the closing point, so the route window
+   includes the return to corner 1 -- the same windowing question row 34 answered for the North axis.
+4. **Re-run the frozen batch after any change to the flight code**, so the mission-A numbers keep their
    denominators: `tools/run-mission-batch.sh 10` + `tools/batch-summary.py`.
-4. **`mavros_impl` is written and unflown** (`BRIDGE=mavlink` is the flown path).  It is the one half of the
+5. **`mavros_impl` is written and unflown** (`BRIDGE=mavlink` is the flown path).  It is the one half of the
    transport interface with no flight behind it.
 
 ## Open questions, and the things kept for a decision
