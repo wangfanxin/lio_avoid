@@ -1,0 +1,85 @@
+CRITERION 4, WITNESSED: THE ABORT PATH WITH THE EGO PLAN BOX, AND THE RULE THAT KEEPS SILENCE AND
+COMPLETION APART
+2026-10-16   HEAD cdec1b5.  Run: `logs/missionA-DIAG11-kill-plan-ego` (and, for the other direction,
+             `logs/missionA-DIAG9-window3`, `logs/missionA-DIAG10-window3-repro`).
+
+=== THE BENCH =================================================================================
+`_stage/ego-kill-plan.sh`, which is `_stage/f2-kill-bench.sh`'s (`RECT25-kill-plan`) method moved to this
+planner: the diagonal is flown with `PLANNER=ego` and `EGO_CLOUD_WINDOW=3.0`, the script waits for the
+supervisor to say the plan box is talking, waits 8 s more, and then kills it.  NOTHING IS KILLED BY NAME: the
+PID is the unique `pgrep -f 'planner/ego_source.py'` match, the whole matched command line is printed to the log
+before anything is touched, and the count must be exactly 1 or the script refuses.  The only injected fault is
+the silence.
+
+The kill, from the log:
+
+    239445 python3 /mnt/d/distill_self/lio_avoid/src/planner/ego_source.py --world .../worlds/diagonal.yaml
+           --calib-file .../calib.json --hold-s 5.0 --arrive-m 0.30
+    plan-box matches: 1
+    KILLING the plan box, pid 239445 (the unique match; nothing else is touched)
+
+=== WHAT THE SUPERVISOR DID, IN ITS OWN WORDS =================================================
+    [  12.83] armed; landed_state=1
+    [  12.83] phase -> takeoff
+    [  17.57] phase -> hold
+    [  20.62] phase -> leg1
+    [  31.90] phase -> abort
+    [  31.90] ABORT: THE PLAN BOX HAS STOPPED TALKING: nothing on /plan/cmd for 3.0 s (limit 3.0 s) after 534
+              messages, trajectory_id 1 -- a plan box that is DONE says so in the message (trajectory_flag =
+              COMPLETED); SILENCE IS NOT COMPLETION
+    [  31.90] phase -> land
+    [  36.95] landed: armed=False mode=LAND
+    [  36.95] phase -> done
+
+  * NAMED REASON: yes -- the plan-silence gate, with the numbers it measured (534 messages, trajectory_id 1).
+  * AN `abort` PHASE: `phase.csv` reads `preflight takeoff hold leg1 abort land done` -- and that phase is the
+    thing the pre-F2 code could not produce, because a dead plan box and a finished tour were the same fact.
+  * IT LANDED: the supervisor commanded LAND, the bridge relay DISABLED after 717 setpoints because the FCU
+    left GUIDED ("the plan is off the wire"), and the FCU's last words are `Initialising ArduPilot | Arming
+    motors | SIM Hit ground at 0.639375 m/s | Disarming motors`.  The truth's own altitude ends at 0.10 m and
+    the vehicle came down essentially where the stream died: the last `/plan/cmd` puts it at W(E -2.141,
+    N -2.571) at 0.36 m, and it landed at W(E -2.135, N -2.571) -- **6 mm away**, i.e. it stopped and descended
+    in place rather than wandering or falling.
+
+=== AND THE RULE HOLDS IN BOTH DIRECTIONS, ON THE SAME STACK ===================================
+Criterion 4 asks that "the stream keeps talking after COMPLETED" not be broken.  A single abort proves nothing
+on its own -- a supervisor that aborts on every finished tour would produce the same log.  So the other
+direction is read off the two runs that COMPLETED the tour:
+
+    run                    phases as flown                          abort?   bridge's final plan_age
+    DIAG9-window3          preflight takeoff hold leg1 leg2 land done  NONE   0.00 s  (still talking)
+    DIAG10-window3-repro   preflight takeoff hold leg1 leg2 land done  NONE   0.00 s  (still talking)
+    DIAG11-kill-plan-ego   preflight takeoff hold leg1 ABORT land done NAMED  8.20 s  (silent)
+
+`plan_age` in the bridge's shutdown line is the age of the last `/plan/cmd` message when the sortie ended: 0.00 s
+means the plan box was still publishing at the end, 8.20 s means the stream had gone quiet.  Both completed runs
+also end with the adapter's own line -- `TOUR COMPLETE -- the stream now carries trajectory_flag = COMPLETED and
+KEEPS TALKING (it does not stop asking for more)` -- and neither produced an `abort` phase.  **A finished tour
+and a dead box are different facts, and the supervisor tells them apart exactly as the F2 design requires.**
+
+=== AN INSTRUMENT NOTE, FOUND BY GETTING IT WRONG =============================================
+The first version of this round's figure marked the kill point as "the last `/plan/cmd` row", and it landed on
+the final truth sample with the vehicle already on the ground.  Two separate reasons, both worth recording:
+  * the trajectory recorder writes ONE FINAL ROW at shutdown, 4.580 s after the last real command (measured),
+    so "the last row" is not "the last message";
+  * **the two recorders do not share a clock**: `tap.csv`'s `t_us` runs 34153..54904696 (boot-relative) while
+    `traj.csv`'s runs 1792082181016465..1792082211736758 (epoch).  Matching them by timestamp is meaningless.
+The figure now places the kill by TIME-FROM-THE-END (both recorders are stopped together by the harness), which
+is honest about what is actually known.  No earlier measurement is affected: every cross-analysis in this
+project matches truth to plan by POSITION or by the world file, never by comparing those two clocks.
+
+=== WHAT IS NOT CLAIMED =======================================================================
+  * The touchdown was FIRM: the FCU reports `SIM Hit ground at 0.639375 m/s`.  It is a landing and a disarm,
+    not a gentle one, and the abort happened during `leg1` at 0.88 m altitude -- the lowest and shortest abort
+    this mission can produce, not a worst case.
+  * The abort is on the DIAGONAL mission.  Mission A's five-waypoint route has not been aborted mid-flight;
+    the supervisor's gates do not depend on the mission, but that is an argument, not a measurement.
+  * The plan box was killed with SIGKILL, which is the harshest form of silence.  A box that is alive but
+    wedged (the `--stall-topic` case, which the FSM tooling can produce) is a different shape of the same gate
+    and is not exercised here.
+
+=== FILES =====================================================================================
+  figure  docs/figures/traj-xy-DIAG11-kill-plan-ego.png
+          sha256 9adc0357703b9f3ad665261c9e1901c3de3f50ae380f686a7ac8a1d1c6b03d53
+  bench   _stage/ego-kill-plan.sh   (the kill, the watchdog, and the verdict block)
+  check   _stage/abort-rule-check.sh (both directions in one pass)

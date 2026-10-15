@@ -109,20 +109,23 @@ def generate_launch_description():
         'grid_map/local_update_range_x': 5.5,
         'grid_map/local_update_range_y': 5.5,
         'grid_map/local_update_range_z': 4.5,
-        'grid_map/obstacles_inflation': 0.099,   # ONE VOXEL, and it is UPSTREAM'S OWN VALUE, not a shortcut of
-                                                # ours: `advanced_param.launch.py:148` sets exactly 0.099.  So
-                                                # this is the number ego-planner-swarm was designed around, and
-                                                # the obstacle standoff is meant to come from somewhere else --
-                                                # `check_collision_and_rebound()` re-routing a colliding
-                                                # B-spline through A* with a 0.5 m (`optimization/dist0`)
-                                                # standoff.  Row 74 tried 0.30 instead, on the arithmetic that
-                                                # a channel of face-to-face gap g is g - 2*inflation wide and
-                                                # this field's narrowest gap is 0.814 m (so 0.30 leaves 0.214 m
-                                                # and 0.40 closes it).  IT FAILED: 2789 rebound A* errors in
-                                                # one crossing, the trailing 2/3 of the trajectory never
-                                                # replanned (316 670 'terminal point in obstacle'), and the
-                                                # vehicle flew through the field to a 0.1 m altitude.  Inflation
-                                                # is NOT the lever here; see STATUS rows 74-75.
+        'grid_map/obstacles_inflation': 0.099,   # ONE VOXEL, and the budget is now measured at BOTH ends:
+                                                #   * upstream's own value is 0.099 (`advanced_param.launch.py:148`),
+                                                #     i.e. `inf_step = ceil(0.099/0.1) = 1` cell -- the smallest a
+                                                #     0.10 m map can express;
+                                                #   * TWO cells (0.20 m, DIAG12) collapses the search: **1 030 645**
+                                                #     `a star error` and 1 058 710 `the drone is in obstacle` in one
+                                                #     crossing, a 646 MB log, and the 420 s watchdog killed the
+                                                #     sortie;
+                                                #   * THREE cells (0.30 m, DIAG7) collapses it the same way: 2789
+                                                #     rebound A* errors, 316 670 'terminal point in obstacle'.
+                                                # The reason two cells is worse than three in that count is the RELAY
+                                                # WINDOW: `cloud_relay.py --window` already thickens the map with
+                                                # the union of recent scans, so the inflation budget must SHRINK,
+                                                # not grow.  **There is no value between 1 and 2 cells**, so the
+                                                # map cannot supply the C2 row's 0.20 m footprint; the margin has to
+                                                # come from the plan itself.  See STATUS rows 74 and 79 and
+                                                # `docs/metrics/ego-margin-budget-20261016.txt`.
         'grid_map/local_map_margin': 10,
         'grid_map/ground_height': LaunchConfiguration('ground_height'),
         'grid_map/virtual_ceil_height': LaunchConfiguration('virtual_ceil_height'),

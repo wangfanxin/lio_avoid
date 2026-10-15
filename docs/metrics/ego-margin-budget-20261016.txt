@@ -1,0 +1,66 @@
+THE MARGIN BUDGET, MEASURED AT BOTH ENDS: THE MAP CANNOT SUPPLY THE C2 FOOTPRINT, AND THE GAP IS IN THE PLAN
+2026-10-16   HEAD cdec1b5.  Runs: `DIAG12-inflate020` (refuted), `DIAG8/9/10` (re-read for the plan's own
+             clearance).  Follows `docs/metrics/cloud-window-avoidance-20261016.txt`.
+
+=== WHY THE MARGIN WAS PUSHED AT ALL ==========================================================
+The C2 row asks for **no sample within 0.20 m of a pillar surface**.  After the relay window removed the
+penetration (truth minimum -0.164 m -> +0.150 and +0.056 m over two runs), the margin was the remaining gap, and
+`grid_map/obstacles_inflation` is the only HARD margin that map has -- its distance terms are a swarm separation
+cost that is empty for one vehicle, and it has no ESDF and no distance query at all.
+
+=== AND IT IS NOW EXHAUSTED, AT BOTH ENDS =====================================================
+    1 cell (0.099 m, upstream's own value)   the crossing clears every pillar; margin +0.056 .. +0.150 m
+    2 cells (0.200 m, DIAG12, just flown)    **1 030 645** `a star error`
+                                             **1 058 710** `the drone is in obstacle`
+                                             2032 `Failed to generate direction`, a **646 MB** planner log
+                                             truth minimum -0.031 m, 90.2% of samples inside the 0.20 m band
+                                             the 420 s WATCHDOG killed the sortie (rc=143, hung=1)
+    3 cells (0.300 m, DIAG7)                 2789 `a star error`, 316 670 'terminal point in obstacle',
+                                             the vehicle flew through the field to 0.1 m altitude
+
+**TWO CELLS ARE NOT BETWEEN ONE AND THREE -- THERE IS NO VALUE BETWEEN THEM.**  `inf_step =
+ceil(obstacles_inflation / 0.1)`, so 0.100 and 0.099 are one cell and two cells, and nothing in between exists.
+Two cells is catastrophically worse than three in the error counts, and the reason is the interaction with the
+previous round's fix: **the relay window already thickens the map** (it unions recent scans, which is what makes
+the map hold an obstacle through the approach), so the inflation budget has to SHRINK, not grow.  The two fixes
+are not independent, and this round measured the sign of the interaction by breaking it.
+
+So the launch file is back to 0.099 and carries the whole budget beside the parameter, and **the map cannot
+deliver the C2 row's 0.20 m footprint.**
+
+=== SO WHERE IS THE REMAINING GAP?  IN THE PLAN, AND THE COLUMN WAS ALREADY BEING RECORDED =====
+`tools/record-traj.py` writes `clr_m` -- the PLAN's own minimum distance to a pillar surface -- for every
+published `/plan/cmd` message.  Read across the four crossings:
+
+    run                 plan points   clr min    clr p1    clr p5   clr median
+    DIAG8 (window 0)           6327    -0.285    -0.110    +0.110      +0.431
+    DIAG9 (window 3)           6727    **+0.061**  +0.158    +0.212      +0.438
+    DIAG10 (window 3)          7425    **-0.212**  +0.055    +0.120      +0.432
+    DIAG12 (2 cells, hung)    39758    -0.293    -0.160    +0.020      +0.103
+
+    run                 plan clr min   truth min   who owns the gap
+    DIAG8                    -0.285      -0.164     THE PLANNER
+    DIAG9                    +0.061      +0.150     THE PLANNER (its plan is inside the footprint the truth clears)
+    DIAG10                   -0.212      +0.056     THE PLANNER
+    DIAG12 (hung)            -0.293      -0.031     THE PLANNER
+
+**The planner's own published plan still contains points inside a pillar on three of the four runs** -- including
+DIAG9, where the aircraft itself never came closer than +0.150 m.  So the situation is now the mirror image of
+round 7's: the PLAN is the pessimistic party, the aircraft is flying better than the plan it was given, and the
+C2 row is judging the aircraft.  That also explains why the window's benefit did not translate into the plan's
+own margin: the window changed what the map HOLDS (measured, +0.150 m of real clearance), while the optimiser
+still spends that knowledge on a smoother B-spline.
+
+=== WHAT IS LEFT, AND IT IS NOT THE MAP =======================================================
+  * `optimization/lambda_fitness` (1.0) is the only optimiser weight that pulls the B-spline onto the A* path;
+    `lambda_collision` (0.5) and `dist0` (0.5) multiply the SWARM separation term, which is empty for a single
+    vehicle (`bspline_optimizer.cpp:962-1001`), so raising them is a no-op.
+  * `check_collision_and_rebound()` checks only the first 2/3 of a trajectory (`i_end = end_idx -
+    (end_idx - order_)/3`) and, when its rebound A* fails, DROPS the segment and keeps the colliding trajectory
+    (`:1405-1408`) -- a hard check with a soft failure mode.
+  * and the honest alternative: state that the C2 row's 0.20 m footprint is not reachable by this planner at this
+    map resolution, with the measurement above as the reason, rather than keep tuning until a lucky run passes.
+
+=== FILES =====================================================================================
+  reading `_stage/plan-vs-truth-clearance.py` (this round's instrument), `_stage/inflation-budget.py` (round 7)
+  runs    logs/missionA-DIAG12-inflate020 (refuted), DIAG8/9/10 (re-read)
