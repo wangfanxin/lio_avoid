@@ -58,24 +58,13 @@ def main() -> int:
     p_lw = (R @ p_l.T).T + tr                     # the LIO's own path, in W
     wcfg = yaml.safe_load(open(args.world)) if os.path.exists(args.world) else {}
     corners = wcfg.get("mission", {}).get("corners", []) or []
-    # A world with NO commanded rectangle (mission B's forest_b.yaml) must not be drawn as if it had one:
-    # MEASURED 2026-10-14, the first mission-B sortie was plotted with a fallback 2.0 x 1.2 m square and a
-    # "Mission A top view" title, which is a picture of a mission that was not flown.  When the world has a
-    # circle instead, THAT is what gets drawn: the ideal circle (dashed) and the stops the mission commands.
+    # A world with NO commanded rectangle must not be drawn as if it had one: MEASURED 2026-10-14, the first
+    # sortie in the circle world was plotted with a fallback 2.0 x 1.2 m square and a "Mission A top view"
+    # title, which is a picture of a mission that was not flown.  The circle generator that used to be read
+    # here (`tools/world-circle.py`) was deleted on 2026-10-15 with the dropped ego-planner line, so a world
+    # without `mission.corners` now simply draws no mission geometry -- which is the honest picture.
     has_square = bool(corners)
     CORNERS = np.array([[c[0], c[1]] for c in corners]) if has_square else np.zeros((0, 2))
-    circle = None
-    try:
-        import importlib.util
-        _p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "world-circle.py")
-        _s = importlib.util.spec_from_file_location("world_circle_pr", _p)
-        _m = importlib.util.module_from_spec(_s)
-        _s.loader.exec_module(_m)
-        circle = _m.read(args.world)
-        stops = _m.commanded_points(args.world)
-    except Exception as exc:                       # pragma: no cover - a plot must not fail the wrap-up
-        print("   (no circle in this world: %s)" % exc)
-        stops = None
     pillars = wcfg.get("pillars", []) or []
     sq = wcfg.get("mission", {}).get("square")
     arena = (wcfg.get("arena", {}) or {}).get("walls", {}) or {}
@@ -181,19 +170,6 @@ def main() -> int:
             for i, (x, y) in enumerate(CORNERS, start=1):
                 ax.annotate("c%d" % i, (x, y), textcoords="offset points", xytext=(6, 4), fontsize=9,
                             color="#c02020")
-        elif circle and stops:
-            ang = np.linspace(0, 2 * np.pi, 361)
-            ax.plot(circle["centre"][0] + circle["radius"] * np.cos(ang),
-                    circle["centre"][1] + circle["radius"] * np.sin(ang),
-                    "--", color="0.45", lw=1.0,
-                    label="commanded circle r = %.1f m (ideal)" % circle["radius"])
-            sx = [s[0] for s in stops]
-            sy = [s[1] for s in stops]
-            ax.plot(sx, sy, "o", mfc="#00c000", mec="#006000", ms=6,
-                    label="%d commanded stops" % len(stops))
-            for i, (x, y) in enumerate(zip(sx, sy)):
-                ax.annotate("s%d" % i, (x, y), textcoords="offset points", xytext=(5, 4), fontsize=8,
-                            color="#006000")
         ax.plot([0], [0], "k^", ms=8)
         ax.annotate("pad", (0, 0), textcoords="offset points", xytext=(6, -12), fontsize=9)
         # the mission's own goals, when they are not the world's circle
@@ -223,13 +199,6 @@ def main() -> int:
             ax.set_ylim(cy - half, cy + half)
             ax.set_title("zoom: the %.1f x %.1f m mission square (truth vs LIO vs EKF)"
                          % (sq[2] - sq[0], sq[3] - sq[1]))
-        elif zoom and circle:
-            # the ZOOM follows the commanded circle when that is what the mission flies
-            half = circle["radius"] + 2.0
-            ax.set_xlim(circle["centre"][0] - half, circle["centre"][0] + half)
-            ax.set_ylim(circle["centre"][1] - half, circle["centre"][1] + half)
-            ax.set_title("zoom: the r = %.1f m circle and its %d stops (truth vs LIO vs EKF)"
-                         % (circle["radius"], len(stops or [])))
         elif zoom:
             ax.set_title("zoom: the mission square")
         else:
@@ -238,8 +207,7 @@ def main() -> int:
             ax.set_ylim(ax_y[0], ax_y[1])
             ax.set_title("whole flight: pad, take-off, route, landing (%d pillars drawn)" % len(pillars))
             ax.legend(loc="upper left", fontsize=8)
-    fig.suptitle("%s top view -- %s"
-                 % ("the circle world (dropped mission B)" if (circle and not has_square) else "Mission A", tag))
+    fig.suptitle("%s top view -- %s" % ("Mission A", tag))
     fig.tight_layout()
     f1 = os.path.join(out, "traj-xy-%s.png" % tag)
     fig.savefig(f1, dpi=130)
@@ -271,8 +239,7 @@ def main() -> int:
                     ls="--", lw=1.0, label="commanded z")
         axs[2].legend(loc="upper right", fontsize=9)
     axs[2].set_xlabel("time from recording start [s]")
-    fig.suptitle("%s position vs time -- %s"
-                 % ("the circle world (dropped mission B)" if (circle and not has_square) else "Mission A", tag))
+    fig.suptitle("%s position vs time -- %s" % ("Mission A", tag))
     fig.tight_layout()
     f2 = os.path.join(out, "traj-xyzt-%s.png" % tag)
     fig.savefig(f2, dpi=130)

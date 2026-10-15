@@ -152,9 +152,10 @@ mission_b:
   goal: [3.0, 4.0]
 """
 
-# The circle is stored as FIVE NUMBERS, not as a sampled point list: the point list is derived by
-# tools/world-circle.py, so the circle the figure draws, the circle the goal sequencer commands and the
-# circle the metrics score against cannot drift apart (the same rule as mission A's corners).
+# The circle is stored as FIVE NUMBERS, not as a sampled point list: the point list was derived by
+# `tools/world-circle.py`, which was DELETED on 2026-10-15 together with the dropped ego-planner line.
+# Nothing in the working pipeline reads this block; it stays so that the world that was flown can still be
+# regenerated exactly as it was.  Mission A's own geometry keeps its one reader, `tools/world-info.py`.
 MISSION_B_CIRCLE = """\
 mission_b:
   takeoff_alt: @MB_ALT@
@@ -167,10 +168,10 @@ mission_b:
     start_deg: 0.0              # first point due East of the pad
     direction: ccw
     # A waypoint that lands INSIDE a pillar is not an obstacle to avoid -- it is an unreachable target
-    # (MEASURED 2026-10-14: commanding one made the adapter withhold 81 of 93 paths and left the vehicle
+    # (MEASURED 2026-10-14: commanding one made the path gate withhold 81 of 93 paths and left the vehicle
     # stuck 0.7338 m short).  The user's rule: "目标点如果不可达，就把航点挪出来到圆周上不在圆柱内的地方" --
-    # the goal slides ALONG THE CIRCLE, the pillars all stay, and the reference is still an r = 4 m circle.
-    # tools/world-circle.py applies it; 0 = command the circle verbatim.
+    # the goal slid ALONG THE CIRCLE, the pillars all stay, and the reference is still an r = 4 m circle.
+    # The tool that applied it (`tools/world-circle.py`) is gone; 0 = command the circle verbatim.
     snap_need: @MB_SNAP@
 """
 
@@ -399,8 +400,8 @@ def main() -> int:
                     help="waypoints around that circle (24 = every 15 deg = 1.047 m of arc)")
     ap.add_argument("--circle-alt", type=float, default=2.0)
     ap.add_argument("--circle-snap", type=float, default=0.0,
-                    help="clearance a commanded waypoint must have; a blocked one is moved to the nearest "
-                         "free space by tools/world-circle.py (0 = command the circle verbatim)")
+                    help="clearance a commanded waypoint had to have; a blocked one was slid along the "
+                         "circle by the now-deleted tools/world-circle.py (0 = command the circle verbatim)")
     ap.add_argument("--circle-clear", type=float, default=0.0,
                     help="free space left between the circle and a pillar's SURFACE; a pillar whose "
                          "surface would enter that band is dropped.  0 keeps every pillar, which is the "
