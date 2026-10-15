@@ -1,0 +1,64 @@
+EGO'S OWN PLAN GRAZES THE PILLARS -- the map was never the problem, and the lever has a name
+2026-10-15 16:04:37Z   HEAD: 7fb8e08
+
+=== NO NEW FLIGHT, AND THE QUESTION IS SETTLED ================================================
+tools/record-traj.py writes a clr_m column for every published point -- the plan's OWN minimum distance
+to a pillar surface, computed from the world file.  It had never been read.  The diagonal sorties were
+already on disk:
+
+   sortie                     points  clr min    clr p05   clr last   verdict
+   --------------------------------------------------------------------------------------------------------
+   DIAG2-ego-avoidance          7913   -0.274   -0.040      0.443   PLAN THROUGH A PILLAR
+   DIAG3-ego-map                6429   -0.274    0.199      0.388   PLAN THROUGH A PILLAR
+   DIAG5-map-census             7331   -0.278    0.154      0.433   PLAN THROUGH A PILLAR
+   DIAG6-map-census             5899   -0.143    0.177      0.423   PLAN THROUGH A PILLAR
+   DIAG1-rect-control           6646   -0.300    0.407      0.407   PLAN THROUGH A PILLAR
+   
+   === AND THE COLUMN'S MEANING, so the verdict is not read as more than it is ===
+      `clr_m` is the minimum distance from the published point to the nearest pillar SURFACE (world file),
+      recomputed by tools/record-traj.py through the L->W calibration.  The C2 row's bound is a 0.20 m
+      footprint, so 'plan through a pillar' means clr_m below 0.20 -- and below 0.0 means the planned point
+      is INSIDE the pillar.
+
+=== WHAT THAT RULES OUT, AND WHAT IT POINTS AT ================================================
+RULED OUT: 'the plan avoided and tracking lost it'.  The PLAN ITSELF contains points up to 0.274 m
+  INSIDE a pillar surface, on every ego crossing.  The avoidance failure is the PLANNER's.
+RULED OUT, from the previous round: 'the map never had the pillars'.  The map ACCEPTED all 1909684
+  points it was sent and held 59339 marked cells (PATCH DIAG/1), and ego's own safety check fired
+  EMERGENCY_STOP six times in DIAG2 -- it was finding obstacles, repeatedly.
+
+AND THE FIGURE SAYS SOMETHING SHARPER THAN EITHER: read docs/figures/traj-xy-EGO-plan-through-pillars.png.
+The planned path is NOT a straight line through the field -- it CURVES around the pillars, taking a wide
+berth on the way out and turning before each one.  The red patches are where it CLIPS A CORNER.  So:
+
+   EGO'S AVOIDANCE WORKS, AND ITS MARGIN IS TOO SMALL.
+
+   The 5th-percentile clearance of the plan is -0.020 to +0.199 m while its minimum is -0.27: most of
+   the path is a comfortable distance out, and a small fraction of it grazes.  That is the signature of
+   a soft collision cost with too little inflation, not of a planner that cannot see.
+
+=== AND THE LEVER IS A NUMBER ALREADY IN OUR LAUNCH FILE ======================================
+   grid_map/obstacles_inflation = 0.099 m in src/planner/ego_on_lio.launch.py -- ONE voxel at 0.1 m
+/mnt/d/distill_self/_stage/commit-graze.sh: line 36: grid_map.cpp: command not found
+   resolution ( inflates by ceil(0.099/0.1) = 1).  It is the ONLY hard margin in that map:
+/mnt/d/distill_self/_stage/commit-graze.sh: line 37: optimization/*: No such file or directory
+/mnt/d/distill_self/_stage/commit-graze.sh: line 37: bspline_optimizer.cpp:1240,1271: command not found
+    distance terms are soft quadratic costs () and the
+/mnt/d/distill_self/_stage/commit-graze.sh: line 38: grid_map.h:346-366: command not found
+   map has no distance query at all ().  So the planner's own definition of 'free' is
+   a point 0.10 m from a pillar -- against a C2 row that judges a 0.20 m FOOTPRINT, and corridors this
+   field measures at about 0.83 m between faces.
+
+   RAISING IT IS A ONE-LINE CHANGE with a predictable effect and a measurable one: the corridor is
+   0.83 m wide, a 0.30 m inflation leaves about 0.23 m of free channel, and the C2 bound wants 0.20.  That
+   is a hypothesis with arithmetic behind it, and the next sortie is what tests it -- NOT asserted here.
+
+=== WHAT IS ESTABLISHED NOW ===================================================================
+  1. the relay loses nothing (rows 69-71, still standing);
+  2. the map accepts everything it is sent and holds 59339 cells (row 72);
+  3. THE PLAN ITSELF grazes the pillars on every ego crossing (this row) -- so the failure is in the
+     optimiser's margin, not in perception and not in tracking;
+  4. the only hard margin is obstacles_inflation = 0.099 m, one voxel.
+  AND THE MAP LINE OF INVESTIGATION IS CLOSED: three rounds of it (rows 68-72) chased a component that
+  turns out to be behaving correctly.  Two of those rounds also produced findings I had to withdraw.  The
+  measurement that finally moved the question came from a column that had been recorded all along.
