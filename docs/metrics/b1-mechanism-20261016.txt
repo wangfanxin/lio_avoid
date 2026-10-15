@@ -43,10 +43,13 @@ sorties, and the SLOW-ARM control (logs/missionA-stepB10-01-*, params/phase_a_mi
 
 READ IT: the ownership is the same on nine of the nine FAILing sorties and it does not wander:
 
-  * E-min  (E = 0.500): always corner 4, the arrival of leg 4 (the 2.0 m leg that flies -E along N=1.6).
-  * E-max  (E = 2.500): always corner 2, the arrival of leg 2 (the 2.0 m leg that flies +E along N=0.4).
-  * N-min  (N = 0.400): always corner 1, the CLOSING arrival of leg 5 (flying -N along E=0.5).
-  * N-max  (N = 1.600): always corner 3, the arrival of leg 3 (the 1.2 m leg that flies +N along E=2.5).
+  * E-min  (E = 0.500): always corner 4, i.e. the leg that arrives there flying -E along N = 1.6 (2.0 m).
+  * E-max  (E = 2.500): always corner 2, the leg that arrives there flying +E along N = 0.4 (2.0 m).
+  * N-min  (N = 0.400): always corner 1, the CLOSING arrival, flying -N along E = 0.5 (1.2 m).
+  * N-max  (N = 1.600): always corner 3, the leg that arrives there flying +N along E = 2.5 (1.2 m).
+  (Named geometrically on purpose: the PHASE names shift by one on the sorties whose setpoint-driven
+  take-off added a climb leg -- RECT26's log reads leg2..leg5 + land, RECT33's leg2..leg6, RECT34's
+  leg1..leg6 -- while the four arrival legs and their walls are the same on all of them.)
 
 The two long legs (2.0 m) own the E growth and two of the four N walls' worth; each corner's contribution
 is the excursion PAST the wall the arriving leg runs along, i.e. there is no mid-leg component at all in
@@ -133,7 +136,7 @@ Two measured facts, then the mechanism.
     RECT23/24.  The ring is therefore a property of the plant + the FCU's position loop, not of F1, F2 or
     of any phase-log rule.
 
-(d) WHY THE TWO LONG LEGS AND NOT THE SHORT ONES: the outward half of the ring is 35-93 mm on every
+(d) WHY THE TWO LONG LEGS AND NOT THE SHORT ONES: the outward half of the ring is 32-93 mm on every
     corner, but only the two 2.0 m legs have enough braking to make it large in E (their entry speed is
     1.69-1.75 m/s against 1.26-1.30 m/s on the 1.2 m legs), and only the legs whose travel direction is
     PERPENDICULAR to a wall can push the truth past it.  The four walls that carry the growth are exactly
