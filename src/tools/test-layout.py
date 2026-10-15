@@ -125,13 +125,15 @@ def main() -> int:
           % (helped, len(tools), len(NO_HELP)))
 
     # ---- 4. no tracked code file still names the old layout
+    #     (NOT this file: it contains those patterns as regexes, so it would match itself)
+    SELF_REL = os.path.relpath(os.path.abspath(__file__), PROJ)
     OLD = [r'sys\.path\.insert\(0, "/mnt/d/distill_self/lio_avoid"\)',
            r'\$REPO/(params|worlds|docs|frozen|rviz)',
            r'os\.path\.join\(ROOT, "(worlds|docs|frozen|params|rviz)"',
            r'"os\.path\.join\(HERE, "\.\."\)']
     tracked = subprocess.run(["git", "-C", PROJ, "ls-files", "src"], capture_output=True, text=True)
     files = [f for f in tracked.stdout.split("\n")
-             if f.endswith((".py", ".sh")) and not any(v in f for v in VENDORED)]
+             if f.endswith((".py", ".sh")) and not any(v in f for v in VENDORED) and f != SELF_REL]
     stale = []
     for f in files:
         try:
