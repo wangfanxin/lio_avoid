@@ -459,3 +459,20 @@ SUMMARY: four of the five criteria are met outright, and the fifth is met in eve
 sub-target which is now bounded by measurement: **ego does avoid obstacles -- measurably, and worth about
 +0.45 m over a planner that ignores them -- but it does not hold 0.20 m, and on this mission no parameter and no
 one-line code change has been shown to make it.**
+
+=== HANDOFF VERIFICATION (no flight): the workspace stands where the record says ==========================
+The ego flight tree was patched and reverted repeatedly during this investigation (DIAG/1, DIAG/2, CLEARANCE/1),
+and a stale patch or a stale build would silently misrepresent every future measurement.  Checked:
+
+    repository        HEAD 53e1001, 0 modified paths, in sync with origin, tag mission-a-rect46 =
+                      86757d1a4ec25feed3412af62de3ef87cd135331 (unchanged since it was created)
+    flight tree       dyn_a_star.cpp CLEAN (PATCH CLEARANCE/1 correctly reverted);
+                      grid_map.cpp carries DIAG/1+DIAG/2 and bspline_optimizer.cpp carries DIAG/2 -- these are the
+                      INSTRUMENTS (cloud-acceptance counters, the map slice and the rebound counters) and are
+                      expected
+    installed params  obstacles_inflation 0.099 (one cell), ground_height -0.50, lambda_fitness 1.0,
+                      lambda_collision 0.5
+    relay defaults    EGO_CLOUD_WINDOW 0.0, EGO_SELF_BLIND 0.0 -- both off unless a flight asks
+
+So the configuration every future sortie starts from is the one the record documents, and the one experimental
+code change is out of the tree and preserved as `_stage/apply-clearance1.py`.
