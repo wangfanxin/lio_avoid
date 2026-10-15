@@ -509,3 +509,28 @@ from the first flight, and `dist0` means what its name says for the first time i
 
 Nothing in the repo's flight configuration changed: the patch is still NOT applied (the tree carries only the
 instruments, row 115), and this round edited the script that preserves the work.
+
+=== IS THE FLYAWAY RECURRENT?  MEASURED ACROSS EVERY LOGGED RUN (round 64) ==========================
+Item 3 -- fly the distance-cost term again on a clean crossing -- is only worth attempting if a 508 m EKF-failsafe
+flyaway is rare rather than systematic.  Counting across every run this project has logged:
+
+    292 run directories under logs/missionA-*/
+      3 of them mention an EKF failsafe   (~1%)
+      2 of them mention EKF variance
+
+and the three lines are:
+
+    [217.09] the FCU's last words: Potential Thrust Loss (4) | Potential Thrust Loss (1) | EKF Failsafe Cleared | EKF Failsafe
+    [101.94] the FCU's last words: EKF Failsafe Cleared | EKF variance | EKF Failsafe | EKF Failsafe Cleared
+    [103.06] the FCU's last words: EKF Failsafe | EKF Failsafe Cleared | EKF variance | EKF Failsafe
+
+READING IT HONESTLY, including the uncomfortable part: **the event is rare (~1%), so a single flight can be lost
+to it and item 3 is worth attempting.**  But two of the three occurred on EGO sorties carrying an experimental
+planner patch (the coverage patch, whose run also ended in a geofence abort, and the distance-cost term), and the
+third's message set includes `Potential Thrust Loss` -- so "rare" is measured, while "independent of what the
+planner is doing" is NOT established from three samples.  The trace added in round 62 exists precisely so that the
+next occurrence is timestamped when it happens rather than reconstructed from a truncated teardown line.
+
+CONSEQUENCE FOR THE REMAINING WORK: attempt item 3, and if a flight ends without a clean crossing, read the
+`FCU-TEXT` lines first -- if an EKF failsafe is there, the run judges nothing about the cost term and should be
+discarded rather than recorded as evidence either way.
