@@ -182,5 +182,36 @@ three of these four runs**, including two of the three window runs.  The binding
 map -- it is the trajectory the optimiser produces against it, which is where round 11's `lambda_fitness`
 proposal points.  Figure `docs/figures/traj-xy-WINDOW-variance.png`.
 
+=== THE OPTIMISER LEVER, FLOWN: `lambda_fitness` 4.0 (`DIAG15-fitness4`) =======================
+PREDICTION BEFORE THE FLIGHT: the plan's own `clr_m` minimum rises toward the A* corridor's clearance, and the
+plateau it reaches measures that corridor's distance from the pillars.  RESULT, and it is half right:
+
+    metric                          DIAG14 (fitness 1.0)   DIAG15 (fitness 4.0)
+    rc / hang                       rc=0, no hang          rc=0, no hang
+    A1 / A2 route rms               5.50 / 3.57 mm         5.52 / 2.91 mm   (tracking unaffected)
+    C1 final point                  0.004 m PASS           0.004 m PASS
+    truth minimum clearance         **-0.222 m**           **+0.068 m**
+    truth samples inside 0.20 m     3387 of 46916          1231 of 54097    (best at one cell so far)
+    PLAN clr_m minimum              -0.284                 **-0.285**       (unchanged)
+    PLAN clr_m 1st percentile       -0.031                 **+0.124**
+    PLAN clr_m 5th percentile       +0.198                 **+0.228**
+    PLAN clr_m median               +0.425                 +0.429
+
+  * **WHAT MOVED**: the plan's TYPICAL behaviour.  The 1st percentile moves by +0.155 m and the 5th by +0.030,
+    and the flown result improves with it (a penetration becomes a +0.068 m clearance).
+  * **WHAT DID NOT**: the plan's MINIMUM, -0.285 m against -0.284 in DIAG14 and -0.285 in DIAG8.  Three runs,
+    three different configurations, the same worst excursion to the millimetre -- which is the signature of ONE
+    trajectory that is published and then replaced rather than of a systematic failure to avoid.  (The truth in
+    DIAG15 never came closer than +0.068 m, so whatever produced that point was not flown.)
+  * **AND THE PLATEAU IS INFORMATIVE**: the plan's 1st percentile settles near +0.12 m, close to the ~0.15 m
+    that a free cell one voxel out from a marked cell sits from a pillar surface.  So the C2 row's 0.20 m
+    footprint is at the edge of what a ONE-CELL map can express at all: closing it needs either two cells
+    (blocked by the ego-side self-collision semantics, above) or an obstacle cost that prefers the middle of
+    free space -- which this variant does not have, since its distance term is a swarm separation cost.
+  * **NOT PROMOTED.**  `optimization/lambda_fitness` is back at upstream's 1.0.  This round's own lesson is that
+    the window looked equally convincing on two runs and failed on the third, and one run is not a promotion.
+    The reproduction is the next round's first flight.
+
+
 
 
