@@ -157,7 +157,8 @@ class TourPacer:
 
     def __init__(self, targets_w, hold_s, arrive_m, settle_speed_mps, settle_s, leg_timeout_s, now,
                  log=None, seg_len_w=None, odom_label="", leg_speed=0.30, entry_hold_s=0.0,
-                 arm_above_m=0.50, arm_move_m=0.50, arm_near_m=0.30, warn_period_s=15.0):
+                 arm_above_m=0.50, arm_move_m=0.50, arm_near_m=0.30, warn_period_s=15.0,
+                 vertical_arrive_slack_m=0.20):
         self.targets_w = np.asarray(targets_w, dtype=float)
         self.n_leg = int(len(self.targets_w))
         self.hold_s = float(hold_s)
@@ -165,6 +166,9 @@ class TourPacer:
         self.arrive_m = float(arrive_m)
         self.settle_speed_mps = float(settle_speed_mps)
         self.settle_s = float(settle_s)
+        #: extra gate for a VERTICAL leg only -- see the arrival block in `step`.  0.20 m covers this stack's
+        #: measured ~0.1 m altitude-datum term with room to spare, and it is applied to NO other leg.
+        self.vertical_arrive_slack_m = float(vertical_arrive_slack_m)
         self.leg_timeout_s = float(leg_timeout_s)
         self.arm_above_m = float(arm_above_m)
         self.arm_move_m = float(arm_move_m)
@@ -187,6 +191,8 @@ class TourPacer:
         self.t_done = None
         self.tour_t0 = now
         self.t_warn = now
+        #: which leg's arrival rule has already been printed (see the arrival block in `step`)
+        self._leg_logged = -1
         # bookkeeping the log lines use
         self.arrival_residual_w = float("inf")
         self.settle_speed_seen = float("nan")
@@ -292,13 +298,78 @@ class TourPacer:
                 self._advance(now)
             return
         # ARMED: waiting for the arrival.  THE ONLY INPUT IS p_w AND v_h -- the plan box's own estimate.
-        d = float("inf") if p_w is None else float(np.linalg.norm(p_w[:2] - target_w))
+        #
+        # THE ARRIVAL TEST IS HORIZONTAL, EXCEPT ON A LEG THAT HAS NO HORIZONTAL EXTENT, WHICH IS TESTED
+        # VERTICALLY.  That exception is not a tweak, it is what makes the VERTICAL FIRST TARGET possible at
+        # all, and it was MEASURED -- by flying it wrong twice:
+        #   * `RECT31-accept` (2026-10-15) used the horizontal test on the climb leg and declared ARRIVAL
+        #     while the aircraft was pinned over the pad at the ~0.2 m the take-off command asked for
+        #     ("ARRIVED at waypoint 1 ... 0.004 m", with the next log line reporting altitude 0.111 m), so the
+        #     climb never appeared in the command stream and corner 1's 2.0 m became the first setpoint;
+        #   * `RECT32-accept` used the full 3-D distance and the leg TIMED OUT at 20 s -- it never arrived --
+        #     because the aircraft was 1.831 m away with a DAlt of 2.152 m: the horizontal term contributed
+        #     centimetres of drift that a climb straight up from the pad is not asked to remove, and no gate
+        #     worth setting would absorb them.
+        # A vertical leg's question is "has the CLIMB finished", so its test is the ALTITUDE ERROR ALONE.
+        # Every leg with horizontal extent keeps the horizontal test unchanged, which is what B3's corner
+        # arrivals and the arrival gate every flight in `docs/metrics/` was scored against depend on.
+        #
+        # THE ENDPOINTS ARE READ FROM `self.targets_w` AND NOT FROM `target_w`.  `target_w` a few lines above
+        # is `self.target_w[:2]` -- the 2-D target the horizontal test uses -- so comparing against IT tests
+        # "is the target's X and Y zero", which is TRUE of the pad-anchored vertical leg AND of nothing else,
+        # and is a different question from "does this leg have horizontal extent".  That mistake was made once
+        # here and caught by the diagnostic below, on a replay of the flown odometry: the rule looked right,
+        # the printed line said `target_w=[0. 0.]`, and the branch taken was still the 2-D one.
+        #
+        # AND THE EXTENT TEST IS A TOLERANCE, NOT AN EQUALITY.  "No horizontal extent" cannot be `== 0` on
+        # this stack: the pad is not at the plan's origin in the vehicle's own frame -- the measured
+        # calibration puts it at (-0.9, -4.2) mm, and the LIO's own estimate moves by millimetres while the
+        # aircraft stands still.  An exact-zero test classified the vertical leg as horizontal BY 0.9 mm,
+        # which is how the first version of this fix failed on the replay.  The bound is a fraction of the
+        # arrival gate: a leg whose endpoints are within `arrive_m / 10` horizontally cannot be the leg that
+        # carries the arrival, so it is the vertical one.  For the 0.06 m gate that is 6 mm.
+        if p_w is None:
+            d = float("inf")
+        else:
+            start_w = self.leg_start_w()
+            tgt = np.asarray(self.target_w, dtype=float)
+            vertical_tol = self.arrive_m / 10.0
+            vertical_leg = (start_w is not None and tgt.shape[0] >= 3 and
+                            abs(float(tgt[0]) - float(start_w[0])) < vertical_tol and
+                            abs(float(tgt[1]) - float(start_w[1])) < vertical_tol)
+            # A CLIMB LEG'S GATE IS NOT A CORNER'S GATE.  `arrive_m` (0.06 m) is the number B3's corner
+            # arrivals were scored against; on a CLIMB the quantity that is flown and measured is the
+            # HEIGHT, and this stack's altitude datum carries a measured ~0.1 m term (the L->W calibration's
+            # t_z is +0.1156 m; A4's own datum line reads D -0.098 m in flight), so a 0.06 m gate on a 2.5 m
+            # climb would ask for the datum to be perfect.  A vertical leg therefore gets
+            # `vertical_arrive_slack_m` on top of the gate.  No other leg's gate changes.
+            gate = self.arrive_m + (self.vertical_arrive_slack_m if vertical_leg else 0.0)
+            if vertical_leg:
+                d = abs(float(p_w[2]) - float(tgt[2]))            # the climb's height error
+            else:
+                d = float(np.linalg.norm(p_w[:2] - tgt[:2]))      # the horizontal error, as before
+            # THE DECISION IS PRINTED, ONCE PER LEG.  This line exists because the rule below was BELIEVED
+            # to be in force and `RECT31-accept`'s own log said otherwise; a replay of that flight's recorded
+            # odometry through this module is what settled it, and `RECT32-accept` then measured the second
+            # version's own failure.  A reader should not have to infer which test a leg used.
+            if self._leg_logged != self.i_leg:
+                self._leg_logged = self.i_leg
+                self.log("LEG %d arrival rule: TESTING %s; horizontal error %.4f m, 3-D error %.4f m, "
+                         "height error %.4f m, gate %.3f m; leg_start_w=%s target_w=%s p_w=%s"
+                         % (self.i_leg + 1,
+                            "the HEIGHT (this leg has no horizontal extent)" if vertical_leg
+                            else "the HORIZONTAL distance (this leg has horizontal extent)",
+                            float(np.linalg.norm(p_w[:2] - tgt[:2])),
+                            float(np.linalg.norm(np.asarray(p_w, dtype=float) - tgt)),
+                            abs(float(p_w[2]) - float(tgt[2])), gate,
+                            None if start_w is None else np.round(np.asarray(start_w, float), 4),
+                            np.round(tgt, 4), np.round(np.asarray(p_w, float), 4)))
         self.arrival_residual_w = d
         self.settle_speed_seen = v_h
-        if d <= self.arrive_m and v_h is not None and v_h < self.settle_speed_mps:
+        if d <= gate and v_h is not None and v_h < self.settle_speed_mps:
             self._arrive(d, now, capped=False)
             return
-        if d <= self.arrive_m:
+        if d <= gate:
             if self.t_inside is None:
                 self.t_inside = now
             elif now - self.t_inside >= self.settle_s:

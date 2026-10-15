@@ -51,7 +51,17 @@ def read_metrics(run):
     got["B2_total"] = len(re.findall(r"leg \d+:\s+\d+ samples", txt))
     got["B3_pass"] = len(re.findall(r"corner \d+: closest horizontal approach.*?PASS", txt))
     got["B3_total"] = len(re.findall(r"corner \d+: closest horizontal approach", txt))
-    got["B4"] = "yes" if re.search(r"B4 landing: 'land' in the phase log -> yes", txt) else "NO"
+    # B4 IS THE LANDING **AND** THE DISARM.  `metrics.py` prints "yes" for the phase-log half and "FAIL
+    # (aborted)" on an aborted sortie -- and BOTH are per-sortie facts a table must not flatten: a sortie
+    # that aborted and landed cleanly still landed.  So the column carries both, read from its own line.
+    m = re.search(r"B4 landing: 'land' in the phase log -> (yes|NO)", txt)
+    landed = m.group(1) if m else "?"
+    aborted = bool(re.search(r"^\s*LAND\+disarm \(B4\): FAIL \(aborted\)", txt, re.M))
+    got["B4"] = ("land+disarm" if landed == "yes" and not aborted else
+                 ("land only" if landed == "yes" else "NO"))
+    got["aborted"] = aborted
+    # C1's verdict line, kept next to its number: the distance alone does not say whether it passed.
+    got["C1_pass"] = bool(re.search(r"C1 final point:.*?\[PASS\]", txt))
     return got
 
 
@@ -73,13 +83,38 @@ def read_dwell(run, airborne_m):
 
 
 def read_faults(run):
+    """The named failures a sortie can carry, COUNTED FROM THE FILE THAT CARRIES THEM.
+
+    `fsm.log` WAS THE WRONG FILE AFTER F2.  `fsm/mission_fsm.py` was deleted when the supervisor took over
+    the phase log and every abort, so on any F2-or-later sortie the abort string lives in
+    `supervisor.log` and this counter read 0 by construction -- an abort row would have been reported with
+    `faults=0`.  Both are searched, so a pre-F2 run and a post-F2 run are both counted where they really
+    are; `--abort-ok` (below) is what tells the table that a sortie was SUPPOSED to abort.
+    """
     n = 0
-    for f, pat in (("fsm.log", r"ABORT"), ("planner.log", r"NEVER ARRIVED"), ("traj.log", r"NEVER ARRIVED"),
-                   ("fsm.log", r"EKF Failsafe|EKF failsafe")):
+    for f, pat in (("fsm.log", r"ABORT"), ("supervisor.log", r"ABORT"),
+                   ("planner.log", r"NEVER ARRIVED"), ("traj.log", r"NEVER ARRIVED"),
+                   ("fsm.log", r"EKF Failsafe|EKF failsafe"),
+                   ("supervisor.log", r"EKF Failsafe|EKF failsafe")):
         p = os.path.join(run, f)
         if os.path.exists(p):
             n += len(re.findall(pat, open(p, encoding="utf-8", errors="replace").read()))
     return n
+
+
+def read_phases(run):
+    """The phase names as FLOWN, from phase.csv's third column (the run's own record)."""
+    p = os.path.join(run, "phase.csv")
+    if not os.path.exists(p):
+        return []
+    out = []
+    for i, ln in enumerate(open(p, encoding="utf-8", errors="replace")):
+        if i == 0:
+            continue
+        f = ln.strip().split(",")
+        if len(f) >= 3 and f[2]:
+            out.append(f[2])
+    return out
 
 
 def main() -> int:
@@ -87,6 +122,12 @@ def main() -> int:
     ap.add_argument("runs", nargs="+")
     ap.add_argument("--airborne-m", type=float, default=0.5,
                     help="the stricter judged quantity (0 disables: pass 0)")
+    ap.add_argument("--abort-ok", action="append", default=[],
+                    help="a sortie (name or its run dir) that was SUPPOSED to abort -- the kill case.  Its "
+                         "faults are then the GATE rather than a defect, and the reason it must end with "
+                         "are checked instead: an `abort` phase AFTER a `leg` phase, and a clean landing.  "
+                         "Without this the table reports the deliberate abort as `faults=1` and a reader "
+                         "cannot tell a successful kill sortie from a failure")
     ap.add_argument("--figure", default="")
     args = ap.parse_args()
 
@@ -96,13 +137,15 @@ def main() -> int:
 
     air = None if args.airborne_m == 0 else args.airborne_m
     table, ok_sorties = [], 0
+    abort_ok = {os.path.basename(a.rstrip("/")).replace("missionA-", "") for a in args.abort_ok}
     print(f"{'sortie':<26}{'hover':>7}{'corner visits':>15}{'A1 mm':>7}{'A2 mm':>7}{'A4 mm':>7}"
-          f"{'B2':>7}{'C2 min m':>10}{'inside 0.20':>13}{'B4':>5}{'faults':>7}")
+          f"{'B2':>7}{'C2 min m':>10}{'inside 0.20':>13}{'B4':>13}{'faults':>7}{'kind':>10}")
     for run in runs:
         name = os.path.basename(run.rstrip("/")).replace("missionA-", "")
         mt = read_metrics(run)
         n_ok, n_all, spans = read_dwell(run, air)
         faults = read_faults(run)
+        phases = read_phases(run)
         if mt is None or n_ok is None:
             print(f"{name:<26}  (incomplete: metrics={mt is not None}, dwell={n_ok is not None})")
             continue
@@ -111,18 +154,32 @@ def main() -> int:
         c2 = mt.get("C2inside", ("?", "?", "?"))
         b1e = mt.get("B1E", ("?", "?"))
         b2 = f"{mt.get('B2_pass', 0)} of {mt.get('B2_total', 0)}"
+        # THE KILL CASE IS JUDGED ON WHAT IT WAS FOR, not on the same columns as a nominal sortie: an
+        # `abort` phase AFTER the route began, a landing that ENDED IN DISARM, and a NAMED abort in the log.
+        if name in abort_ok:
+            leg_i = [i for i, p in enumerate(phases) if p.startswith("leg")]
+            kind = ("KILL-OK" if leg_i and "abort" in phases[leg_i[-1] + 1:]
+                    and mt["B4"] == "land+disarm" and faults >= 1 else "KILL-FAIL")
+        else:
+            kind = "nominal" if not mt.get("aborted") else "ABORTED"
         print(f"{name:<26}{f'{n_ok} of {n_all}':>7}{n_all:>15}"
               f"{mt.get('A1','?'):>7}{mt.get('A2','?'):>7}{mt.get('A4','?'):>7}"
               f"{b2:>7}"
-              f"{mt.get('C2m','?'):>10}{f'{c2[0]} of {c2[1]}':>13}{mt['B4']:>5}{faults:>7}")
-        table.append((name, n_ok, n_all, spans, mt, faults))
+              f"{mt.get('C2m','?'):>10}{f'{c2[0]} of {c2[1]}':>13}{mt['B4']:>13}{faults:>7}{kind:>10}")
+        table.append((name, n_ok, n_all, spans, mt, faults, kind))
 
     if table:
         tot_ok = sum(t[1] for t in table)
         tot_all = sum(t[2] for t in table)
+        nominal = [t for t in table if t[6] != "KILL-OK"]
+        nom_ok = sum(1 for t in nominal if t[1] == t[2])
         print(f"\nPOOLED: {ok_sorties} of {len(table)} sorties with 4 of 4 corners hovered >= 5.0 s "
               f"(strict, airborne > {air} m);  {tot_ok} of {tot_all} corner visits >= 5.0 s")
-        for name, _n, _a, spans, _mt, _f in table:
+        if abort_ok:
+            print(f"        the deliberate kill sortie(s) are NOT missions: excluding them, "
+                  f"{nom_ok} of {len(nominal)}")
+        for t in table:
+            name, _n, _a, spans = t[0], t[1], t[2], t[3]
             worst = min(spans.items(), key=lambda kv: kv[1][0]) if spans else None
             if worst:
                 print(f"   {name:<24} tightest corner: {worst[0]} {worst[1][0]:.2f} s ({worst[1][1]})")

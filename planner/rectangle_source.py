@@ -114,6 +114,17 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--world", default=os.path.join(here, "..", "worlds", "pillars.yaml"))
     ap.add_argument("--z", type=float, default=None, help="override the mission altitude, m")
+    ap.add_argument("--vertical-first-m", type=float, default=None,
+                    help="PREPEND a single-point leg straight up from the pad to this altitude (m above the "
+                         "pad) and hold it for --vertical-hold-s.  This is the setpoint-driven take-off's "
+                         "CLIMB LEG: with the owner's design the take-off command is only ~0.2 m, and this "
+                         "leg is what lifts the aircraft to the mission altitude.  Default off: without it "
+                         "the first setpoint is corner 1 and the aircraft climbs in transit to it.  When it "
+                         "is on, the A4 window is the HOLD at the top of the climb, which is what keeps A4 "
+                         "comparable with every row in docs/metrics/")
+    ap.add_argument("--vertical-hold-s", type=float, default=3.0,
+                    help="how long to HOLD the vertical first target (the A4 window).  Only used with "
+                         "--vertical-first-m; 3.0 s is the F1/F2 take-off hold")
     ap.add_argument("--spacing", type=float, default=0.05,
                     help="kept for the tour's own geometry print and the tests; nothing publishes a "
                          "polyline any more")
@@ -206,6 +217,21 @@ def main() -> int:
     # file the bridge takes, and prints the difference either way so a mismatch cannot be silent again.
     predicted = frames.Calib.predicted(spawn_heading_deg=0.0, world_axes="body")
     calib = predicted
+    # THE VERTICAL FIRST TARGET, prepended BEFORE the frame conversion so it goes through exactly the same
+    # W->L path as every other target.  It is used with the owner's take-off design (`--takeoff-command-m
+    # 0.2` + a trigger on airborne): the small command only leaves the ground, and this leg is what lifts
+    # the aircraft to the mission altitude and HOLDS it there for `--vertical-hold-s`, which is the A4
+    # window.  It is inserted at index 0 so `TourPacer` gives it `entry_hold_s` and the tour proper keeps
+    # its own phase names: the phase log then reads leg1 = the climb, leg2..leg6 = the tour, and
+    # `tools/metrics.py` already opens B1/B2/B3 at the SECOND leg entry (the pad is outside the box), so
+    # the box metrics are computed over the same four corners as every earlier sortie.
+    if args.vertical_first_m is not None:
+        vert = np.array([[0.0, 0.0, float(args.vertical_first_m)]])
+        targets_w = np.vstack([vert, targets_w])
+        print("   VERTICAL FIRST TARGET: straight up from the pad to U %+.3f m, held %.1f s, THEN the tour"
+              % (args.vertical_first_m, args.vertical_hold_s))
+        print("      (this is the setpoint-driven take-off's climb leg: leg1 = the climb, leg2..leg%d = the "
+              "tour; the A4 window is the hold at the top of it)" % len(targets_w))
     if args.calib_file and os.path.exists(args.calib_file):
         with open(args.calib_file) as fh:
             d = json.load(fh)
@@ -324,7 +350,12 @@ def main() -> int:
                                  log=lambda s: print(s, flush=True), seg_len_w=seg_len_w,
                                  odom_label=args.odom, leg_speed=args.leg_speed,
                                  arm_above_m=args.arm_above_m, arm_move_m=args.arm_move_m,
-                                 arm_near_m=args.leg_start_m)
+                                 arm_near_m=args.leg_start_m,
+                                 # WITH THE VERTICAL FIRST TARGET the entry leg IS the A4 window, so it
+                                 # gets a real dwell (the default entry_hold_s is 0.0 because the tour's
+                                 # dwells belong to the tour's corners -- true before this leg existed).
+                                 entry_hold_s=(args.vertical_hold_s
+                                               if args.vertical_first_m is not None else 0.0))
 
     def step(now):
         """One pacing tick, from the odometry stream.  Keeps a W sample of the leg's start in L for the

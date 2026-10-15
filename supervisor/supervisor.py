@@ -98,6 +98,13 @@ class Supervisor:
         self.cmd = np.zeros(3)
         self.log_fh = None
         self.trigger_sent = False
+        #: THE FOUR GATES JUDGE A MISSION IN PROGRESS.  `finish` clears this before it lands, because the
+        #: conditions that ended the sortie are still true while the aircraft comes down, and a gate that
+        #: re-fires during the landing makes the landing wait return immediately (`check_gates`).  It is set
+        #: HERE rather than in `run` because `preflight` reaches `check_gates` through `pump`, and a gate
+        #: that is read before it exists is an AttributeError on a code path nothing tests (MEASURED: the
+        #: first version of this fix put it in `run` and `tools/test-stall-gate.py` failed).
+        self.gates_armed = True
 
     def log(self, msg):
         print("[%7.2f] %s" % (time.monotonic() - self.t_wall0, msg), flush=True)
@@ -240,7 +247,20 @@ class Supervisor:
         return None
 
     def check_gates(self):
-        """THE FOUR GATES, all of them the supervisor's (design section 1.3's table)."""
+        """THE FOUR GATES, all of them the supervisor's (design section 1.3's table).
+
+        THE GATES ARE FOR A MISSION IN PROGRESS, so they are not evaluated once the sortie is ENDING.
+        `finish` sets `gates_armed = False` before it lands, and this returns at once.  THAT IS THE FIX TO
+        A MEASURED LOOP, not a tidy-up: the abort's own landing pumps through here, and every gate that
+        fired is STILL TRUE while the aircraft comes down -- the plan box is still dead, so the tick after
+        the landing starts sets `abort_reason` again and `pump` (whose exit condition that is) returns in
+        one iteration.  MEASURED on `RECT27-kill-plan` and `RECT27b-kill-plan`, 2026-10-15: both exited with
+        `landed: armed=True mode=LAND` 0.05 s after the LAND, the aircraft still at 2.0 m and still armed,
+        and the second one did it with the reason explicitly cleared first -- the gate put it back.  An
+        abort that keeps re-firing while it lands can never wait for the landing.
+        """
+        if not self.gates_armed:
+            return
         st = self.bridge.state()
         reasons = []
         if self.tap.n > 0 and (abs(self.tap.p[0]) > self.args.geofence_m or
@@ -413,16 +433,47 @@ class Supervisor:
         return None
 
     def takeoff(self):
+        """THE TAKE-OFF, and WHICH CONTRACT IS FLOWN is decided by `--takeoff-command-m` and stated below.
+
+        TWO MECHANISMS, BOTH IN THE CODE, ONE OF THEM FLOWN, and the log says which:
+
+        * THE COMMAND HEIGHT.  `--takeoff-command-m` is what goes out as `packet.z` -- VERBATIM, with no
+          datum added (`bridge/mavlink_impl.py::takeoff`; the bench settled that a 2.500 m request is
+          ACCEPTED and ADOPTED as 2.5 m above the pad, CTUN DAlt peak +2.525).  The FCU's take-off
+          controller then flies the aircraft to that height and its `landed_state` becomes flying.
+        * THE SETPOINT-DRIVEN CLIMB (the OWNER'S design change, 2026-10-15: "起飞命令就飞20cm高，然后立马进定点").
+          With `--takeoff-command-m 0.2` the command is only "leave the ground cleanly" and the CLIMB TO THE
+          MISSION ALTITUDE IS THE PLAN'S: `--trigger-on-airborne` puts the go out the moment the vehicle is
+          airborne, and the plan box's first target is a VERTICAL leg to the mission altitude
+          (`rectangle_source.py --vertical-first-m`), held for the A4 window.  Position setpoints cancel
+          GUIDED's take-off SubMode by design (STATUS row 25, trap 9), which is what hands the climb over.
+        * `--climb-guard-m` STAYS ON either way and bounds the climb against the MISSION altitude
+          (`--alt`), not against the command, so a 0.2 m command with a 2.5 m mission does not trip it.
+        """
         self.set_phase("takeoff")
-        if not self.bridge.takeoff(self.args.alt):
+        if not self.bridge.takeoff(self.args.takeoff_command_m):
             return "takeoff refused: %s" % _texts(self.bridge.state())
         z0 = float(self.tap.p[2])
-        self.log("takeoff commanded to %.2f m; the plan's setpoints are NOT on the wire yet (the bridge "
-                 "waits for the trigger) -- position setpoints cancel GUIDED's take-off SubMode" % self.args.alt)
-        self.pump(12.0, until=lambda: self.tap.p[2] > z0 + 0.25)
-        if self.tap.p[2] <= z0 + 0.25:
-            return "never left the ground"
-        self.log("airborne: truth altitude %.3f m" % self.tap.p[2])
+        if abs(self.args.takeoff_command_m - self.args.alt) < 1e-9:
+            self.log("takeoff commanded to %.2f m, the mission altitude, VERBATIM (mechanism: the FCU's "
+                     "own take-off controller flies the whole climb); the plan's setpoints are NOT on the "
+                     "wire yet -- position setpoints cancel GUIDED's take-off SubMode"
+                     % self.args.takeoff_command_m)
+        else:
+            self.log("takeoff commanded to only %.2f m (mechanism: SETPOINT-DRIVEN CLIMB -- the command "
+                     "is just 'leave the ground', the mission altitude %.2f m is the PLAN's; the go goes "
+                     "out on airborne=%s and the plan's first target is a vertical leg)"
+                     % (self.args.takeoff_command_m, self.args.alt, self.args.trigger_on_airborne))
+        # The airborne threshold is BELOW the command: with a 0.2 m command the FCU reaches its own target
+        # and stops, so a threshold at the command height would never be met.  It is a "has it left the pad"
+        # test, not a "has it reached the target" one.
+        thr = min(0.25, max(0.10, 0.5 * self.args.takeoff_command_m))
+        self.pump(12.0, until=lambda: self.tap.p[2] > z0 + thr)
+        if self.tap.p[2] <= z0 + thr:
+            return ("never left the ground (truth %.3f m after 12.0 s, threshold %.2f m above %.3f m)"
+                    % (self.tap.p[2], thr, z0))
+        self.log("airborne: truth altitude %.3f m (threshold %.2f m; the take-off command was %.2f m)"
+                 % (self.tap.p[2], thr, self.args.takeoff_command_m))
         return None
 
     def hold(self, seconds):
@@ -504,11 +555,22 @@ class Supervisor:
                          % (self.plan["last_tid"], time.monotonic() - t0, self.bridge_status["sent"]))
                 return None
 
-    def land(self):
+    def land(self, settle_s=5.0):
         """NORMAL LAND.  The plan is already off the wire -- the BRIDGE takes it off when the stream says
-        COMPLETED, and again when the mode leaves GUIDED -- so this is the authority acting alone."""
+        COMPLETED, and again when the mode leaves GUIDED -- so this is the authority acting alone.
+
+        `settle_s` IS NOT A DELAY FOR ITS OWN SAKE; it is the answer to a MEASURED false end.  The wait
+        below is "until the FCU says it is not armed", and `armed` is a LEVEL in the heartbeat, not an
+        event: the 1 Hz heartbeat that was in flight when LAND was commanded can still carry `armed=True`
+        while the mode has already changed.  MEASURED on `RECT27b-kill-plan` (2026-10-15): the abort's LAND
+        was followed by `landed: armed=True mode=LAND` 0.05 s later and the process exited with the
+        aircraft at 2.0 m, so a wait that starts by sampling the flag immediately can end on a STALE
+        sample.  Settling first costs at most `settle_s` on a landing that cannot finish faster than that
+        anyway (a LAND from 2.5 m takes ~12 s), and removes the whole class of "it said not-armed once".
+        """
         self.set_phase("land")
         self.bridge.land()
+        self.pump(settle_s)                     # let the commanded mode take effect before it is trusted
         self.pump(40.0, until=lambda: not self.bridge.state().armed)
         st = self.bridge.state()
         self.log("landed: armed=%s mode=%s" % (st.armed, st.mode))
@@ -530,6 +592,7 @@ class Supervisor:
         self.route_started = False
         self.planner_stalled = False
         self.planner_stall_since = None
+        self.gates_armed = True                    # set in __init__ too; see the comment there
         self.start_ros()
         self.bridge = MavlinkBridge(url=self.args.mav, log=self.log)
         try:
@@ -546,22 +609,56 @@ class Supervisor:
 
     def finish(self):
         if self.abort_reason:
+            # THE REASON IS CARRIED OUT OF THE PUMP LOOP, NOT LEFT IN IT.  `pump` STOPS as soon as
+            # `abort_reason` is set (it is the loop's own exit), so a pump that runs while the reason is
+            # still set is a ZERO-SECOND no-op.  The reason is restored before the final read, so the
+            # summary and the process rc still name what ended the sortie.  WHERE ELSE IT HAS TO BE CLEARED
+            # is a different occurrence of the same signature and is explained at the landing below.
+            reason = self.abort_reason
+            self.abort_reason = None
+            self.gates_armed = False
             self.set_phase("abort")
-            self.log("ABORT: %s" % self.abort_reason)
+            self.log("ABORT: %s" % reason)
             try:
                 # RTL is available to the supervisor (it is a class-76 mode); the mission's own abort has
                 # used LAND since S3, and the choice is a parameter rather than a rewrite.
                 if self.args.abort_mode == "rtl":
                     self.bridge.set_mode(Mode.RTL)
+                    self.pump(self.args.abort_land_s, until=lambda: not self.bridge.state().armed)
                 else:
-                    self.bridge.land()
-                # AN ABORT TAKES OVER AND LANDS -- it does not let go.  MEASURED on the kill sortie: with
-                # a fixed 8 s pump the aircraft was still ARMED and airborne when the process stopped
-                # (`final: armed=True mode=LAND alt AMSL 586.1 m`), because a LAND from 2 m takes longer
-                # than 8 s to disarm.  So the wait is for the FCU's OWN disarm, bounded by --abort-land-s.
-                self.pump(self.args.abort_land_s, until=lambda: not self.bridge.state().armed)
+                    # THE LANDING IS THE SAME ACT AS THE NORMAL ONE, so it is the same code: `self.land()`
+                    # commands LAND, pumps until the FCU reports DISARMED (bounded by the landing's own
+                    # 40 s), names the phase `land` -- the phase log's ending is therefore the same on an
+                    # abort as on a completed tour -- and logs `landed: armed=... mode=...`.
+                    #
+                    # MEASURED ON `RECT27-kill-plan`, 2026-10-15, WHICH IS WHY THIS IS NOT A
+                    # COMMAND-AND-EXIT: the old abort path sent LAND and fell straight through to the final
+                    # read 0.05 s later --
+                    #     [  28.94] bridge/mavlink: mode -> LAND
+                    #     [  28.94] final: armed=True mode=LAND alt AMSL 586.0 m
+                    # -- and the FCU's own log for that sortie ends with the aircraft STILL ARMED AT
+                    # 2.002 m (no MODE 9 until t 41.72, the FCU still in mode 4 when the log closed).  The
+                    # abort had taken over the MODE and let go of the AIRCRAFT.  A process that exits before
+                    # the vehicle is down has not ended the sortie cleanly, whatever its phase log says.
+                    #
+                    # WHAT IS DELIBERATELY NOT DONE: the landing's own "still armed after LAND" verdict is
+                    # DISCARDED.  `reason` is why this sortie ended and what a reader must see; overwriting
+                    # it with a post-abort outcome would lose the finding.  That outcome is not hidden --
+                    # `landed: armed=...` and the `final:` line below carry it, and `tools/metrics.py`'s B4
+                    # reads it off the phase log.
+                    #
+                    # AND THE REASON IS CLEARED FOR THE DURATION, WHICH IS NOT BOOKKEEPING.  `pump` returns
+                    # the moment `abort_reason` is set, and `check_gates` sets it AGAIN during the landing:
+                    # the tick after LAND arrives reads `st.armed and st.mode == "LAND" and self.phase not
+                    # in ("land", "done")` -- "the FCU left the mission mode" -- which is TRUE of the very
+                    # landing this block just commanded.  MEASURED on `RECT27b-kill-plan`: with the reason
+                    # left set, the landing pump ran ONE iteration and the process again exited with the
+                    # aircraft armed at 2.0 m.  The parking brake of the abort was switching itself back on.
+                    self.abort_reason = None
+                    self.land()
             except Exception as e:                                      # pragma: no cover
                 self.log("could not command the abort mode: %s" % e)
+            self.abort_reason = reason
         st = self.bridge.state()
         ctr = self.bridge.counters()
         self.log("final: armed=%s mode=%s alt AMSL %.1f m; %d setpoints, %d external-nav messages "
@@ -597,7 +694,16 @@ def main(argv=None) -> int:
                     help="the truth-fed calibration flight is NOT ported to F2 -- see the evidence file, "
                          "section 'what this round could not do'")
     ap.add_argument("--calib-file", default="")
-    ap.add_argument("--alt", type=float, default=2.5, help="take-off altitude, m")
+    ap.add_argument("--alt", type=float, default=2.5, help="MISSION altitude, m above the pad.  This is the "
+                    "height the guard and the A4 window are judged against; it is NOT automatically what "
+                    "the take-off command asks for (see --takeoff-command-m)")
+    ap.add_argument("--takeoff-command-m", type=float, default=0.2,
+                    help="WHAT GOES OUT AS packet.z, verbatim, m above the pad -- the OWNER'S take-off "
+                         "design (2026-10-15): 0.2 m is 'just leave the ground cleanly', and the climb to "
+                         "--alt is flown by the PLAN's setpoints once the go is out.  Set it equal to "
+                         "--alt for the other mechanism, in which the FCU's own take-off controller flies "
+                         "the whole climb (BENCH: a 2.50 m command is ACCEPTED and ADOPTED as 2.50 m above "
+                         "the pad, CTUN DAlt peak +2.525).  THE FLOWN ONE IS PRINTED AT START-UP")
     ap.add_argument("--hold", type=float, default=3.0, help="seconds at the take-off point before the go")
     ap.add_argument("--climb-guard-m", type=float, default=1.0,
                     help="ABORT if the truth climbs this far above the commanded take-off altitude "
@@ -618,8 +724,10 @@ def main(argv=None) -> int:
     ap.add_argument("--geofence-m", type=float, default=4.60)
     ap.add_argument("--abort-mode", default="land", choices=["land", "rtl"])
     ap.add_argument("--abort-land-s", type=float, default=40.0,
-                    help="wait up to this long for the FCU to DISARM after the abort's LAND (a "
-                         "fixed 8 s left the aircraft armed and airborne on the kill sortie)")
+                    help="wait up to this long for the FCU to DISARM on an RTL abort.  A LAND abort does "
+                         "not use it: it goes through `self.land()`, which owns the same 40 s wait the "
+                         "normal landing uses -- MEASURED on RECT27-kill-plan, where the old abort path "
+                         "sent LAND and exited 0.05 s later with the aircraft armed at 2.0 m")
     ap.add_argument("--link-wait-s", type=float, default=30.0)
     ap.add_argument("--link-floor-hz", type=float, default=10.0,
                     help="REFUSE TO ARM below this MEASURED position rate on this endpoint")
@@ -640,6 +748,24 @@ def main(argv=None) -> int:
     print("supervisor: gates -- geofence %.2f m on TRUTH, nav floor %.1f Hz, plan silence %.1f s, "
           "class 76 only (it never sends a setpoint)" % (args.geofence_m, args.nav_floor_hz,
                                                          args.plan_silence_s), flush=True)
+    # WHICH TAKE-OFF CONTRACT IS FLOWN, IN THE RUN'S OWN WORDS.  Two mechanisms exist and they fly very
+    # different profiles, so a reader must not have to infer which one from a number in the log.
+    if abs(args.takeoff_command_m - args.alt) < 1e-9:
+        print("supervisor: TAKE-OFF = FCU-TARGET: packet.z = %.3f m VERBATIM (= --alt); the FCU's own "
+              "take-off controller flies the whole climb, the go goes out %s"
+              % (args.takeoff_command_m,
+                 "ON AIRBORNE (--trigger-on-airborne)" if args.trigger_on_airborne
+                 else "AFTER THE HOLD (--trigger-after-hold)"), flush=True)
+    else:
+        print("supervisor: TAKE-OFF = SETPOINT-DRIVEN CLIMB (the owner's design): packet.z = %.3f m only "
+              "('leave the ground'); the mission altitude %.3f m is the PLAN's, the go goes out %s, and the "
+              "plan's first target must be a VERTICAL leg (rectangle_source.py --vertical-first-m)"
+              % (args.takeoff_command_m, args.alt,
+                 "ON AIRBORNE (--trigger-on-airborne)" if args.trigger_on_airborne
+                 else "AFTER THE HOLD (--trigger-after-hold)"), flush=True)
+    print("supervisor: the take-off's own guard -- abort if the TRUTH passes %.2f m (mission altitude "
+          "%.2f + climb guard %.2f); nothing else bounds the flight before the trigger"
+          % (args.alt + args.climb_guard_m, args.alt, args.climb_guard_m), flush=True)
     os.makedirs(os.path.dirname(os.path.abspath(args.phase_log)), exist_ok=True)
     return Supervisor(args).run()
 

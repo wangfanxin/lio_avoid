@@ -92,6 +92,7 @@ def main() -> int:
         s.planner_stalled = False
         s.planner_stall_since = None
         s.abort_reason = None
+        s.gates_armed = True
         return s
 
     s = live(0.2)
@@ -122,6 +123,26 @@ def main() -> int:
     check("H. the bridge reports the estimator feed at 3 Hz -> ABORT naming the feed",
           s.abort_reason is not None and "ESTIMATOR FEED HAS STOPPED" in s.abort_reason,
           (s.abort_reason or "")[:70])
+
+    # ---- THE RULE THE KILL SORTIES ADDED: THE GATES ARE FOR A MISSION IN PROGRESS --------------------
+    # MEASURED (`RECT27-kill-plan` and `RECT27b-kill-plan`, 2026-10-15): the abort's own landing pumps
+    # through `check_gates`, every gate that fired is STILL TRUE while the aircraft comes down, and the
+    # re-fired reason makes `pump` -- whose exit condition it is -- return in one iteration.  Both sorties
+    # exited 0.05 s after the LAND with the aircraft armed at 2.0 m.
+    print()
+    print("   and WHILE THE SORTIE IS ENDING the gates must NOT re-fire (the landing has to be waited for):")
+
+    s = live(5.0)                      # a condition that DID fire, as it is during the abort's landing
+    s.gates_armed = False
+    mod.Supervisor.check_gates(s)
+    check("I. a silent plan box while the sortie is ENDING -> NO new abort (the landing proceeds)",
+          s.abort_reason is None, str(s.abort_reason)[:60])
+
+    s = live(5.0)                      # the negative control: the SAME condition with the gates live
+    mod.Supervisor.check_gates(s)
+    check("I'. ... and the same condition with the gates live DOES abort (the case above is not vacuous)",
+          s.abort_reason is not None and "STOPPED TALKING" in s.abort_reason,
+          (s.abort_reason or "")[:60])
 
     print()
     print("stall-gate test:", "PASS" if ok else "FAIL")

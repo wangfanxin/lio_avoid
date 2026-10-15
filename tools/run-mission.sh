@@ -96,6 +96,29 @@ else
 fi
 WORLD_HOLD_S="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["mission"].get("hold_s", "unset"))' "$WORLD" 2>/dev/null || echo unreadable)"
 
+# THE TAKE-OFF PROFILE, AND IT IS PRINTED BECAUSE IT CHANGED WHAT IS FLOWN.  Two mechanisms are in the
+# code; this harness flies the OWNER'S (2026-10-15): the take-off command asks for only ~0.2 m ("just leave
+# the ground cleanly"), the go goes out the moment the vehicle is airborne, and the CLIMB TO THE MISSION
+# ALTITUDE IS THE PLAN'S -- a vertical first target held for the A4 window.  `TAKEOFF_COMMAND_M` equal to
+# the mission altitude restores the other profile (the FCU's own take-off controller flies the whole climb),
+# and `VERTICAL_FIRST=0` removes the plan's climb leg with it.
+TAKEOFF_COMMAND_M="${TAKEOFF_COMMAND_M:-0.2}"
+VERTICAL_FIRST="${VERTICAL_FIRST:-1}"
+VERTICAL_HOLD_S="${VERTICAL_HOLD_S:-3.0}"
+if awk "BEGIN{exit !($TAKEOFF_COMMAND_M == $TAKEOFF_ALT)}"; then
+    TAKEOFF_PROFILE="FCU-TARGET -- packet.z = ${TAKEOFF_COMMAND_M} m VERBATIM, the FCU's own take-off controller flies the whole climb"
+    VERTICAL_ARG=""
+    SUP_TRIGGER="--trigger-after-hold"
+else
+    TAKEOFF_PROFILE="SETPOINT-DRIVEN CLIMB (the owner's design) -- packet.z = ${TAKEOFF_COMMAND_M} m only; the ${TAKEOFF_ALT} m mission altitude is the PLAN's, the go goes out ON AIRBORNE"
+    if [ "$VERTICAL_FIRST" = "1" ]; then
+        VERTICAL_ARG="--vertical-first-m $TAKEOFF_ALT --vertical-hold-s $VERTICAL_HOLD_S"
+    else
+        VERTICAL_ARG=""
+    fi
+    SUP_TRIGGER="--trigger-on-airborne"
+fi
+
 set +u
 source /opt/ros/humble/setup.bash
 source "$WS/install/setup.bash"
@@ -149,6 +172,14 @@ echo "   sensor    : the SAME world file ($REPO/sim/lidar_imu.py --world \"$WORL
 echo "   geofence  : $GEOFENCE_M m, take-off altitude $TAKEOFF_ALT m"
 echo "   dwell     : ${RECT_HOLD_S} s at every corner -- from ${RECT_HOLD_FROM}; the world file's"
 echo "               mission.hold_s is ${WORLD_HOLD_S} and is deliberately NOT what a default sortie flies"
+echo "   take-off  : ${TAKEOFF_PROFILE}"
+if [ -n "$VERTICAL_ARG" ]; then
+    echo "               the plan's first target is a VERTICAL leg to ${TAKEOFF_ALT} m, held ${VERTICAL_HOLD_S} s"
+    echo "               (that hold IS the A4 window, which is what keeps A4 comparable with docs/metrics/)"
+elif awk "BEGIN{exit !($TAKEOFF_COMMAND_M != $TAKEOFF_ALT)}"; then
+    echo "               VERTICAL_FIRST=0: the plan has NO climb leg, so the first setpoint is corner 1 and"
+    echo "               the aircraft climbs IN TRANSIT -- the A4 window is then a climb, not a hover"
+fi
 echo "   run dir   : $OUT"
 echo
 
@@ -321,7 +352,7 @@ echo "== flying =="
 # decides ARRIVAL + SETTLE + DWELL itself from `/lio/robo/odom`, and declares the tour complete with
 # `trajectory_flag = COMPLETED`.
 python3 "$REPO/planner/rectangle_source.py" --world "$WORLD" $TRAJ_CALIB_ARG \
-    --hold-s "$RECT_HOLD_S" \
+    --hold-s "$RECT_HOLD_S" $VERTICAL_ARG \
     ${CMD_ARGS:-} > "$OUT/traj.log" 2>&1 &
 TRAJ_PID=$!
 
@@ -342,7 +373,8 @@ kill -0 "$BRIDGE_PID" 2>/dev/null || { echo "the bridge process died:"; tail -20
 # It is last because its exit is the sortie's result, and because the two processes it watches must already
 # be publishing when it starts.
 python3 "$REPO/supervisor/supervisor.py" --mav "tcp:127.0.0.1:5761" $CALIB_ARG \
-    --alt "$TAKEOFF_ALT" --hold 3.0 --geofence-m "$GEOFENCE_M" ${SUP_ARGS:-} \
+    --alt "$TAKEOFF_ALT" --takeoff-command-m "$TAKEOFF_COMMAND_M" \
+    --hold 3.0 --geofence-m "$GEOFENCE_M" $SUP_TRIGGER ${SUP_ARGS:-} \
     --phase-log "$OUT/phase.csv" > "$OUT/supervisor.log" 2>&1
 SUP_RC=$?
 cat "$OUT/supervisor.log"
