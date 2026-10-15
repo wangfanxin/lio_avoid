@@ -1,7 +1,9 @@
 F2 -- the SUPERVISOR as an independent process.  EVIDENCE, AND WHERE IT STOPPED.
 =================================================================================
 Written 2026-10-16 by the round that implemented F2 of _stage/refactor-bridge-plan.md section 6, after F1
-(commits 4b5b004, b44b69c).  Two endpoints, three processes, `fsm/mission_fsm.py` DELETED.
+(commits 4b5b004, b44b69c).  This round is commit 9965785 (code + evidence) and 2973374 (figure),
+plus the delegating agent's 52b3ba6 (the F2 gate evidence) and bc94fb9 (the acceptance table).  Two
+endpoints, three processes, `fsm/mission_fsm.py` DELETED.
 
 VERDICT IN ONE LINE: the architecture is built and its two NEW capabilities are proved -- the second
 MAVLink endpoint (bench) and "a dead plan box is a NAMED abort, not a finished tour" (flight).  The

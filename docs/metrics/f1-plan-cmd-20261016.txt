@@ -1,8 +1,8 @@
 F1 — the PLAN box becomes the executor: /plan/cmd flies the aircraft.  EVIDENCE.
 ================================================================================
 Written 2026-10-16 by the round that implemented F1 of _stage/refactor-bridge-plan.md section 6 (steps
-S1-S4 were the zero-flight half, commit cf27fd8 and earlier).  Starting HEAD 940cb50, ending HEAD
-<F1-EVIDENCE>.
+S1-S4 were the zero-flight half, commit cf27fd8 and earlier).  Starting HEAD 940cb50; F1 landed in
+4b5b004 (code) and b44b69c (evidence + docs + figure).
 
 Two sorties, both through `_stage/rect23-plan-cmd-fly.sh` (waits for idle, kills nothing by name, refuses
 if the stack is busy) and both on the FROZEN EKF parameter set so that THE REFACTOR IS THE ONLY VARIABLE:
