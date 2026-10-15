@@ -231,11 +231,14 @@ a claim about one adapter.
   defect, the clock defect, the map pool exhaustion.  Nothing in this file supersedes those measurements.
 * **The launch file is installed and the node starts from it; that is the whole of what is proven about it.**
   Nothing has fed it a cloud or an odometry message, it has been given no goal, and it has produced no
-  B-spline on this stack.  Two things stand between here and a sortie, and neither is a launch parameter:
-  a **decimated, RELIABLE** publisher for `/lio/cloud_world` (the map's whole update runs inline in the cloud
-  callback, and its subscription is RELIABLE, so the raw registered scan must not be forwarded as-is), and a
-  way for `tools/run-mission.sh` to start the SECOND process an ego sortie needs, since its planner slot
-  starts exactly one.  Until those exist, `PLANNER=ego` selects the adapter and nothing else.
+  B-spline on this stack.  The two things that stood between here and a sortie are now WRITTEN and neither is
+  a launch parameter — **`src/planner/cloud_relay.py`** decimates `/lio/cloud_world` onto the 0.10 m lattice
+  the map stores anyway and publishes it RELIABLE, and **`PLANNER=ego` now starts the second process** the
+  sortie needs (`EGO_STACK=1`: `ros2 launch ego_planner ego_on_lio.launch.py` plus the relay, stopped first
+  in the teardown) — but **neither has been run against a live LIO, and no cloud has ever reached ego's map
+  from this stack.**  The relay's arithmetic is asserted offline (`--selftest`: one point per cell,
+  idempotent, ego's box on all three axes) and its achieved ratio is printed at runtime, because the ratio on
+  the real scan is not something a synthetic cloud can stand in for.
 * The acceptance rows (A1–A4, B1–B3, C1, C2) are defined against a commanded rectangle and a leg phase log.
   A planner that does not fly a rectangle can be swapped in, but those rows then measure something else —
   which is why a swap must state which rows still apply.

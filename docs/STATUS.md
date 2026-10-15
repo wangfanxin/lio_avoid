@@ -120,11 +120,17 @@ the metrics file that carries it is named.
    parameters set, **0 of them undeclared by the node**, the node reaching `[FSM]: state: INIT` with
    `wait for goal or trigger` — and the check found four real omissions in the first version (upstream also
    sets `optimization/max_vel`, `optimization/max_acc` and the four `optimization/lambda_*` weights, which a
-   file that stays silent about them does not get).  **What is still missing is not a parameter**: (a) a
-   decimated, RELIABLE publisher for `/lio/cloud_world`, because the map's whole update runs inline in its
-   cloud callback and its subscription is RELIABLE; (b) a way for `tools/run-mission.sh` to start the SECOND
-   process an ego sortie needs, since its planner slot starts exactly one.  Until those exist `PLANNER=ego`
-   selects the adapter and nothing else, and **nothing about ego on this stack is demonstrated in flight.**
+   file that stays silent about them does not get).  **What is still missing is not a parameter, and it is
+   not code either**: `src/planner/cloud_relay.py` now decimates `/lio/cloud_world` onto the 0.10 m lattice
+   the map stores anyway (measured input: 5.0 Hz at ~19480 points per scan, and the map writes 27 voxels per
+   accepted point INLINE in its cloud callback) and `PLANNER=ego` now starts the second process a sortie
+   needs (`EGO_STACK=1` → `ros2 launch ego_planner ego_on_lio.launch.py` + the relay, the new decision
+   checked in all three directions by `test-planner-knob.py`).  What is missing is that **neither has ever
+   been run against a live LIO**: no cloud has reached ego's map from this stack, no goal has been sent, no
+   B-spline has come back — so `PLANNER=ego` still selects the adapter and nothing else, and **nothing about
+   ego on this stack is demonstrated in flight.**  The next honest step is a pregate with the LIO up and no
+   flight: it settles the relay's achieved ratio and ego's own occupancy-update time (which ego can print,
+   `grid_map/show_occ_time`) without risking an aircraft.
 
 ## Open questions, and the things kept for a decision
 

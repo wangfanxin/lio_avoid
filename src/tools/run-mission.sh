@@ -175,6 +175,15 @@ fi
 # SAME consumer code with three different planners and asserts exactly that.
 PLANNER="${PLANNER:-rectangle}"
 PLANNER_TOPIC="${PLANNER_TOPIC:-/plan/cmd}"
+#: the limits ego's optimiser is told to respect, when the ego stack is started (see `EGO_STACK` below).
+#: They are SOFT quadratic penalties in that optimiser (`bspline_optimizer.cpp:1118-1149`), not constraints,
+#: so they shape the plan rather than bound the flight -- the FCU is what bounds the flight.
+EGO_MAX_VEL="${EGO_MAX_VEL:-2.0}"
+EGO_MAX_ACC="${EGO_MAX_ACC:-3.0}"
+#: WHETHER THE EGO STACK IS STARTED, decided HERE so that the banner below can tell the truth about it.
+#: `PLANNER=ego` implies it; `EGO_STACK=0` overrides it for an ego that is already running elsewhere.
+EGO_STACK="${EGO_STACK:-$([ "$PLANNER" = "ego" ] && echo 1 || echo 0)}"
+EGO_CLOUD_TOPIC="${EGO_CLOUD_TOPIC:-/ego/cloud}"
 case "$PLANNER" in
     rectangle)
         PLANNER_FILE="$REPO/planner/rectangle_source.py"
@@ -219,6 +228,11 @@ if [ "${PLANNER_DRY_RUN:-0}" = "1" ]; then
     echo "   topic          : $PLANNER_TOPIC (quadrotor_msgs/PositionCommand, frame lio_world)"
     echo "   argv           : $PLANNER_ARGS"
     echo "   what would run : python3 $PLANNER_FILE $PLANNER_ARGS"
+    echo "   ego stack      : $EGO_STACK (cloud_relay /lio/cloud_world -> $EGO_CLOUD_TOPIC; ego max_vel $EGO_MAX_VEL max_acc $EGO_MAX_ACC)"
+    if [ "$EGO_STACK" = "1" ]; then
+        echo "                    would also run: ros2 launch ego_planner ego_on_lio.launch.py"
+        echo "                                   python3 $REPO/planner/cloud_relay.py --out $EGO_CLOUD_TOPIC"
+    fi
     exit 0
 fi
 
@@ -276,6 +290,10 @@ echo "   override  : $EXTRA_NAME   (appended LAST to --defaults: the last value 
 echo "   planner   : $PLANNER -- $PLANNER_WHAT"
 echo "               $PLANNER_FILE  ->  $PLANNER_TOPIC (quadrotor_msgs/PositionCommand, frame lio_world)"
 echo "               (the BRIDGE and the SUPERVISOR do not know which planner this is: they read the topic)"
+if [ "${EGO_STACK:-0}" = "1" ]; then
+    echo "   ego stack : ON -- ego_planner_node (src/planner/ego_on_lio.launch.py) + cloud_relay"
+    echo "               /lio/cloud_world -> ${EGO_CLOUD_TOPIC:-/ego/cloud} at 0.10 m; ego max_vel ${EGO_MAX_VEL:-2.0} max_acc ${EGO_MAX_ACC:-3.0} (SOFT)"
+fi
 echo "   world     : $WORLD  ($CORNERS)"
 echo "   airframe  : sim model '$SITL_MODEL' against FRAME_TYPE 1 (X) -- the two must agree (see SITL_MODEL above)"
 printf 'model=%s\nfirmware=FRAME_CLASS 1 / FRAME_TYPE 1 (X mixer)\nrule=the SITL model names the motor geometry; it must match FRAME_TYPE\n' \
@@ -327,6 +345,11 @@ cd - > /dev/null
 # result: summary 61289 = truth_report's "of 61289 seen" = the closed tap's own row count, and metrics.txt
 # mtime AFTER tap.csv instead of before it (this function's A4 row needed the same treatment for the BIN).
 stop_stack() {
+    # THE EGO STACK IS STOPPED FIRST when it exists, because `ros2 launch` owns a child of its own and the
+    # planner it feeds is the process that must not be left publishing into a dead stack.
+    for p in "${EGO_LAUNCH_PID:-}" "${EGO_RELAY_PID:-}"; do
+        [ -n "$p" ] && kill "$p" 2>/dev/null
+    done
     for p in "${FSM_PID:-}" "${BRIDGE_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RECT_PID:-}"; do
         [ -n "$p" ] && kill "$p" 2>/dev/null
     done
@@ -368,7 +391,8 @@ stop_stack() {
     fi
     # anything that ignored SIGTERM gets SIGKILL; `cleanup` repeats this on the way out, so nothing is left
     # behind whether the script is exiting normally or not.
-    for p in "${FSM_PID:-}" "${BRIDGE_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${SITL:-}" "${RX_PID:-}" \
+    for p in "${EGO_LAUNCH_PID:-}" "${EGO_RELAY_PID:-}" \
+             "${FSM_PID:-}" "${BRIDGE_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${SITL:-}" "${RX_PID:-}" \
              "${REC_PID:-}" "${RECC_PID:-}" "${RECT_PID:-}"; do
         [ -n "$p" ] && kill -9 "$p" 2>/dev/null
     done
@@ -447,10 +471,50 @@ RECT_PID=$!
 sleep 3
 
 echo "== flying =="
+# THE EGO STACK, WHEN THE PLANNER NEEDS ONE, AND IT IS TWO MORE PROCESSES.  This is the piece that made
+# `PLANNER=ego` a label rather than a capability: `ego_source.py` produces the CONTRACT, but it needs ego's
+# own `ego_planner_node` running and fed, and the harness's planner slot starts exactly one process.  Both
+# are started here, BEFORE the plan box, so the planner is not publishing for a planner that is not up:
+#
+#   * `ros2 launch ego_planner ego_on_lio.launch.py` -- one node, wired to our odometry and our scan
+#     (`src/planner/ego_on_lio.launch.py`; installed into the ego checkout by
+#     `src/tools/install-ego-launch.py`, which also checks every parameter name against the node's own
+#     declared list);
+#   * `planner/cloud_relay.py` -- `/lio/cloud_world` -> `/ego/cloud`, decimated to the 0.10 m lattice ego's
+#     map stores anyway.  MEASURED: our scan is 5.0 Hz at ~19480 points per scan, and ego's map writes 27
+#     voxels per accepted point INLINE in its cloud callback, in a callback group it shares with the
+#     odometry it needs (`plan_env/grid_map.cpp:845-887`, `:860-885`).
+#
+# ego's map subscription is RELIABLE (`grid_map.cpp:168-172`) and Super-LIO's publisher is RELIABLE too
+# (`ROSWrapper.cpp:338-340`), so nothing here is about QoS; it is about how much work one callback does.
+# `EGO_STACK` can be forced to 0 to run `PLANNER=ego` with a hand-started ego (e.g. one already running
+# outside the harness).  The decision itself is made in the parameter block, so the banner states it.
+EGO_LAUNCH_PID=""; EGO_RELAY_PID=""
+if [ "$EGO_STACK" = "1" ]; then
+    set +u
+    source "$WS/install/setup.bash" 2>/dev/null || true
+    source /home/fanxin/lio_avoid/planner_ws/install/setup.bash
+    set -u
+    export ROS_LOCALHOST_ONLY=1
+    python3 "$REPO/planner/cloud_relay.py" --in /lio/cloud_world --out "$EGO_CLOUD_TOPIC" \
+        > "$OUT/ego_relay.log" 2>&1 &
+    EGO_RELAY_PID=$!
+    ros2 launch ego_planner ego_on_lio.launch.py \
+        odom_vel_topic:=/lio/odom odom_topic:=/lio/robo/odom cloud_topic:="$EGO_CLOUD_TOPIC" \
+        max_vel:="$EGO_MAX_VEL" max_acc:="$EGO_MAX_ACC" \
+        > "$OUT/ego_planner.log" 2>&1 &
+    EGO_LAUNCH_PID=$!
+    echo "   ego stack : cloud_relay pid $EGO_RELAY_PID -> $EGO_CLOUD_TOPIC, ego_planner pid $EGO_LAUNCH_PID"
+    sleep 6
+    kill -0 "$EGO_RELAY_PID" 2>/dev/null || { echo "the cloud relay died:"; tail -20 "$OUT/ego_relay.log"; exit 1; }
+    kill -0 "$EGO_LAUNCH_PID" 2>/dev/null || { echo "the ego launch died:"; tail -20 "$OUT/ego_planner.log"; exit 1; }
+fi
+
 # THE PLAN BOX, which since F1 is ALSO THE EXECUTOR: `planner/rectangle_source.py` publishes the mission's
 # five waypoints as a `quadrotor_msgs/PositionCommand` stream on /plan/cmd (100 Hz, its own wall timer),
 # decides ARRIVAL + SETTLE + DWELL itself from `/lio/robo/odom`, and declares the tour complete with
-# `trajectory_flag = COMPLETED`.
+# `trajectory_flag = COMPLETED`.  With PLANNER=ego this process is `planner/ego_source.py`: it asks the ego
+# node for one goal at a time and samples the B-spline it gets back.
 # PLANNER=$PLANNER (see the knob block): the file is chosen there and named in the banner above.
 python3 "$PLANNER_FILE" $PLANNER_ARGS > "$OUT/traj.log" 2>&1 &
 TRAJ_PID=$!

@@ -135,7 +135,26 @@ def main() -> int:
         bad.append("PLANNER=ego carries the rectangle's own flags, which it does not accept: %r" % argv)
     print()
 
-    # ---------------------------------------------------------------- 4. a named file, and a refusal
+    # ---------------------------------------------------------------- 4. the ego stack follows the planner
+    #     A planner that needs a SECOND process is the reason `EGO_STACK` exists at all, so the decision is
+    #     checked in all three directions -- implied by the planner, off for the flown one, and overridable
+    #     for an ego that is already running outside the harness.
+    for env, want, label in (({"PLANNER": "ego"}, "1", "PLANNER=ego implies it"),
+                             ({}, "0", "the flown planner does not start it"),
+                             ({"PLANNER": "ego", "EGO_STACK": "0"}, "0", "and it can be overridden")):
+        rc, out, argv = dry_run(env)
+        got = field(out, "ego stack").split()[0] if field(out, "ego stack") else "(absent)"
+        print("ego stack, %-34s -> %s" % (label, got))
+        if rc != 0:
+            bad.append("%s: the harness exits %d" % (label, rc))
+        if got != want:
+            bad.append("ego stack: %s gave %r, expected %r" % (label, got, want))
+    rc, out, argv = dry_run({"PLANNER": "ego"})
+    if "ego_on_lio.launch.py" not in out or "cloud_relay.py" not in out:
+        bad.append("PLANNER=ego does not say it would start the ego node and the cloud relay")
+    print()
+
+    # ---------------------------------------------------------------- 5. a named file, and a refusal
     mine = os.path.join(CODE, "planner", "ego_source.py")
     rc, out, argv = dry_run({"PLANNER": mine})
     print("PLANNER=<a path>")
