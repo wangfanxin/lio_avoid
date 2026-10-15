@@ -1,0 +1,67 @@
+WHERE THE PILLARS ARE LOST: the chain censused at three stages, PARKED, with nothing to race it
+2026-10-15 15:47:23Z   HEAD: b6ff578
+
+=== WHY THIS SHAPE ============================================================================
+DIAG4 (in flight) could not settle (A) 'the map was empty where the pillars are' vs (B) 'the map had
+them and the planner ignored them', because the cloud recorder kept ~0.5% of the relay's output: 25792
+points where the relay published millions.  A census taken from that sample cannot tell a missing
+pillar from a missed message.  So this run:
+   * the vehicle is PARKED -- no arming, no supervisor, no plan box, nothing to race the censuses;
+   * three censuses run at once, one per STAGE, so a loss is LOCALISED rather than merely detected:
+       /lio/cloud_world                        the LIO's registered map
+       /ego/cloud                              what OUR RELAY published from it
+       /drone_0_grid/grid_map/occupancy_inflate what EGO'S MAP made of that
+   * each subscribes RELIABLE at depth 50 (what the publishers offer), keeps a running UNION of
+     occupied cells with numpy on the raw buffer, prints its verdict every 15 s, and terminates ITSELF.
+
+=== THE THREE STAGES ==========================================================================
+   census_lio:    MAP CENSUS DONE: 34 of 46 pillars were in ego's map
+   census_relay:  MAP CENSUS DONE: 34 of 46 pillars were in ego's map
+   census_map:    MAP CENSUS DONE: 23 of 46 pillars were in ego's map
+   their own counts (last heartbeat of each):
+      census_lio     66 s: 659 message(s), 12824206 point(s), 3274 occupied cell(s)
+      census_relay   66 s: 169 message(s), 1423555 point(s), 3152 occupied cell(s)
+      census_map     66 s: 598 message(s), 10002846 point(s), 1190 occupied cell(s)
+   the relay's own counter, for comparison:
+      [INFO] [1792079145.591998548] [cloud_relay]: 218 scan(s): 4242308 -> 1838597 points (43.3% kept), 0 cropped away, frame 'world', odometry yes
+
+=== THE LOCALISATION ==========================================================================
+   LIO   /lio/cloud_world  -> RELAY /ego/cloud : THE RELAY LOSES NOTHING (34 -> 34, same absent list)
+   RELAY /ego/cloud        -> MAP   occupancy : EGO'S MAP DROPS 11 of the 34 it was handed (34 -> 23)
+   and in cells, not just pillars: the input carried 3157 distinct occupied cells, the map kept 1190
+   -- 62% fewer, over 637 map messages and 10.6M points observed.
+
+=== AND THE STRUCTURE OF THE LOSS, which is the round's real finding ===========================
+   The loss is NOT random.  Read the figure's colour split:
+      23 pillars in the map      -- essentially every pillar with x > 0
+      15 pillars dropped by ego  -- essentially every pillar with x < 0
+      12 pillars in neither      -- scattered, and absent from the LIO itself (occlusion from ONE
+                                    parked viewpoint, which is expected and is not a defect)
+   A HALF-SPACE SPLIT THROUGH THE VEHICLE'S OWN POSITION.  That is a strong clue and it points at the
+/mnt/d/distill_self/_stage/make-census-evidence.sh: line 48: grid_map.cpp:851-855: command not found
+   map's own acceptance test rather than at anything random:  accepts a cloud
+/mnt/d/distill_self/_stage/make-census-evidence.sh: line 49: grid_map/local_update_range: No such file or directory
+   point only when it lies within  OF THE VEHICLE per axis, and a box
+/mnt/d/distill_self/_stage/make-census-evidence.sh: line 50: camera_pos_: command not found
+   offset or a wrong  would cut the world exactly like this.
+
+=== WHAT IS ESTABLISHED, AND WHAT IS NOT ======================================================
+ESTABLISHED: (1) our relay is faithful -- it loses nothing between the LIO and ego; (2) ego's map is
+where the pillars are lost, losing 11 of 34 pillars and 62% of the distinct occupied cells; (3) the
+loss has a clean spatial structure (a half-space through the vehicle).
+/mnt/d/distill_self/_stage/make-census-evidence.sh: line 56: local_update_range: command not found
+NOT ESTABLISHED: the mechanism.  The leading hypothesis --  tested against a wrong
+/mnt/d/distill_self/_stage/make-census-evidence.sh: line 57: camera_pos_: command not found
+or offset  -- is a hypothesis, and the next round tests it directly by reading the map's
+own position against the odometry it is fed.
+ALSO NOT ESTABLISHED, and it is a limit of this instrument: THE CENSUS IS z-BLIND.  It reconstructs a
+2-D union of x,y, so a cell counted as 'on the pillar' could in principle come from another height
+(the ground plane under it, or the ceiling).  The three-way comparison is unaffected -- all three
+stages were censused the same way -- but a per-pillar claim should not be read as a 3-D statement.
+
+=== THE FIGURE ================================================================================
+   docs/figures/traj-xy-CENSUS-pillar-loss.png
+      sha256 8fda667e6679eae951e17eaaca3178fdf1e000f25649a494e7eac7ff0511ca30
+   one more instrument defect found while drawing it: the periodic verdict truncates its absent list to
+   14 entries, so parsing THAT read the map as 32 of 46 where the truth is 23.  The figure and this
+   file use the final block's complete list, and the truncation is now named in the parser.
