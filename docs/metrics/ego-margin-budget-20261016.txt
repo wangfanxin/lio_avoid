@@ -711,3 +711,24 @@ documented configuration, and an applied-but-unbuilt, unflown patch is exactly t
 rounds learning to avoid.  Prediction recorded BEFORE it is flown: the plan's worst point stops being one the map
 marks OCCUPIED (the failure round 21 measured at window 8) and the clearance population improves; the refutation
 is no change in either, which would mean the uncovered third is not where the penetrations live either.
+
+=== PATCH COLLISION-COVERAGE/1, FLOWN AND REFUTED (`DIAG26-coverage1`) ==================================
+The prepared patch (extend the collision sweep from the first two-thirds of a trajectory to all of it) was
+applied, built (`bspline_opt` 17.2 s, clean) and flown at the best arm's window (8 s):
+
+    run                  truth min     inside 0.20 m     outcome
+    DIAG20/21 (window 8)  +0.058 / **+0.167** m   16 239 / 17 294 collisions found, all recovered
+    **DIAG26-coverage1**  **-0.237 m**   **2500 of 28253 (8.8%)**   **rc=1**
+
+**Refuted, on the prediction written before the flight** ("the plan's worst point stops being one the map marks
+OCCUPIED and the clearance population improves"; the refutation was "no change in either").  The run penetrated
+deeper than either window-8 baseline crossing and did not even complete cleanly (rc=1), so extending the sweep to
+the last third of each trajectory does not close the C2 row either.
+
+What that leaves standing, stated exactly: the recovery machinery fires 2.2-5.1 M times per crossing and succeeds
+essentially always; extending its coverage changes nothing measurable; the map's own margin cannot be raised
+(two cells: a self-collision deadlock; three cells: 2789 A* errors); and the run-to-run spread (sd 0.143 m)
+exceeds every effect tried, parameters and code alike.  **Three code/parameter routes have now been flown and all
+three are refuted**: the A* clearance cost (-0.057 m then a geofence abort), raising the map's inflation (twice),
+and this coverage extension.  The patch is REVERTED and the library rebuilt, so the flight tree is back at the
+documented configuration.
