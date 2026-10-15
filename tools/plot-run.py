@@ -204,15 +204,27 @@ def main() -> int:
             import matplotlib.colors as mcolors
             t0s = np.array([t for t, _ in plans])
             lo, hi = float(t0s.min()), float(t0s.max())
-            norm = mcolors.Normalize(vmin=lo, vmax=hi if hi > lo else lo + 1.0)
-            for t0, q in plans:
-                ax.plot(q[:, 0], q[:, 1], lw=0.9, alpha=0.75,
-                        color=cm.viridis(norm(t0)), zorder=2)
-            sm = cm.ScalarMappable(norm=norm, cmap="viridis")
-            cb = fig.colorbar(sm, ax=ax, fraction=0.035, pad=0.02)
-            cb.set_label("plan start time [s since epoch]", fontsize=8)
-            ax.plot([], [], lw=1.2, color=cm.viridis(0.5),
-                    label="published paths (%d plans, in full)" % len(plans))
+            # ONE COLOUR WHEN THE PLANS ARE ALL FROM THE SAME MINUTE.  A Mission A tour publishes its six
+            # legs inside ~70 s, so a colour map over their start times is six indistinguishable purples
+            # plus a colorbar labelled with a raw epoch number ("+1.792059e9", MEASURED on the first top
+            # view drawn for the owner).  That is noise on a figure whose whole job is the PATH; the
+            # colour map earns its place only when the plans really are spread over a flight or a session.
+            spread = hi - lo
+            if spread <= 120.0:
+                for t0, q in plans:
+                    ax.plot(q[:, 0], q[:, 1], lw=1.0, alpha=0.85, color="#8a2be2", zorder=2)
+                ax.plot([], [], lw=1.2, color="#8a2be2",
+                        label="published plan (%d legs, in full)" % len(plans))
+            else:
+                norm = mcolors.Normalize(vmin=lo, vmax=hi if hi > lo else lo + 1.0)
+                for t0, q in plans:
+                    ax.plot(q[:, 0], q[:, 1], lw=0.9, alpha=0.75,
+                            color=cm.viridis(norm(t0)), zorder=2)
+                sm = cm.ScalarMappable(norm=norm, cmap="viridis")
+                cb = fig.colorbar(sm, ax=ax, fraction=0.035, pad=0.02)
+                cb.set_label("plan start [s after the first plan]", fontsize=8)
+                ax.plot([], [], lw=1.2, color=cm.viridis(0.5),
+                        label="published paths (%d plans, in full)" % len(plans))
         ax.plot(p_t[:, 0], p_t[:, 1], lw=1.6, color="#1f4fd8", label="truth (1200 Hz)", zorder=5)
         # the targets themselves, on top of the truth: "the plan is these points, and only these points"
         if wps and wps[0][0][2] > -1e6:

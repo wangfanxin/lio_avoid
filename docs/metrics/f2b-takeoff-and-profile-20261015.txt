@@ -1,3 +1,9 @@
+FIGURE PATHS MOVED (2026-10-16, commit that tidied docs/figures): the non-top-view figures were
+moved to `docs/figures/archive/` and the dropped Mission B set to `docs/figures/archive/mission_b/`
+-- NOTHING WAS DELETED, and the two frozen sets (`docs/figures/mission_a/`, `docs/figures/round7/`)
+stay where the manifest pins them.  Where this file names a figure, read `docs/figures/<name>` as
+`docs/figures/archive/<name>`; verbatim tool output below keeps the path it printed at the time.
+
 F2b -- THE TAKE-OFF CONTRACT, SETTLED BY BENCH, AND THE OWNER'S 0.2 m PROFILE
 ================================================================================
 Written 2026-10-15 by the round that applied the take-off fix.  Commits 3f95878 (the fix) and fd974c0 (the

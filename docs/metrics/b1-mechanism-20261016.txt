@@ -1,3 +1,9 @@
+FIGURE PATHS MOVED (2026-10-16, commit that tidied docs/figures): the non-top-view figures were
+moved to `docs/figures/archive/` and the dropped Mission B set to `docs/figures/archive/mission_b/`
+-- NOTHING WAS DELETED, and the two frozen sets (`docs/figures/mission_a/`, `docs/figures/round7/`)
+stay where the manifest pins them.  Where this file names a figure, read `docs/figures/<name>` as
+`docs/figures/archive/<name>`; verbatim tool output below keeps the path it printed at the time.
+
 B1's box growth attributed to walls, corners and legs: an ARRIVAL RING of the position loop
 date: 2026-10-16   tool: tools/b1-edge-budget.py (new in this round; re-runnable on any run dir)
 data: each run's OWN tap.csv (1200 Hz truth), phase.csv (the phase log), setpoints.csv (the bridge's

@@ -1,3 +1,9 @@
+FIGURE PATHS MOVED (2026-10-16, commit that tidied docs/figures): the non-top-view figures were
+moved to `docs/figures/archive/` and the dropped Mission B set to `docs/figures/archive/mission_b/`
+-- NOTHING WAS DELETED, and the two frozen sets (`docs/figures/mission_a/`, `docs/figures/round7/`)
+stay where the manifest pins them.  Where this file names a figure, read `docs/figures/<name>` as
+`docs/figures/archive/<name>`; verbatim tool output below keeps the path it printed at the time.
+
 THE EKF A/B: THE VELOCITY NOISE AND THE TIGHT POSITION NOISE, ONE VARIABLE PER SORTIE
 =========================================================================================
 Written 2026-10-16 by the round that closed items 3 and 4 of the Mission A brief.  Every number is read
