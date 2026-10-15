@@ -1,0 +1,204 @@
+F2b -- THE TAKE-OFF CONTRACT, SETTLED BY BENCH, AND THE OWNER'S 0.2 m PROFILE
+================================================================================
+Written 2026-10-15 by the round that applied the take-off fix.  Commits 3f95878 (the fix) and fd974c0 (the
+owner's profile + the two flight-path defects it exposed).  Every number below is copied from the tool or
+from the FCU's own BIN that produced it; the run directory is named next to each block.
+
+
+1. THE DEFECT, AND THE ONE NUMBER THAT WAS WRONG
+------------------------------------------------
+`bridge/mavlink_impl.py::takeoff` sent `datum + alt_m` -- 2.50 m became 586.59 m with the origin at 584 m --
+to satisfy the guard in `ArduCopter/takeoff.cpp:29`, `takeoff_alt_m <= copter.current_loc.alt * 0.01`, read
+as an AMSL-scale comparison.  The SAME number goes to the executor, `Mode::_TakeOff::start_m`
+(`takeoff.cpp:51-57`), which computes `take_off_complete_alt_m = get_pos_estimate_U_m() + alt_m`: it ADDS
+what it is given.  The command therefore asked GUIDED for ~586 m above home.
+
+THE GUARD NEVER NEEDED IT.  `current_loc.alt` is itself alt-above-home (`ArduCopter/inertia.cpp:24-30` sets
+exactly that), so `* 0.01` compares metres with metres; on the pad the threshold is ~0.002 m and 2.50 passes
+with room to spare.  THE OLD MEASUREMENT'S CONDITION: the docstring used to record a 2026-10-13 reading, a
+0.8 m request answering MAV_RESULT_FAILED with no statustext.  That was taken BEFORE the EKF origin existed
+(`set_ekf_origin` did not exist yet); with no origin `ModeGuided::do_user_takeoff_start_m` cannot convert the
+altitude from ABOVE_HOME to ABOVE_ORIGIN, which is the failure that method now documents itself.  A real
+failure, attributed to the wrong cause.  The request now goes out VERBATIM and the datum is only logged.
+
+
+2. THE BENCH, ALL FOUR VARIANTS (`_stage/f2b-takeoff-bench.sh`; each is one airborne SITL session)
+----------------------------------------------------------------------------------------------------
+Judged by `tools/takeoff-bin-report.py`, which reads the FCU's OWN BIN (`CTUN.DAlt` is the target its
+vertical position controller aimed at).  `Alt` = the aircraft, `DAlt` = the target.
+
+  variant            ref     report rc   Alt peak   DAlt peak   verdict
+  clean    2.5       2.5        0         +2.684 m   +2.525 m    ACHIEVED (|adopted-request| 0.055 m, overshoot +0.025)
+  clean    0.2       0.2        0         +0.322 m   +0.220 m    ACHIEVED (|adopted-0.2| 0.011 m, overshoot +0.020)
+  clean_sp 0.2 2.0   2.0        0         +2.121 m   +2.004 m    ACHIEVED (|adopted-2.0| 0.080 m, overshoot +0.004)
+  datum    2.5       2.5        1         +32.718 m  +32.637 m   NOT ACHIEVED (overshoot +30.137 m)
+
+  run dirs: logs/f2b-takeoff-clean-20261015_165728, -clean-20261015_171406,
+            -clean_sp-20261015_171444, -datum-20261015_171522
+
+THE 0.2 m TAKE-OFF IS ACCEPTED AND CARRIED OUT: ACK result 0, and `[13.45] AIRBORNE: truth z +0.100 m,
+FCU U +0.183 m, landed_state 2` -- flying, which is what the owner's design needs from the command.
+THE SETPOINT-DRIVEN CLIMB TRACKS AND HOLDS: `setpoint profile: target +2.000 m, truth in the last 3.0 s mean
++2.064 m (error +0.064 m), worst +0.096 m`, and its own verdict line `overshoot beyond target + 1.0 m: NO;
+held within 0.30 m: YES`.
+THE `datum` VARIANT IS THE POSITIVE CONTROL AND IT REPRODUCES THE DEFECT, LARGER THAN THE FLIGHT DID: the
+bench has no mission to bring the setpoints in, so the target ran to +32.637 m against RECT25's +9.874 m.
+THE BENCH SAID 0.2 AND 2.0 AND 2.5 IS ADOPTED VERBATIM -- the guard question is closed.
+
+A VERDICT THAT HAD TO BE FIXED TO SEE THIS.  `tools/takeoff-bin-report.py` judged only the FIRST crossing of
+the request.  On the `datum` control the crossing reads DAlt +2.526, an error of 0.026 m -- inside the 1.00 m
+bound -- so the tool printed "ACHIEVED" for a target that then climbed to +32.637 m: the verdict would have
+hidden the defect it exists to catch.  It now judges the target ADOPTED AND HELD: the mean DAlt over the
+samples inside the band, plus an explicit overshoot test.  Re-judged, the control exits rc=1.
+
+
+3. THE OWNER'S DESIGN (2026-10-15), IN THE CODE AND PRINTED AT START-UP
+-----------------------------------------------------------------------
+"起飞命令就飞20cm高，然后立马进定点".  TWO MECHANISMS, BOTH PRESENT, THE FLOWN ONE STATED:
+  * `--takeoff-command-m` (default 0.2) = what goes out as `packet.z`, verbatim;
+  * `--trigger-on-airborne` = the go goes out the moment the vehicle is airborne;
+  * `rectangle_source.py --vertical-first-m <mission altitude> --vertical-hold-s 3.0` = the plan's first
+    target is a single-point leg STRAIGHT UP from the pad, and its 3.0 s dwell IS the A4 window -- which is
+    what keeps A4 a hover at a known point instead of a climbing transit;
+  * `--climb-guard-m 1.0` stays ON, against the MISSION altitude, so a 0.2 m command cannot trip it;
+  * setting `--takeoff-command-m` equal to `--alt` restores the other mechanism (the FCU's own controller
+    flies the whole climb).  `tools/run-mission.sh` prints `take-off : FCU-TARGET ...` or
+    `take-off : SETPOINT-DRIVEN CLIMB (the owner's design) ...`, and `supervisor.py` prints its own line.
+
+MEASURED ON THE BENCH, NOT ASSUMED: `clean 0.2` ACCEPTED, `landed_state 2`; `clean_sp 0.2 2.0` climbs and
+holds (above).
+
+
+4. THE ACCEPTANCE SORTIES ON THE NEW PROFILE, AND WHAT THEY EXPOSED
+-------------------------------------------------------------------
+`RECT31-accept`, `RECT32-accept`, `RECT33-accept` (launcher `_stage/rect31-accept-fly.sh`, frozen
+`params/ekf_trust_lio.parm`, `RECT_HOLD_S` unset so the dwell is the harness default 5.0, one flight at a
+time).  ALL THREE PASS EVERY GATED ROW AND THE DWELL:
+
+  sortie           hover   A1 mm   A2 mm   A4 mm   B2      C2 min m   inside 0.20 m   B4
+  RECT31-accept    4 of 4   3.11    1.95   19.17   5 of 5   0.562     0 of 56313      land+disarm
+  RECT32-accept    4 of 4   3.20    1.86   19.17   5 of 5   0.569     0 of 56315      land+disarm
+  RECT33-accept    4 of 4   3.09    1.77   20.46   5 of 5   0.568     0 of 56425      land+disarm
+
+  A4 PASS on all three (19.17, 19.17, 20.46 mm against the 50 mm bound); B3 5 of 5 corners PASS on all
+  three; C1 0.014 / 0.006 / 0.008 m; B1 FAILS honestly on all three (E 2.123 / 2.111 / 2.115 against 2.10)
+  -- that is the known, unfixed B1 and it is NOT touched by this round.
+  THE TAKE-OFF NO LONGER OVERSHOOTS: the FCU's own CTUN on the three sorties peaks at Alt +2.183 / +2.337 /
+  +2.332 m with DAlt peak +2.004 / +2.152 / +2.146 m -- inside ~0.2 m of the mission altitude, against
+  RECT25's +9.874 m target and the bench control's +32.637 m.
+
+WHAT THE FLIGHT EXPOSED, AND IT IS OUR OWN FLIGHT PATH, NOT THE FIRMWARE.  The vertical climb leg did not
+run as designed, and the record of the three attempts IS the evidence:
+  * `RECT31-accept`: the plan box's arrival test is HORIZONTAL, so the climb leg "arrived" while the aircraft
+    was still over the pad -- `ARRIVED at waypoint 1: the vehicle is 0.004 m from it ... after 0.0 s`, with
+    the next log line reporting `altitude 0.111 m`.  The climb never appeared in the command stream and
+    corner 1's 2.0 m became the first setpoint.  The phase log has no `leg1` at all.
+  * the first fix compared the leg against `target_w`, which a few lines above is `self.target_w[:2]` -- so
+    the test became "is the target's X and Y zero".  Caught on a REPLAY of `RECT31`'s own recorded odometry
+    through the module (`_stage/f2b-replay-rect31.py`), which is what settled it: the printed line showed
+    `target_w=[0. 0.]` and the 2-D branch still taken.
+  * the second fix used an exact-zero extent test, which classified the leg as horizontal BY 0.9 mm (the
+    measured calibration puts the pad at (-0.9, -4.2) mm in the vehicle's frame).
+  * `RECT32-accept` then used the full 3-D distance and the leg TIMED OUT: `LEG 1 TIMEOUT: ... it is 1.831 m
+    from the commanded waypoint 1 after 20.0 s`.  The horizontal term was contributing centimetres of drift
+    that a climb straight up from the pad is not asked to remove.
+  THE RULE NOW: a leg whose own endpoints share a horizontal position within `arrive_m / 10` is VERTICAL and
+  is judged on the HEIGHT -- a climb's question is "has the climb finished" -- with
+  `vertical_arrive_slack_m` (0.20 m) on top of the gate, because this stack's altitude datum carries a
+  measured ~0.1 m term (`t_WL_z` = +0.1156 m; A4's own datum line reads D -0.098 m in flight).  Every leg
+  with horizontal extent keeps the horizontal test UNCHANGED, which is what every row above and every
+  sortie in `docs/metrics/` was scored against.  The decision is printed once per leg.
+  `RECT33-accept` is the sortie that MEASURED THE LEG ACTUALLY FLYING: the wire's own first row is
+  `traj_id 1  p_w=(0.00000, 0.00000, 2.50000)  mask=2552`, i.e. the vertical target reached the FCU first,
+  and the plan's own line reads `LEG 1 arrival rule: TESTING the HEIGHT (this leg has no horizontal extent);
+  height error 2.3872 m, gate 0.260 m`.  The leg then hit its 20 s TIMEOUT with `height error 1.817 m`: the
+  aircraft did not climb to 2.44 m within the leg's 20 s, so the climb leg is COMMANDED AND JUDGED
+  CORRECTLY BUT NOT YET FLOWN TO ITS ARRIVAL.  The aircraft still reached the mission altitude (Alt +2.332 m)
+  and every acceptance row passed, because corner 1's own setpoint took it there.
+
+WHAT THIS MEANS, STATED PLAINLY RATHER THAN WORKED AROUND: the 0.2 m command, the airborne trigger, the
+vertical target, the height-based arrival and the climb guard are all in place and all measured; what is NOT
+yet demonstrated is the vertical leg ARRIVING INSIDE ITS OWN TIMEOUT, and with it the intended shape of the
+A4 window (a hover at the top of the climb).  On all three sorties A4 passed and the aircraft hovered at the
+mission altitude -- but it got there on corner 1's setpoint, not by the climb leg completing.  The next
+attempt should give the climb leg a timeout of its own (`--leg-timeout-s` is 20 s for every leg today) or
+raise the vertical slack, and it must be flown before the climb-leg shape is claimed.
+
+
+5. THE SECOND DEFECT: THE ABORT LANDED NOTHING
+-----------------------------------------------
+`RECT27-kill-plan` (the plan box killed 8 s into the route) produced the NAMED abort and then exited 0.05 s
+later:
+    [  28.94] bridge/mavlink: mode -> LAND
+    [  28.94] final: armed=True mode=LAND alt AMSL 586.0 m
+and the FCU's own log for that sortie ends with the aircraft STILL ARMED AT 2.002 m (no MODE 9 until
+t 41.72; the FCU was still in mode 4 when its log closed).  The abort had taken over the MODE and let go of
+the AIRCRAFT.  TWO causes, both measured on the next attempt:
+  * `pump()` returns the moment `abort_reason` is set, and the abort's landing pumps THROUGH it;
+  * `check_gates()` SETS THE REASON AGAIN during the landing -- the plan-silence gate that fired the abort is
+    still true while the aircraft comes down -- so `RECT27b` failed identically with the reason explicitly
+    cleared first.  The abort's parking brake was switching itself back on.
+THE FIX: the abort lands through `self.land()` (commands LAND, lets the commanded mode take effect, waits for
+the FCU's OWN disarm, writes the `land` phase, logs `landed: armed=...`), and `check_gates` is disarmed once
+the sortie is ending (`gates_armed`, cleared in `finish`).  The landing's own "still armed" verdict is
+deliberately discarded so the NAMED reason survives into the summary.
+
+VERIFIED, `RECT27d-kill-plan`:
+    phases: preflight takeoff hold leg1 leg2 abort land done
+    [  29.29] ABORT: THE PLAN BOX HAS STOPPED TALKING: nothing on /plan/cmd for 3.0 s (limit 3.0 s) after
+              589 messages, trajectory_id 2 -- ... SILENCE IS NOT COMPLETION
+    [  36.58] landed: armed=False mode=LAND
+    [  36.58] final: armed=False mode=LAND alt AMSL 584.2 m
+    metrics: B4 landing 'land' -> yes; C2 minimum pillar-surface 0.568 m, 0 of 21847 samples inside 0.20 m
+    FCU's own BIN: MODE 9 (LAND) at t 41.75; ARM event t 48.12 ArmState 0 (DISARMED)
+  New test cases I and I' in `tools/test-stall-gate.py` (the gates must NOT re-fire while the sortie is
+  ending; the negative control shows the same condition DOES abort with the gates live).
+
+
+6. THE POOLED RATIO, WITH ITS DENOMINATORS
+-------------------------------------------
+`tools/acceptance-table.py` over every F1+F2 sortie on the same mission, with `--abort-ok` for the
+deliberate kill sortie:
+
+  POOLED: 6 of 7 sorties with 4 of 4 corners hovered >= 5.0 s;  25 of 28 corner visits >= 5.0 s
+          the deliberate kill sortie is NOT a mission: excluding it, 6 of 6
+  the six nominal sorties and their tightest corner (c3): RECT23 6.35 s, RECT24 6.34 s, RECT26 6.38 s,
+  RECT31 6.37 s, RECT32 6.38 s, RECT33 6.37 s -- all HOLD-OK
+  the same figures with `--airborne-m 0` (the quantity every pre-F2 sortie was judged by): identical.
+  FOR CONTEXT, the pre-F1 rate this was measured against: 3 of 4 sorties / 15 of 16 visits (RECT7-hold5,
+  RECT9/10/11-hold5, `docs/metrics/rect-hold5-ratio-20261015.txt`); F1's own 2 of 2 / 8 of 8.
+
+  RECT26-accept is the sortie on the VERBATIM 2.5 m take-off (the fallback mechanism): the FCU's own CTUN
+  there is Alt peak +2.523 / DAlt peak +2.604, i.e. overshoot +0.104 m -- the bench's shape in flight.
+  RECT31/32/33 are the owner's 0.2 m profile.  THE F3 BATCH OF THREE MORE SORTIES WAS STARTED AND STOPPED
+  (`_stage/f3-ratio-fly.sh`, RECT28-ratio flew and the batch was ended by a stop file before RECT29) because
+  the owner's design change arrived in the middle of it; RECT28 is therefore a PRE-CHANGE-profile sortie and
+  is NOT in the table above.
+
+
+7. TWO LINES ON THE INTERFACE, AS ASKED
+----------------------------------------
+  (a) The wire mask's `pos` is NOT a preference: `planner/cmd_stream.py::sample` publishes
+      `position = the waypoint in hand, velocity = 0, acceleration = 0`, so mask 2552 (POS_YAW) is the only
+      thing we have to send -- there is no velocity field to send.
+  (b) CONSEQUENCE: the straight-line motion AND the whole speed profile between waypoints are produced by
+      the FCU's position controller, not by us.  Any future attempt to shape an approach -- slowing before a
+      corner, which B1 may need -- must be done by ADDING WAYPOINTS or by sending a non-zero velocity field
+      DELIBERATELY, and must not assume a velocity feed-forward exists today.  Equally: a vertical first
+      target plus four corners is not, by itself, sufficient to shape the take-off -- measured above.
+
+
+8. WHAT IS NOT ACHIEVED
+------------------------
+* The vertical climb leg has not yet ARRIVED INSIDE ITS TIMEOUT on any flown sortie (section 4).  The
+  intended A4 shape (a hold at the top of the climb) is therefore NOT yet demonstrated, although A4 passed
+  and the aircraft hovered at the mission altitude on all three.
+* B1 FAILS on every sortie in this file (E 2.111-2.123 against the 2.10 bound).  Untouched, by instruction.
+* The F3 batch is 1 of 3 (RECT28, pre-change profile); RECT29/30 were not flown.
+* The kill verdict is verified on `RECT27d` (evaluated from its own phase log, metrics and the FCU's BIN);
+  `RECT27d`'s own run was made before the acceptance flight, and its `--trigger-after-hold` sequencing
+  predates the owner's `--trigger-on-airborne` -- so the abort PATH is proven while the abort ON THE NEW
+  PROFILE has not been re-flown.
+* No new figure for this round: `docs/figures/f2-takeoff-defect.png` (committed earlier) still carries the
+  BEFORE picture (RECT24 vs RECT25), and the AFTER picture exists only as
+  `_stage/figures/takeoff-fix.png` (uncommitted).
