@@ -855,3 +855,25 @@ approach (four of six runs), the plan goes there anyway (four of four), the airc
 0.003-0.044 m, and the three code changes and every parameter tried have been flown and refuted.  What is left is
 outside this planner's architecture: a real obstacle-distance cost (the classic `evaluateEDTWithGrad` path this
 swarm variant removed), or a formal decision that the 0.20 m footprint is the wrong bar for it.
+
+=== CORRECTION: `dist0` WAS NEVER RAISED -- A DUPLICATE DICT KEY ATE IT ==================================
+The section above says the experiment raised BOTH `optimization/dist0` (0.5 -> 0.8 m) and
+`optimization/lambda_collision` (0.5 -> 2.0).  It did not.  The edit that changed them ADDED a new
+`'optimization/dist0'` line instead of replacing the existing one, so the launch file carried TWO keys of that
+name -- mine at 0.8 and the original at 0.5 further down -- and **Python keeps the LAST**, so the node loaded
+**0.5**.  `lambda_collision` was a genuine replacement and really was 2.0 in flight.
+
+  * **`lambda_collision` 2.0 at window 8: TESTED, no effect** (truth +0.154 m, 4234 of 43901 inside, both
+    mid-band for the arm).  That half stands.
+  * **`dist0` 0.8 m at window 8: NEVER TESTED.**  The claim that raising it changes nothing is WITHDRAWN, and
+    `dist0` -- the one number in that cost that says HOW FAR from the rebound path the trajectory should stay --
+    remains the only untried value in this architecture.
+  * the duplicate is removed (verified: exactly one `dist0` and one `lambda_collision`), and the comment beside
+    `lambda_collision` records both the flight and this error.
+
+Seventh self-correction of the investigation, and the second caused by a silent STRUCTURAL fault rather than a
+wrong inference -- the first being the round that measured a published visualisation topic instead of the
+planner's own buffer.  Both were caught by asking the artefact for its own contents (here: `grep`-ing the launch
+file for how many keys it really has) rather than trusting the edit that produced it.  A duplicate dict key is
+silent in every direction: the file parses, the launch description builds, the node starts, and the wrong number
+is used.
