@@ -600,3 +600,49 @@ check's COVERAGE and failure mode (round 21: the plan's worst point at window 8 
 OCCUPIED, which `check_collision_and_rebound` exists to prevent and does not -- it sweeps only the first
 two-thirds of the control points and drops a colliding segment when its rebound A* fails), or a mechanism
 different from map persistence altogether.
+
+=== FINAL STATE OF THE C2 ROW, AND OF THE OBJECTIVE ======================================================
+Every configuration this investigation tried, with the number the C2 row turns into pass/fail -- the truth's
+minimum distance to a pillar SURFACE over the whole crossing (negative = penetration):
+
+    configuration                              runs   clearances                                 cleared
+    baseline, window 0, one cell                 6    -0.279 -0.169 -0.071 -0.277 -0.129 -0.164  0 of 6
+    relay window 3 s                             3    +0.150 +0.056 -0.222                       2 of 3
+    relay window 8 s                             4    +0.058 +0.167 -0.276 +0.089                3 of 4
+    relay window 15 s                            2    +0.155 -0.278 (rc=1)                       1 of 2
+    + ground_height fix                          1    -0.222                                     0 of 1
+    + lambda_fitness 4.0                         2    +0.068 -0.078                              1 of 2
+    + self-blind bubble (with two cells)         1    -0.100                                     0 of 1
+    + two cells of inflation                     2    -0.031, and one deadlock                   0 of 2
+    + three cells of inflation                   1    -0.262 (hung)                              0 of 1
+    + A* clearance cost (code)                   2    -0.057, then a geofence abort              0 of 2
+
+    TOTAL: 25 sorties, 6 cleared every pillar, **0 met the C2 row's 0 samples inside the 0.20 m footprint**.
+    Best footprint count: DIAG21's **1887 of 47406** (window 8, the best arm on every measure).
+
+WHY IT DOES NOT MOVE, stated as the measurements say it:
+  * the run-to-run spread of that minimum is **sd 0.143 m** around a mean of -0.101 m, and the C2 target sits
+    **2.1 sd** above the mean -- while every effect tried moved the arm mean by less than 0.19 m and no effect
+    was reproducible at the single-run level (window 3: +0.150 then -0.222; lambda_fitness 4.0: +0.068 then
+    -0.078; the A* clearance cost: -0.057 then a geofence abort);
+  * the map a one-cell planner can build puts free space about 0.15 m from a pillar surface, so a path down the
+    middle of a corridor is only marginally outside the row (measured: the plan's 1st percentile plateaus at
+    +0.12 m), and raising the map's margin instead was refuted twice (two cells: a self-collision deadlock;
+    three cells: 2789 A* errors);
+  * the failures are predominantly MAP BLINDNESS -- the plan's worst point lies in space the map never marked in
+    four of five runs examined -- and persistence fixes that up to about 8 s (plan worst -0.286 -> -0.016 m) but
+    hurts beyond it (15 s: worst footprint fraction of the whole investigation, 36%);
+  * and with the map no longer blind, the remaining failure is the one `check_collision_and_rebound()` exists to
+    prevent and does not: it sweeps only the first TWO-THIRDS of a trajectory's control points
+    (`i_end = end_idx - (end_idx - order_)/3`) and, when its rebound A* fails, DROPS the colliding segment and
+    keeps the trajectory (`bspline_optimizer.cpp:1405-1408`).
+
+WHAT THE OBJECTIVE ASKED FOR, AND WHERE IT STANDS.  Criteria 1, 2, 4 and 5 are met outright.  Criterion 3 asked
+for the diagonal to be found and fixed, flown with ego, and avoidance PROVED measurably through four things:
+per-pillar clearance (delivered on every crossing), the C2 row (delivered, and it reports the one failure), the
+question of whether ego's own map saw the pillars (delivered in process, and it is the finding that redirected
+three rounds), the plan's detour shape (delivered), plus the rectangle comparison (delivered: avoidance is worth
+about +0.45 m of minimum clearance over a planner that ignores obstacles).  **So the avoidance effect is
+demonstrated and measured; the strictest threshold inside that criterion is not reached, and 25 sorties say it is
+not reachable by tuning this planner -- the two routes left are the collision check's coverage and failure mode,
+or a planner with a real obstacle-distance cost, which this variant does not have.**
