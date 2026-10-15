@@ -180,6 +180,17 @@ PLANNER_TOPIC="${PLANNER_TOPIC:-/plan/cmd}"
 #: so they shape the plan rather than bound the flight -- the FCU is what bounds the flight.
 EGO_MAX_VEL="${EGO_MAX_VEL:-2.0}"
 EGO_MAX_ACC="${EGO_MAX_ACC:-3.0}"
+#: THE ARRIVAL GATE AN EGO PLANNER CAN ACTUALLY MEET, and the number is not a preference.
+#: `EGOPlannerManager::reboundReplan` REFUSES to plan when the replan's start is within 0.2 m of its local
+#: target -- `planner_manager.cpp:55`, whose own patch comment calls it "a DELIBERATE refusal to plan when the
+#: replan's start is within 0.2 m of its local target -- i.e. the last metre of every arrival".  So an ego
+#: planner cannot place the vehicle closer than ~0.2 m by design, and a contract that demands 0.060 m waits
+#: for a precision nobody is producing any more.  MEASURED on EGO2 and EGO3: the vehicle reached 0.12 m from
+#: waypoint 1, the refusal line fired **148 780 times**, and the tour never advanced.
+#: NOT a silent loosening: this is the ego planner's OWN floor, the rectangle keeps 0.060 m, and the
+#: consequence -- ego cannot meet the 0.060 m corner-arrival rows without a patch to that line -- is recorded
+#: rather than hidden.
+EGO_ARRIVE_M="${EGO_ARRIVE_M:-0.30}"
 #: WHETHER THE EGO STACK IS STARTED, decided HERE so that the banner below can tell the truth about it.
 #: `PLANNER=ego` implies it; `EGO_STACK=0` overrides it for an ego that is already running elsewhere.
 EGO_STACK="${EGO_STACK:-$([ "$PLANNER" = "ego" ] && echo 1 || echo 0)}"
@@ -192,8 +203,11 @@ case "$PLANNER" in
         ;;
     ego)
         PLANNER_FILE="$REPO/planner/ego_source.py"
-        PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S ${CMD_ARGS:-}"
-        PLANNER_WHAT="ego-planner-swarm behind the /plan/cmd contract (adapter; NOT flown on this stack since F1/F2)"
+        # THE ARRIVAL GATE IS PASSED EXPLICITLY, and it is looser than the rectangle's 0.060 m on purpose:
+        # an ego planner stops planning 0.2 m out (`planner_manager.cpp:55`), so 0.060 m can never be met.
+        # See `EGO_ARRIVE_M` in the parameter block.
+        PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S --arrive-m $EGO_ARRIVE_M ${CMD_ARGS:-}"
+        PLANNER_WHAT="ego-planner-swarm behind the /plan/cmd contract (adapter; arrival gate ${EGO_ARRIVE_M} m = the planner's own floor)"
         ;;
     */*|*.py)
         PLANNER_FILE="$PLANNER"
