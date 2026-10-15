@@ -29,6 +29,21 @@ WHAT IS VERIFIED IN *THIS* TREE (read, not assumed):
     inert term today.
 
 THE WORK, in the order it should be done:
+  0. STEP 1 IS DONE (round 39), and it pins three things, all read from the tree:
+     * **the plug-in point is `bspline_optimizer.cpp:1841`**, inside `combineCostRebound` -- the cost list that
+       already contains smoothness, feasibility, swarm, terminal and this distance term:
+           calcDistanceCostRebound(cps_.points, f_distance, g_distance, iter_num_, f_smoothness);
+       and `calcDistanceCostRebound` is called from NOWHERE ELSE in the file (one hit).  So the term is wired
+       into every optimisation already; only what feeds it is missing.  That is the smallest version of this
+       work, confirmed at the call site rather than inferred from the body.
+     * **the header still describes a distance field that does not exist**: `plan_env/include/plan_env/grid_map.h`
+       :96-99 reads "main map data, occupancy of each voxel and **Euclidean distance**" and then declares
+       `std::vector<double> occupancy_buffer_;` and `std::vector<char> occupancy_buffer_inflate_;` -- **and no
+       distance buffer**.  The language of the ESDF survived the variant's cut; the array did not.  A third
+       buffer belongs exactly there, beside the two it would be built from.
+     * `getInflateOccupancy` (grid_map.h:175) is still the only obstacle query in the planner, and there is no
+       `evaluateEDT*` of any kind.
+
   1. READ FIRST, in the ego tree: `plan_env/include/plan_env/grid_map.h` and `src/grid_map.cpp` for where an
      ESDF would live, and `bspline_opt`'s cost list for where `calcDistanceCostRebound` is called
      (`:1820`) -- the plan below names what to look for, not what was found, because these were not read.
