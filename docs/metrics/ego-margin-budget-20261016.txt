@@ -664,3 +664,31 @@ two-thirds of the control points.  If the arm that clears every pillar shows the
 collision count as the arm that penetrates, then the improvement came from the MAP (as round 21's
 plan-margin measurement says) and not from the recovery path -- which is consistent with the rebound
 being a rare, last-resort mechanism rather than the thing that keeps the aircraft out of pillars.
+
+=== CORRECTION OF THE ROW ABOVE: THE REBOUND COUNTS ARE NOT THE SAME ACROSS ARMS =====================
+Row 98 of STATUS said the recovery machinery 'fires at the same rare rate' in every arm.  That was written
+before the numbers were read.  The numbers, re-read:
+
+    run                     arm        truth min   rebound calls   collided   astar_ok   astar_fail   errors
+    --------------------------------------------------------------------------------------------------------
+    DIAG8-map-slice         window 0      -0.164           19864         43         43            0        0
+    DIAG9-window3           window 3      +0.150           23930         72         72            0        0
+    DIAG20-window8          window 8      +0.058         2319979      16239      16239            0        0
+    DIAG21-window8-repro    window 8      +0.167         2423392      17294      17294            0        0
+    DIAG22-window8-arm3     window 8      -0.276         2251921      15415      15407            8        8
+    DIAG23-window8-arm4     window 8      +0.089         2201131      14859      14834           25       26
+    DIAG24-window15         window 15     +0.155         2248605      15732      15727            5        7
+    DIAG25-window15b        window 15     -0.278         5094782      37994      36226          161      182
+
+    mean collisions, runs that CLEARED (5): 12839
+    mean collisions, runs that FAILED  (3): 17817
+
+**So the correction is: the counts vary by three orders of magnitude between runs** (43 in DIAG8 against
+15 732 in DIAG24), and the runs that clear are not the runs with fewer collisions -- if anything the
+opposite, because the machinery fires when the trajectory is already near something.  What row 98 got
+right is only this: no arm's clearance record can be explained by the recovery path being exercised,
+because the two arms overlap completely in that count.  The one fact worth keeping from the read is that
+`astar_fail` is essentially zero everywhere (0-5), i.e. when the rebound fires it succeeds -- consistent
+with round 8's finding that the recovery works every time it is asked, and that it is simply asked far too
+rarely, and only over the first two-thirds of each trajectory.  Written by reading the counters, not by
+assuming them; this is the sixth self-correction of the investigation.
