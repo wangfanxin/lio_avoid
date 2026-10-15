@@ -1,0 +1,104 @@
+RECT46 -- THE FROZEN MISSION-A VERSION (git tag `mission-a-rect46`)
+================================================================================
+Stamped 2026-10-16 at the owner's request: "现在冻住这个46版本，方便以后随时回退".  This file is itself in the
+frozen manifest, so it is covered by the same check as the artifacts it names.
+
+
+1. WHAT THIS VERSION IS
+-----------------------
+Mission A as flown by `RECT46-accept-promoted`, i.e. the F1/F2 stack (PLAN box publishing
+`/plan/cmd`; BRIDGE on its own MAVLink endpoint carrying class 331 + 84; SUPERVISOR on its own endpoint
+carrying class 76 only) **with the two EKF changes measured in `docs/metrics/ekf-ab-20261016.txt`**:
+
+  * `params/ekf_trust_lio_measured.parm` -- `VISO_POS_M_NSE 0.010` (tight) and `VISO_VEL_M_NSE 0.069`
+    (measured from the velocity stream the FCU is actually fed).  md5 `f289b248b4050a4678e99503f319cf36`.
+  * the owner's take-off profile: `--takeoff-command-m 0.2` verbatim, `--trigger-on-airborne`, and the
+    PLAN's vertical first target to 2.50 m held 3.0 s (the A4 window).
+  * approach shaping (`--approach-shaping-m`) EXISTS in this version and is **OFF by default**; every
+    sortie in this release flew with it off.
+
+IT IS NOT A CLAIM THAT MISSION A PASSES EVERY ROW.  B1 (truth box extents over the route, bound
+2.10 / 1.30) FAILS on every sortie of this version, honestly, and `docs/metrics/b1-approach-shaping-20261016.txt`
+carries the mechanism and the two costed candidates.  Nothing in this release relaxed a threshold.
+
+
+2. THE REFERENCE SORTIE AND ITS OWN ROWS
+----------------------------------------
+`/home/fanxin/lio_avoid/logs/missionA-RECT46-accept-promoted` (flown 2026-10-16 18:20, this repo at
+`dbbf0d2`, tracked tree clean):
+
+    phases      preflight takeoff hold leg1 leg2 leg3 leg4 leg5 leg6 land done
+    A1 3.37 mm  A2 1.86 mm  A4 8.04 mm (best-fit lag +76 ms)   A4-v 21.49 mm/s (own lag -12 ms)
+    B1 E 2.113 / N 1.248  [E FAILS honestly, bound 2.10/1.30 untouched]
+    B2 6 of 6 legs   B3 5 of 5 corners (closest 0.4-8.6 mm)   B4 land+disarm
+    C1 0.010 m   C2 minimum pillar-surface 0.569 m, 0 of 60336 samples inside 0.20 m
+    dwell 4 of 4 corners >= 5.0 s strict (airborne > 0.5 m)
+    the FCU's own take-off shape: DAlt peak = the 2.50 m request +0.004
+
+The other three sorties of this version (`RECT43-ab-both`, `RECT44/45-accept-promoted`) reproduce it:
+A4 **7.68 / 8.04 / 8.04 mm** against a five-sortie control band of 17.03-22.08 mm, A4-v 21.06-21.54 mm/s
+against 31.75-38.28.  Pooled on this version: **4 of 4 sorties with 4 of 4 corners hovered >= 5.0 s strict,
+16 of 16 corner visits**.
+
+THE LOCKED BASELINE IS UNCHANGED AND KEEPS ITS OWN PROVENANCE: `RECT23/24/26` were flown on
+`params/ekf_trust_lio.parm`, which is byte-for-byte what it was; the pooled ratio over EVERY nominal sortie
+of the F1/F2 stack is **17 of 18 sorties / 71 of 72 corner visits** (the one miss is `RECT36-ratio`'s c2 at
+4.14 s).
+
+
+3. WHAT IS PINNED, AND HOW TO CHECK IT
+--------------------------------------
+`frozen/mission_a.manifest` lists every pinned artifact with its SHA-256; this release ADDED three entries
+to it (this file, the reference sortie's top view, and the EKF A/B evidence) and changed nothing else.
+
+    cd /mnt/d/distill_self/lio_avoid
+    python3 tools/frozen-check.py        # must print "N of N files unchanged"
+    python3 tools/docs-budget.py         # must print OK
+
+THE PARTS THAT DO NOT LIVE IN THIS REPOSITORY are pinned by hash instead (a rollback of the repo does not
+move them, so they are named here):
+
+    ArduPilot      /home/fanxin/lio_avoid/src/ardupilot   at dbe7921
+                   + patches/apm-0001-sitl-truth-tap.patch , md5 b09ad7ea5ee23c57b13caae1cf22eb55
+                   (applied; `git status` there shows the one patched file, SIM_Aircraft.cpp)
+    Super-LIO      /home/fanxin/lio_avoid/src/Super-LIO    at f89f48d
+                   built liblio.so md5 e4b82a73cbfb70a7a538514f74936b09
+    calibration    _stage/calib.json (OUTSIDE the repo), md5 399390f7b08905bd3cf1be5164505fb4
+                   yaw +90.049771 deg, t = [-0.0007969 -0.0040923 +0.1155700] m -- every applier reads it
+    config         lio/config/livox_360.yaml (tracked here)
+
+
+4. HOW TO ROLL BACK
+-------------------
+  LEVEL 1 -- the code and the configuration, in place:
+
+      cd /mnt/d/distill_self/lio_avoid
+      git switch --detach mission-a-rect46        # or: git checkout mission-a-rect46
+      python3 tools/frozen-check.py               # the check that says the artifacts are the frozen ones
+
+  Going back to the branch tip afterwards: `git switch main` (the tag stays where it is).
+  LEVEL 2 -- without a git checkout at all: the tarball
+  `_keep/releases/rect46-20261016/repo-at-mission-a-rect46.tar.gz` (outside the repo, on the same disk)
+  expands to the same tree with no `.git`; `tools/frozen-check.py` and the offline contract tests run from
+  it unchanged (VERIFIED by extracting it to a scratch directory and running them there -- the log is in
+  that release directory).
+  LEVEL 3 -- the evidence: the same release directory carries the reference sortie's small files
+  (`metrics.txt`, `phase.csv`, `traj.log`, `bridge.log`, `supervisor.log`, `setpoints.csv`, `wire.csv`,
+  `traj.csv.cmd.csv`, `truth_report.txt`, `sitl.log`) plus `BIG-FILES.txt`, which says where the three big
+  ones (`tap.csv` 17 MB, `flight.BIN` 4.2 MB, `lio.csv` 2.2 MB) live in full:
+  `/home/fanxin/lio_avoid/logs/missionA-RECT46-accept-promoted/`.
+
+
+5. HOW TO RE-FLY THIS EXACT VERSION
+-----------------------------------
+    cd /mnt/d/distill_self/lio_avoid
+    ALT_MODE=lio NAV_SOURCE=lio WORLD="$PWD/worlds/pillars.yaml" \
+    MISSION_PARM="$PWD/params/phase_a_mission_fast.parm" \
+    EKF_PARM="$PWD/params/ekf_trust_lio_measured.parm" \
+    GEOFENCE_M=6.60 TAKEOFF_COMMAND_M=0.2 VERTICAL_FIRST=1 VERTICAL_HOLD_S=3.0 \
+        bash tools/run-mission.sh <TAG>
+
+`SHAPING_M=0.30` adds the B1 approach-shaping experiment (off by default, as in this release);
+`EXTRA_PARM=<file.parm>` appends ONE parameter file last in `--defaults` for a one-variable experiment
+without touching a frozen file.  ONE FLIGHT AT A TIME: the launcher refuses to start while the stack is
+alive.
