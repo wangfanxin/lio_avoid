@@ -10,11 +10,14 @@ W  --[common/frames.py + the run's Calib]-->  L  --[the FSM's L->F]-->  F  --[th
 world ENU, origin = pad          LIO world, z up          FCU local (NED labels)      what ArduPilot reads
 ```
 
-Only four files ever cross a frame boundary, and each conversion has one owner:
+Four conversions, and each has one owner.  The W <-> L pair is used by four files since 2026-10-15 -- the
+corner hold made the producer an L -> W reader of its own odometry, and the trajectory recorder was computing
+a W-frame clearance on an L-frame path -- and every one of them takes the SAME `--calib-file`: one
+convention, one constant.
 
 | # | conversion | where it happens | pinned by |
 |---|---|---|---|
-| 1 | **W -> L** (the mission's geometry) | `planner/rectangle_source.py`, at publish time, with `--calib-file`; the same constant in `tools/world-info.py`/`tools/metrics.py` when a recording is read back | the round trip printed in `traj.log` (worst 0.000000 mm) and `docs/metrics/stepB-rectangle-20261013.txt` |
+| 1 | **W -> L** (the mission's geometry) and **L -> W** (what comes back) | W->L: `planner/rectangle_source.py` at publish time, with `--calib-file`; the same constant in `tools/world-info.py`/`tools/metrics.py` when a recording is read back.  L->W: the same file for the corner hold's arrival gate (`--odom`, 2026-10-15), `tools/record-traj.py` before it computes `clr_m`, and `tools/plan-vs-truth.py` / `tools/plot-run.py` when a recording's per-point `frame` column says L | the round trip printed in `traj.log` (worst 0.000000 mm); `tools/traj-clearance-audit.py` (a fresh recording: recorded column == independent recomputation to 0.000000 m; RECT6's old one: -0.2972 -> +0.6000 m); `docs/metrics/stepB-rectangle-20261013.txt` |
 | 2 | **L -> F** (the LIO's pose, and the path the FSM flies) | `fsm/mission_fsm.py`: `stream_external_nav()` for the FCU feed, `legs()` for the path.  The steady-state loop runs entirely in F | A1/A2 (LIO vs truth), A4 (FCU vs truth), and the measured `Calib.t_WL` |
 | 3 | **F -> NED / FLU -> FRD** (the wire) | `bridge/mavlink_impl.py` via `common/frames.py`; with `BRIDGE=mavros`, **mavros does it** and the implementation must NOT also flip | the S7 link test and, in flight, the FCU's own `XKF1` vs the truth (A4) |
 | 4 | **B <-> S** (the 45 deg mount) | `common/frames.py::R_body_sensor()`, applied by `sim/lidar_imu.py` to the ray directions and declared to the LIO as `lio.extrinsic.odom_robo` | the S4 surface split and the pillar fit (`tools/sim-pillar-gate.sh`), and T3's 45.000 deg |

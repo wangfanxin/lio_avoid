@@ -17,9 +17,12 @@ seen by the FCU, *and* the aircraft never comes inside the footprint contract of
 Every result reports **how many of how many** flights completed and diverged.
 
 The owner's later requirement, which Mission A now carries as well: **hover at every corner**
-(`RECT_HOLD_S=5` — the producer publishes one leg per message and keeps publishing it past its flight time,
-so the consumer dwells at the corner).  It is implemented and it has been flown; it is **not yet
-demonstrated** — see `STATUS.md` §"Next, in order" item 1.
+(`RECT_HOLD_S=5`).  **DEMONSTRATED 2026-10-15** on `logs/missionA-RECT7-hold5`: `tools/dwell-audit.py`
+prints **4 of 4 corners hovered >= 5.0 s**, and 4 of 4 again with the stricter airborne-only measurement
+(`STATUS.md` row 43).  The mechanism: the producer publishes one leg per message and advances ON ARRIVAL
+(measured from `/lio/robo/odom`), holding each corner `--hold-s` before it publishes the next leg; the FSM
+accepts the next leg mid-mission and keeps commanding the corner it is parked on until it arrives -- that
+interval is the hover.
 
 ## 2. Decisions on record
 
@@ -52,7 +55,7 @@ BIN), offline and after the flight.  Every line prints its denominator.
 |---|---|---|
 | A1 route horizontal rms | <= 20 mm | truth vs delivered odometry, route window |
 | A2 route vertical rms | <= 50 mm | same window, mean removed |
-| A3 delivered-odometry continuity | delivery: rate >= 80 % of the LIO's 200 Hz and no gap > 3x the median period; wander: rms 2nd difference <= 2.0 mm per axis (10 % of A1); outliers: p99 single step <= 10.0 mm | the samples as DELIVERED (the FCU never interpolates), route window |
+| A3 delivered-odometry continuity | delivery: rate >= 80 % of the LIO's 200 Hz and no gap > 3x the median period; wander: rms 2nd difference <= 2.0 mm per axis (10 % of A1) **over the route window**, with the whole-stream value printed beside it as reported-not-gated; outliers: p99 single step <= 10.0 mm | the samples as DELIVERED (the FCU never interpolates), route window for the wander (take-off and landing are where a second difference measures the climb, not the estimator), every sample for the delivery and outlier gates |
 | A4 post-take-off rms | <= 50 mm horizontal, mean removed | the FCU's own `XKF1` estimate vs the truth, its clock aligned to the sim clock by the take-off ramp (lag reported) |
 | B1 truth box extents | East <= 2.10 m, North <= 1.30 m (command 2.000 / 1.200, so +0.10 on both axes, the same tolerance B3 uses); the legacy `N <= 1.26` is still counted beside it | truth only, route window |
 | B2 straightness per leg | <= 50 mm | truth vs the line through that leg's own endpoints |
@@ -93,6 +96,10 @@ worlds/pillars.yaml ──► sim/lidar_imu.py ──► /livox/lidar + /livox/i
                      bridge/mavlink_impl.py
 ```
 
+The one edge not drawn: with the corner hold ON the producer also **reads** `/lio/robo/odom` — the same LIO
+pose, converted L -> W with the same `--calib-file` — to decide when a leg has been flown.  That is what
+paces the dwell (§4.1), and it is why the hold no longer depends on a speed estimate.
+
 Nothing plans.  The trajectory is the world file's square, published as a Path; the FSM visits its corners;
 ArduPilot GUIDED flies the setpoints; the truth tap judges the result.  There is no planner process, no
 planner workspace and no planner message type anywhere in the tree.
@@ -105,9 +112,27 @@ planner workspace and no planner message type anywhere in the tree.
 | type | **`nav_msgs/Path`** (poses with per-point stamps), frame **L** |
 | rate | points at >= 20 Hz of trajectory time; published from start-up and re-published, so a consumer that joins late still finds a path |
 | content | position + yaw per point, dense enough that the FSM can difference it for velocity and acceleration |
-| producer | `planner/rectangle_source.py` — the square from `worlds/pillars.yaml`, with the optional corner hold (`RECT_HOLD_S`) |
+| producer | `planner/rectangle_source.py` — the square from `worlds/pillars.yaml`, with the corner hold (`RECT_HOLD_S`) |
 | FSM's obligations | convert L -> F once, stream 50 Hz setpoints, enforce the safety gates (truth-fed geofence, corner arrival, bounded abort with the mechanism named), publish `/fsm/phase` |
 | producer's obligations | take the geometry from the world file through `tools/world-info.py`, convert W -> L with the **same** `--calib-file` the FSM uses, and keep the path inside the arena |
+
+**The corner hold's shape on this interface (added 2026-10-15, and it is a CONVENTION on the same message
+type, not a new type).**  With the hold on, the producer publishes **one leg per message** and advances ON
+ARRIVAL: it subscribes `/lio/robo/odom` (200 Hz, L), converts it to W with the same `--calib-file` it
+publishes with, arms each leg's flight clock when the vehicle is within `--leg-start-m` of the leg's START
+corner, and publishes the next leg only after the vehicle is inside `--arrive-m` of the leg's end **and**
+`--hold-s` has elapsed since that arrival (`--leg-timeout-s` bounds the wait and names its reason).  So:
+
+* an **OPEN** path (first point != last) is **one leg** of a tour and more will follow;
+* a **CLOSED** path is the **whole tour** in one message — the shape mission A's frozen tables were flown
+  with — and the mission ends when its corners are visited;
+* an **EMPTY** path means **there are no more legs** (published after the last dwell), so the consumer ends
+  the tour on a statement instead of on a guessed timeout (`--next-leg-wait-s`, derived from the same
+  `RECT_HOLD_S` in `tools/run-mission.sh`, is the safety net).
+
+The FSM holds the corner it has reached while it waits for the next leg — that interval, streamed at 50 Hz
+as the position setpoint, **is the hover**, and it is judged from the truth tap by `tools/dwell-audit.py`,
+never from either log.
 
 **What the interface no longer carries, because there is no planner to carry it** (all of it went in the
 2026-10-15 cleanup, and `STATUS.md`'s last section says what it was for): a republish rate that a slow
@@ -136,11 +161,13 @@ there was a planner.
 9. (done) **the ego-planner line removed from the tree** and the documentation merged back onto the
    pipeline that exists — 44 files deleted, `fsm/mission_fsm.py` 1759 -> 1014 lines,
    `tools/run-mission.sh` 416 -> 266
-10. (in progress) **hover at every corner, measured** — `RECT_HOLD_S=5`.  Three sorties, **1 of 4 corners
-    hovered >= 5 s** each time (`tools/dwell-audit.py`, which measures it from the truth tap and not from
-    the producer's log).  One defect found and fixed on the way (`2d60a65`: the per-leg polylines were
-    closed, so every "leg" was an out-and-back and the aircraft never left the first corner); the fix has
-    not yet produced a clean four-corner result, and that is the next flight
+10. (done 2026-10-15) **hover at every corner, measured** — `RECT_HOLD_S=5`.  The producer advances ON
+    ARRIVAL and the FSM accepts a leg mid-mission (§4.1); `logs/missionA-RECT7-hold5` gives **4 of 4 corners
+    hovered >= 5.0 s** from `tools/dwell-audit.py` (c1 18.15 / c2 7.67 / c3 7.19 / c4 7.58 s), 4 of 4 again
+    airborne-only, **5 of 5 B2 legs** and C2 0.562 m with 0 of 56696 samples inside the 0.20 m footprint.
+    The four sorties that reported "1 of 4" are 0 of 4 under the airborne measure — that "1" was the
+    aircraft parked on the ground at c1 after landing.  One sortie is not a rate: `STATUS.md` §"Next"
+    item 1 asks for the batch
 
 ## 6. Rules (carried over from the rounds that produced the numbers)
 
@@ -176,14 +203,16 @@ Figures, CSVs and the metrics dumps under `docs/` are evidence, not documents, a
 
 ## 8. Open questions
 
-1. **The corner hold, measured** (§5 item 10): three sorties have produced 1 of 4 corners each.  The
-   out-and-back defect is fixed and unproven; the next flight decides whether the hold mode is usable or
-   whether the dwell belongs in the FSM instead of in the producer's pacing.
-2. **B2's remaining gap**: 39 of 50 legs within 50 mm; the failures are the turning legs, and the
-   measured cause is a lightly damped lateral response of the position loop at 0.25 m/s, not the corner
-   carry-over (rejected by experiment, `STATUS.md` row 42).
+1. **The corner hold, measured** (§5 item 10): **demonstrated** — 4 of 4 corners >= 5.0 s on
+   `-RECT7-hold5`, on the truth tap, and 5 of 5 B2 legs.  Open: it is **1 sortie**; the repeat (3-5 flights,
+   rate reported) is `STATUS.md` §"Next" item 1.
+2. **B2's remaining gap**: 39 of 50 legs within 50 mm in the frozen batch; the failures are the turning
+   legs, and the measured cause is a lightly damped lateral response of the position loop at 0.25 m/s, not
+   the corner carry-over (rejected by experiment, `STATUS.md` row 32).  The corner dwell improved it on the
+   one flight that has it: 5 of 5 legs, worst 29.1 mm.
 3. Should the simulator still carry a compass (never an EKF source) so heading can be cross-checked?
 4. The old `gazebo_apm` tree holds ~40 historical documents (the evidence chain for rounds 1-7).  It is a
    frozen archive rather than a living document set: fold it into the budget as well, or leave it frozen?
 5. **DECIDED** — spawn heading North (#14), tap frame SITL-native NED/FRD (#13), altitude source (a) then
-   (b) (#15), the 0.20 m contract (28), the freeze of the mission-A set (#16).
+   (b) (#15), the 0.20 m contract (17), the freeze of the mission-A set (#16), and the corner hold's
+   convention on the trajectory interface (§4.1, 2026-10-15).

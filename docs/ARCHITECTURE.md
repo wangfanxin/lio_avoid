@@ -62,14 +62,19 @@ the chain as it runs, not a design intent.
 ║ BOX 4   planner/rectangle_source.py -- THE TRAJECTORY, and there is no other producer      ║
 ║   in : worlds/pillars.yaml through tools/world-info.py (the one geometry reader)           ║
 ║        --calib-file (_stage/calib.json): the SAME measured W<-L the FSM uses               ║
+║        /lio/robo/odom (L)             <- the corner hold's ARRIVAL GATE (L -> W with the   ║
+║                                          same calibration), not a second convention        ║
 ║   out: /planner/traj -- nav_msgs/Path in L, pose + yaw per point, per-point stamps         ║
-║        one message per leg when RECT_HOLD_S > 0 (the corner hold), else one closed path    ║
+║        one message per leg when RECT_HOLD_S > 0 (the corner hold, advanced ON ARRIVAL),    ║
+║        else one closed path; an EMPTY path means "there are no more legs"                  ║
 ╚═══════════════════════════════════════════════════════════════════════════════════════════╝
                 │ /planner/traj (L)
                 ▼
 ┌═══════════════════════════════════════════════════════════════════════════════════════════┐
 ║ BOX 5   fsm/mission_fsm.py + bridge/     scheduling, frames, arrival, FCU communication    ║
-║   in : /planner/traj (L, latched)     <- the corners, converted L -> F once                ║
+║   in : /planner/traj (L, latched)     <- the corners, converted L -> F once; a NEW leg      ║
+║                                          mid-mission restarts the corner list, and the     ║
+║                                          corner just reached is HELD until it arrives       ║
 ║        /lio/robo/odom 200 Hz (L)      /lio/odom (the velocity)                             ║
 ║        /sim/truth/odom (W)            <- the geofence gate ONLY (sim-only safety)          ║
 ║        FCU state/pose over MAVLink    [bridge]                                             ║
@@ -163,8 +168,8 @@ Every row is a measured number from a run directory, and the row says where.
 | LIO | clean upstream Super-LIO `f89f48d`: `/lio/robo/odom` (200 Hz, body pose, L, zero twist), `/lio/odom` (10 Hz, with velocity), `/lio/cloud_world` (the 0.25 m voxel map) | 200.1 Hz delivered, `logs/missionA-stepB10-*` |
 | FCU feed | the FSM re-samples the newest LIO pose in its own 50 Hz loop and streams ODOMETRY (331) in NED/FRD | the FCU's own log: **VISP/VISV at 48.2 Hz**, `tools/bin-extnav-rate.py` |
 | EKF | `EK3_SRC1_POSXY/POSZ/VELXY/VELZ/YAW = 6` (external nav), no GPS, no compass; every measurement and process noise set to the MEASURED value in `params/ekf_trust_lio.parm`, with `FS_EKF_THRESH` raised in proportion (it is a RATIO) | `tools/bin-params.py` on the flight BIN |
-| trajectory | `planner/rectangle_source.py` converts the world file's square W -> L with the run's measured calibration and publishes it on `/planner/traj`; `RECT_HOLD_S=5` publishes one leg per message and keeps publishing it past its flight time | W->L->W round trip printed in `traj.log`, worst **0.000000 mm**; the published plan's own clearance, read back in W: **0.6000 m** (the world's designed worst case) |
-| mission | the FSM visits the path's **corners** (`--follow corner`, the default and what every table in `docs/metrics/` was measured with): velocity-free position setpoints, a horizontal arrival test with a documented vertical band, and a settle before turning in | A1 4.65-4.90 mm, A4 18.6-21.1 mm, **10 of 10 flights**, `docs/metrics/stepB-rectangle-20261013.txt` |
+| trajectory | `planner/rectangle_source.py` converts the world file's square W -> L with the run's measured calibration and publishes it on `/planner/traj`; `RECT_HOLD_S=5` publishes one leg per message and advances ON ARRIVAL, measured from `/lio/robo/odom` converted L -> W with the same calibration | W->L->W round trip printed in `traj.log`, worst **0.000000 mm**; the published plan's own clearance, read back in W: **0.6000 m** (the world's designed worst case; on RECT7 the live `clr_m` and an independent recomputation agree to **0.000000 m**) |
+| mission | the FSM visits the path's **corners** (`--follow corner`, the default and what every table in `docs/metrics/` was measured with): velocity-free position setpoints, a horizontal arrival test with a documented vertical band, a settle before turning in, and -- with the hold on -- it accepts the next leg mid-mission while HOLDING the corner it is parked on | A1 4.65-4.90 mm, A4 18.6-21.1 mm, **10 of 10 flights**, `docs/metrics/stepB-rectangle-20261013.txt`; the corner hover: **4 of 4 corners >= 5.0 s** and **5 of 5 B2 legs** on `logs/missionA-RECT7-hold5` (`STATUS.md` row 43) |
 | last flight with no ego node (RECT1-noego) | the whole pipeline with zero planner processes | A1 4.40 mm, A2 5.96 mm, A4 20.72 mm, **C2 min 0.547 m with 0 of 28425 samples inside the 0.20 m footprint**, C1 0.022 m, B4 landed |
 | scoring | `tools/metrics.py`: A1/A2 (LIO vs truth), A3 (delivered-stream continuity, bounds anchored to the acceptance table), A4 (the FCU's own `XKF1` vs truth, clock-aligned, best-fit lag reported), B1-B4 (truth vs the commanded geometry), **C1** final point, **C2** minimum truth-to-pillar-surface distance from the world file | every line prints its denominator; `tools/batch-summary.py` aggregates them; `tools/dwell-audit.py` measures the corner dwell from the tap |
 
@@ -206,7 +211,7 @@ tap; the producer's log says only what the producer intended.
 | `/lio/status` | `diagnostic_msgs/DiagnosticArray` | 1 Hz | measured scan rate, effective points, degeneracy lambda2/lambda1, map size | -- | box 3 -> box 5 gate, box 7 |
 | `/tf`, `/tf_static` | `tf2_msgs/TFMessage` | 200 Hz / static | `world_w -> odom -> base_link -> mid360_link` | -- | box 5 (static pair), box 3 (odom edge) |
 | `/planner/traj` | **`nav_msgs/Path`** | per-point stamps; republished while the source runs; latched (TRANSIENT_LOCAL, depth 20 on the consumer) | pose + yaw per point, each point stamped with the instant the mission means it to be reached.  Dense enough to difference for velocity | **L** | box 4 -> box 5 |
-| `/fsm/phase` | `std_msgs/String` | on change + 1 Hz | preflight / takeoff / hold / leg1..4 / land / abort / done | -- | box 5 -> box 7 (window segmentation) |
+| `/fsm/phase` | `std_msgs/String` | on change + 1 Hz | preflight / takeoff / hold / leg1..N / land / abort / done (N = 5 for the square with the corner hold: the entry pad -> c1 plus the four square legs) | -- | box 5 -> box 7 (window segmentation) |
 | setpoint 84 | MAVLink | **50 Hz** | sampled position (+ optional velocity/accel/yaw/yaw_rate), `LOCAL_NED` | F, NED on the wire | box 5 -> box 1 |
 | command 76 | MAVLink | on demand | arm / takeoff / land / mode / simple accel calibration | -- | box 5 -> box 1 |
 | vision 102 / odometry 331 | MAVLink | **48.2 Hz measured at the FCU** (`VISP`/`VISV` in its own log) | LIO pose + velocity (+attitude) | F, NED on the wire with the FRD *labels* ArduPilot requires | box 5 -> box 1 |
