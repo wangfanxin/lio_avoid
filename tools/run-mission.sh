@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Mission A, one flight: SITL + the simulated MID-360 + the LIO + planner/rectangle_source.py + the FSM.
+# Mission A, one flight: SITL + the simulated MID-360 + the LIO + the PLAN box + the BRIDGE + the
+# SUPERVISOR.  Since F2 there is no FSM: the plan box executes, the bridge transports, the supervisor
+# owns the flight commands.  Three processes, three jobs, one writer per MAVLink message class.
 # There is no planner process: the rectangle IS the trajectory, and the truth tap is what judges it.
 #
 # Everything is recorded, because the metrics are computed offline from these files:
@@ -151,8 +153,14 @@ echo "   run dir   : $OUT"
 echo
 
 cd "$OUT" || exit 1
+# TWO ENDPOINTS SINCE F2, and that is a capability this repository proved on the bench BEFORE using it:
+# `tools/test-second-endpoint.py` (run by `_stage/f2-endpoint-bench.sh`) connects two clients with their own
+# 511 rate requests and shows no interference, one vehicle, and a command on one visible as state on the
+# other.  serial0 (5760) is the BRIDGE's -- setpoints 84 and the estimator feed 331; serial1 (5761) is the
+# SUPERVISOR's -- every class-76 command.  One writer per message class is the rule that makes this safe
+# without any runtime arbitration (`_stage/refactor-bridge-plan.md` section 4.2).
 setsid nohup env LIO_TRUTH_TAP=$TAP "$BIN" --model "$SITL_MODEL" --speedup 1 -I0 \
-    --home -35.363261,149.165230,584,0 --serial0 tcp:5760 \
+    --home -35.363261,149.165230,584,0 --serial0 tcp:5760 --serial1 tcp:5761 \
     --defaults "$REPO/params/apm_lio_only.parm,$REPO/params/sitl_basics.parm,$ALT_PARM,$MISSION_PARM$EKF_ARG" \
     -w > sitl.log 2>&1 &
 SITL=$!
@@ -176,7 +184,7 @@ cd - > /dev/null
 # result: summary 61289 = truth_report's "of 61289 seen" = the closed tap's own row count, and metrics.txt
 # mtime AFTER tap.csv instead of before it (this function's A4 row needed the same treatment for the BIN).
 stop_stack() {
-    for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RECT_PID:-}"; do
+    for p in "${FSM_PID:-}" "${BRIDGE_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RECT_PID:-}"; do
         [ -n "$p" ] && kill "$p" 2>/dev/null
     done
     kill "$REC_PID" 2>/dev/null
@@ -217,7 +225,7 @@ stop_stack() {
     fi
     # anything that ignored SIGTERM gets SIGKILL; `cleanup` repeats this on the way out, so nothing is left
     # behind whether the script is exiting normally or not.
-    for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${SITL:-}" "${RX_PID:-}" \
+    for p in "${FSM_PID:-}" "${BRIDGE_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${SITL:-}" "${RX_PID:-}" \
              "${REC_PID:-}" "${RECC_PID:-}" "${RECT_PID:-}"; do
         [ -n "$p" ] && kill -9 "$p" 2>/dev/null
     done
@@ -298,27 +306,47 @@ fi
 # publishes `nav_msgs/Path`; its output is the command stream on /plan/cmd, and this recorder now reads
 # that (`--msg position_cmd`).  Design risk R5 is exactly this line: had the recorder stayed on the Path,
 # every run would have lost its plan-clearance column and nobody would have noticed until an audit.
+# ... and `traj.csv.cmd.csv` beside it: EVERY message, no de-duplication, so the REFERENCE's own
+# smoothness is measurable at the rate it is published (the de-duplicated points file holds one
+# point per distinct command, which is what the Path-era readers need and is NOT enough to answer
+# "is the reference wobbling, or is the aircraft not tracking it?").
 python3 "$REPO/tools/record-traj.py" --topic /plan/cmd --msg position_cmd --csv "$OUT/traj.csv" \
     --world "$WORLD" $TRAJ_CALIB_ARG > "$OUT/rectraj.log" 2>&1 &
 RECT_PID=$!
 sleep 3
 
 echo "== flying =="
-# THE TRAJECTORY SOURCE, which since F1 is ALSO THE EXECUTOR: `planner/rectangle_source.py` publishes the
-# mission's five waypoints as a `quadrotor_msgs/PositionCommand` stream on /plan/cmd (100 Hz, its own wall
-# timer), decides ARRIVAL + SETTLE + DWELL itself from `/lio/robo/odom`, and declares the tour complete with
-# `trajectory_flag = COMPLETED`.  `fsm/mission_fsm.py` relays that stream to MAVLink 84 at 50 Hz, owns the
-# preflight/take-off/gates/LAND/abort and windows the metrics with the `leg` phases it reads off the stream.
+# THE PLAN BOX, which since F1 is ALSO THE EXECUTOR: `planner/rectangle_source.py` publishes the mission's
+# five waypoints as a `quadrotor_msgs/PositionCommand` stream on /plan/cmd (100 Hz, its own wall timer),
+# decides ARRIVAL + SETTLE + DWELL itself from `/lio/robo/odom`, and declares the tour complete with
+# `trajectory_flag = COMPLETED`.
 python3 "$REPO/planner/rectangle_source.py" --world "$WORLD" $TRAJ_CALIB_ARG \
     --hold-s "$RECT_HOLD_S" \
     ${CMD_ARGS:-} > "$OUT/traj.log" 2>&1 &
 TRAJ_PID=$!
-python3 "$REPO/fsm/mission_fsm.py" --nav-source "$NAV_SOURCE" $CALIB_ARG \
-    --tap-port 0 --alt "$TAKEOFF_ALT" --hold 3.0 --geofence-m "$GEOFENCE_M" ${FSM_ARGS:-} \
-    ${YAW_MODE:+--yaw-mode "$YAW_MODE"} \
-    --phase-log "$OUT/phase.csv" --setpoint-log "$OUT/setpoints.csv" > "$OUT/fsm.log" 2>&1
-FSM_RC=$?
-cat "$OUT/fsm.log"
+
+# THE BRIDGE, ITS OWN PROCESS AND ITS OWN ENDPOINT (serial0).  It carries the estimator feed (331) from the
+# LIO and the plan's setpoints (84), and it sends NO class-76 command.  It waits for the supervisor's
+# /plan/trigger before it puts a setpoint on the wire, and it takes the plan OFF the wire when the stream
+# says COMPLETED or when the FCU leaves GUIDED.
+python3 "$REPO/bridge/bridge_node.py" --mav "tcp:127.0.0.1:5760" $CALIB_ARG \
+    --nav-hz 48 --wire-hz 50 ${BRIDGE_ARGS:-} \
+    --setpoint-log "$OUT/setpoints.csv" --wire-log "$OUT/wire.csv" \
+    > "$OUT/bridge.log" 2>&1 &
+BRIDGE_PID=$!
+sleep 2
+kill -0 "$BRIDGE_PID" 2>/dev/null || { echo "the bridge process died:"; tail -20 "$OUT/bridge.log"; exit 1; }
+
+# THE SUPERVISOR, ITS OWN PROCESS AND ITS OWN ENDPOINT (serial1).  Preflight, arm, take-off, the go, the
+# four gates, LAND and the NAMED abort.  Its inputs are the truth and the LINK, never the LIO in flight.
+# It is last because its exit is the sortie's result, and because the two processes it watches must already
+# be publishing when it starts.
+python3 "$REPO/supervisor/supervisor.py" --mav "tcp:127.0.0.1:5761" $CALIB_ARG \
+    --alt "$TAKEOFF_ALT" --hold 3.0 --geofence-m "$GEOFENCE_M" ${SUP_ARGS:-} \
+    --phase-log "$OUT/phase.csv" > "$OUT/supervisor.log" 2>&1
+SUP_RC=$?
+cat "$OUT/supervisor.log"
+FSM_RC=$SUP_RC
 
 # ALL THREE PRODUCER PROCESSES ARE STOPPED AND WAITED FOR BEFORE THE METRICS RUN (see stop_stack above).
 # This is the whole fix: after it, tap.csv, the FCU's BIN and lio.csv are FROZEN, so the file this script
@@ -342,5 +370,5 @@ if [ -n "$BINFILE" ]; then
     cp "$BINFILE" "$OUT/flight.BIN" 2>/dev/null || true
 fi
 echo
-echo "run dir: $OUT   (fsm rc=$FSM_RC, metrics rc=$MET_RC)"
-exit $FSM_RC
+echo "run dir: $OUT   (supervisor rc=$SUP_RC, metrics rc=$MET_RC)"
+exit $SUP_RC

@@ -1,0 +1,220 @@
+F2 -- the SUPERVISOR as an independent process.  EVIDENCE, AND WHERE IT STOPPED.
+=================================================================================
+Written 2026-10-16 by the round that implemented F2 of _stage/refactor-bridge-plan.md section 6, after F1
+(commits 4b5b004, b44b69c).  Two endpoints, three processes, `fsm/mission_fsm.py` DELETED.
+
+VERDICT IN ONE LINE: the architecture is built and its two NEW capabilities are proved -- the second
+MAVLink endpoint (bench) and "a dead plan box is a NAMED abort, not a finished tour" (flight).  The
+ACCEPTANCE FLIGHT IS NOT ACHIEVED: RECT25-kill-plan's aircraft climbed to 9.6 m and drifted, and the cause
+is narrowed to the take-off/altitude chain but NOT confirmed.  F3 was NOT started, and no further sortie
+was flown on an unexplained 9.6 m climb.
+
+
+1. THE GATE: THE SECOND MAVLINK ENDPOINT, BENCH-VERIFIED BEFORE ANYTHING RELIED ON IT
+----------------------------------------------------------------------------------------
+`tools/test-second-endpoint.py`, run by `_stage/f2-endpoint-bench.sh`: SITL on the MISSION'S OWN defaults
+with `--serial0 tcp:5760 --serial1 tcp:5761`; A plays the bridge (the stack's own `MavlinkBridge`, feeding
+the EKF from the truth tap and setting the EKF origin) and B plays the supervisor (a raw client with its
+own 511 requests).  Phase 0 has B connected but SILENT, so the A/B is controlled.
+
+  B. the SECOND endpoint is served at all (--serial1)          ok  system 1 component 0, heartbeat type 2
+  (phase 2: B asks ITS OWN link for ATTITUDE 50 Hz and LOCAL_POSITION_NED 30 Hz)
+  B on its own link: ATTITUDE 49.7 Hz (asked 50), LPN 25.2 Hz (asked 30)
+  D. B receives what B asked for, at ITS rate, on ITS link     ok  ATT 49.7 Hz, LPN 25.2 Hz
+  A: LOCAL_POSITION_NED 50.2 Hz ALONE  /  50.2 Hz WITH B ASKING FOR ITS OWN STREAMS
+  C. B's 511 requests did NOT change A's stream (independence) ok  A 50.2 -> 50.2 Hz (0 % change)
+  E. A still receives its own stream while B is busy           ok  50.2 Hz
+  F. a command on B is state on B's own heartbeats             ok  armed flag=False after B's disarm
+  F'. ... and the BRIDGE on the other endpoint sees the same state  ok
+  SECOND-ENDPOINT BENCH PASSED
+
+  RAW, VERBATIM, INCLUDING A FAILURE THAT IS PRESERVED ON PURPOSE.  In the three-point run before the
+  ruling, the script printed **"SECOND-ENDPOINT BENCH FAILED"** because of its own third probe:
+
+      D'. ... (20 Hz -> 16.7) FAIL 0.0 Hz
+      B asked LOCAL_POSITION_NED at 20 Hz: the FCU reads back an interval of 50000 us, and 0 message(s)
+      arrived in 12 s (0.0 Hz)
+      three points on the same link: 50 Hz asked -> 50.2 delivered; 30 -> 25.3; 20 -> 0.0
+
+  THE MECHANISM, from the firmware: 511 does NOT store the interval you asked for.  It maps the message to
+  a "deferred message bucket" whose interval is the CLOSEST to the request
+  (`libraries/GCS_MAVLink/GCS_Common.cpp:3186-3245` -> `set_ap_message_interval` -> "see which bucket has
+  the closest interval", `:1734-1770`).  So the delivered rate is the BUCKET's, and an interval that lands
+  outside the buckets can be ACCEPTED, READ BACK EXACTLY as requested (the FCU answered 510 with 50000 us)
+  and then never emitted.  **"I asked for it" is not evidence, and neither is the read-back.**
+  Consequence for the design, implemented and not merely promised: the supervisor REQUESTS its rates and
+  then MEASURES them on its own channel, re-asking up to `--link-retries` times, and REFUSES TO ARM below
+  `--link-floor-hz` (`supervisor/supervisor.py::check_own_link`, `::check_position_stream`).
+
+  THE EARLIER FALSE NEGATIVE IS PART OF THE RECORD.  The bench's first two versions reported "SITL never
+  became ready" and "serial0 never streamed LOCAL_POSITION_NED in 90 s" for a SITL that was perfectly
+  healthy: (a) they waited for a log line this firmware never prints, and (b) a client that connects and
+  asks BEFORE the EKF origin exists gets nothing, because Copter's `send_local_position` has no estimate to
+  send.  Both were bench defects, both are now fixed in the bench, and neither is a firmware limit.
+
+
+2. THE KILL CASE: A DEAD PLAN BOX IS NOW A NAMED ABORT (the defect F2 exists to fix)
+------------------------------------------------------------------------------------
+`_stage/f2-kill-bench.sh RECT25-kill-plan 8`: a full sortie whose plan box is killed 8 s into the route.
+The PID is found by a UNIQUE match on its own command line and the count is required to be 1 before the
+kill ("plan-box matches: 1 / KILLING the plan box, pid 315001"), so the harness cannot destroy anyone
+else's process; everything else is torn down by process group.
+
+  [17.60] phase -> leg1
+  [28.73] phase -> abort
+  [28.73] ABORT: THE PLAN BOX HAS STOPPED TALKING: nothing on /plan/cmd for 3.0 s (limit 3.0 s) after 608
+          messages, trajectory_id 1 -- a plan box that is DONE says so in the message (trajectory_flag =
+          COMPLETED); SILENCE IS NOT COMPLETION
+  phases: preflight takeoff hold leg1 abort
+  bridge: relay DISABLED after 557 setpoints (the FCU left GUIDED (LAND): the plan is off the wire)
+  metrics: aborted=True, B4 landing NO
+
+  THE THREE THINGS THE GATE ASKED FOR, all present: an `abort` phase AFTER the route began; the reason
+  NAMES THE PLAN GOING SILENT (not a geofence, not a generic timeout); the supervisor took the mode to
+  LAND itself.  Before F2 the same sortie landed and was scored as a COMPLETED mission with no abort phase
+  (design section 2(e), risk R3).
+
+  ONE GAP FOUND BY THE SORTIE AND FIXED: the abort's LAND waited a fixed 8 s, so the aircraft was still
+  `armed=True mode=LAND alt AMSL 586.1 m` when the process exited.  `--abort-land-s` (40 s) now waits for
+  the FCU's OWN disarm -- an abort takes over and lands, it does not let go.
+
+  THIS SORTIE IS NOT EVIDENCE ABOUT MISSION QUALITY, and it must not be quoted as such: the aircraft was
+  already in a bad state before the kill (section 4).  What it proves is the ABORT PATH.
+
+
+3. WHAT MOVED, WITH file:line
+-----------------------------
+* `supervisor/supervisor.py` (NEW, ~600 lines): its own process and its OWN endpoint (`--mav ...:5761`).
+  Owns preflight (LIO liveness gate, the parked-alignment CHECK, the EKF origin, GPS refusal, GUIDED, the
+  accelerometer calibration, arm), take-off, the hold, `/plan/trigger`, the four gates, the phase log and
+  `/fsm/phase`, LAND, and the NAMED abort.  Its in-flight inputs are `/sim/truth/odom` (the geofence),
+  `/plan/cmd` (the plan's statements: liveness + COMPLETED), `/bridge/status` (the streams the bridge is
+  carrying) and its own endpoint's state -- never the LIO.  The LIO is read ONLY by the preflight gate and
+  logged in the phase rows; neither participates in an in-flight decision.
+* `bridge/bridge_node.py`: gains `BridgeProcess` + `bridge_main()` -- the transport as its own process on
+  serial0, carrying the estimator feed (331) and the plan's setpoints (84) and publishing its own health on
+  `/bridge/status`.  It sends NO class-76 command, reads NO truth, and makes no mission decision.
+* `bridge/{base,mavlink_impl}.py`: `request_rates()` is declared on the interface and implemented, because
+  a consumer must be able to ASK AGAIN (section 1's mechanism).
+* `tools/run-mission.sh`: SITL gets `--serial1 tcp:5761`; the process set is plan box -> bridge -> supervisor
+  (the supervisor's rc is the sortie's rc, and the teardown owns the new PIDs).
+* `fsm/mission_fsm.py` DELETED.  Nothing kept it alive: every protection it carried has a named home --
+  preflight/take-off/LAND/abort/geofence/phase-log -> the supervisor; setpoints + estimator feed -> the
+  bridge; the corner walk -> the plan box (F1); the stall gate -> the supervisor (`_stall_reason`, carried,
+  and its test moved to `tools/test-stall-gate.py`).
+* NEW TESTS: `tools/test-supervisor-authority.py` (the one-way rule as a GATE: no setpoint call and no
+  class-84 name may appear in the supervisor, proved by three negative controls) and
+  `tools/test-second-endpoint.py`; `tools/test-stall-gate.py` retargeted to the supervisor with two new
+  cases for the plan-silence gate.
+* TOOL FIXES this round (both from the delegating agent's findings, both with before/after):
+  * `tools/command-vs-intended.py`: F1 moved WHICH phase row carries which corner, so the tool compared
+    corner k's command against corner k-1's intended point and printed metre-scale garbage (worst
+    2002.7 mm).  It now evaluates BOTH conventions, says which it used, and REFUSES to print a number if
+    neither fits within 100 mm.  Measured: RECT7 (pre-F1) 2.8 mm under the pre-F1 convention; RECT23
+    (post-F1) 2.6 mm under the post-F1 one; a 25 m mutation is refused with exit 1.
+  * THE RECORDING GAP: `traj.csv.points.csv` de-duplicates (RECT24: 405 rows for 6220 messages = 8.4/s),
+    so the REFERENCE's own smoothness was unmeasurable.  `tools/record-traj.py` now also writes
+    **`traj.csv.cmd.csv`** -- every message, every field, in L -- and `bridge/bridge_node.py --wire-log`
+    writes **`wire.csv`**: one row per setpoint on message 84 with the L input, the W output, the NED z as
+    the FCU receives it, AND the frame id and type mask (added after RECT25, because without them "we wrote
+    2.0 m" cannot be told apart from "we wrote a relative offset of 2 m").
+
+
+4. RECT25-kill-plan's FLIGHT: WHAT IS EXONERATED, AND WHAT IS NOT
+-----------------------------------------------------------------
+THE PLAN AND THE WIRE ARE CORRECT, sample for sample:
+  `traj.csv.cmd.csv` 2657 messages and `wire.csv` 557 rows carry ONE command from first to last:
+  L (0.403657, -0.501148, 1.884430) -> W (0.500, 0.400, 2.000) -- corner 1 at 2.0 m, velocity and
+  acceleration zero, trajectory_id 1, flag 1.  The plan never advanced because it was killed.
+THE LIO IS EXONERATED: its own record (`lio.csv`) starts at z = -0.0019 m (the clean F1 run: -0.0011) at
+200.11 Hz, and ends at 1.90 m.  The `lio_hz=388.0` in the bridge's final line is a COUNTER artefact (an
+EMA of instantaneous 1/dt, the same code and the same behaviour as F1's FSM, which reported 263.7 Hz);
+the recorded topic rate is 200.11 Hz.  The delegating agent's earlier "6 m LIO offset" reading was a
+time-base error and was retracted by them: `setpoints.csv` covers only the relay window (557 rows = the
+557 setpoints the bridge sent), by which time the aircraft really was several metres up.
+
+WHAT IS NOT EXONERATED -- THE TAKE-OFF/ALTITUDE CHAIN, AND IT IS A REGRESSION AGAINST F1.  From the FCU's
+own log (CTUN = "alt / desired altitude"):
+  RECT24 (F1, clean):  CTUN alt +1.990  target +1.987     <- the target IS the mission altitude
+  RECT25 (F2):         CTUN alt +0.215  target +0.215  ->  +0.435/+0.509 -> +1.099/+1.145 -> ...
+                       the target RAMPS WITH THE CURRENT ALTITUDE at ~2 m/s, up to +8.289/+8.26, then
+                       falls back to +2.142/+2.00 at t=40 s.
+  truth: on the pad (U 0.100) until ~26.5 s, then +1.277, +3.142, +5.717, +7.991, +9.294, +9.582 (peak),
+  then down to +2.097 at 40 s.  The FCU was targeting ~8.3 m; the aircraft went to 9.6 m and came back to
+  the 2.0 m the setpoint asked for once the target settled.
+  The take-off command itself was correct and IDENTICAL to F1's:
+  "takeoff 2.50 m above the pad = 586.59 m on the FCU's own datum (584.1 m)" (RECT24: 586.58, 584.1).
+  LEADING HYPOTHESIS, with its arithmetic and NOT confirmed: the FCU read the commanded altitude as
+  RELATIVE ("my current altitude + 2.0 m") rather than absolute -- the target tracks the estimate with
+  exactly the setpoint's 2.0 m offset, at the setpoint's own 2 m/s.  The message bytes cannot be the cause:
+  `tools/test-s4-l-to-wire.py` proves `send_cmd` byte-identical to the chain F1 flew, including the frame
+  constant (`MAV_FRAME_LOCAL_NED`) and the mask (2552 = POS_YAW), and the command, the frame and the mask
+  are now recorded in `wire.csv` so the next run settles it from the file rather than from the code.
+  WHAT WOULD SETTLE IT, in order: (a) the FCU's SubMode/statustext in the window between the first
+  setpoint and the first CTUN ramp (the take-off SubMode is CANCELLED by a position setpoint -- a measured
+  fact this project already paid for); (b) `wire.csv`'s frame/mask columns on a fresh sortie; (c) the same
+  sortie with the first setpoint delayed until the aircraft is stationary at the take-off altitude, which
+  is what F1's hold did and F2's does not.
+  UNTIL THAT IS SETTLED, no acceptance number may be quoted from any F2 sortie.
+
+  THE WHOLE ALTITUDE STORY, from the FCU's own CTUN (measured independently by the delegating agent):
+      t[s]   alt / target                 t[s]   alt / target
+       2.1   +0.220 / +0.220             12.1   +7.317 / +7.418
+       4.1   +0.435 / +0.509             14.1   +4.431 / +4.419
+       6.1   +3.864 / +3.977             16.1   +2.016 / +2.086
+       8.1   +8.639 / +8.603             18.1   +2.127 / +2.000   <- AT the mission altitude
+      10.1   +9.757 / +9.797  (peak)     18.2   MODE 9 (LAND, the abort)
+  and `ORGN` is set TWICE at t=0 with different altitudes (584.11, then 584.21): the origin the take-off's
+  datum expression assumes may not be the one the FCU had adopted when the command landed.  ArduPilot's own
+  default take-off altitude is also in the same range as the observed peak, which is a candidate for
+  "the request was accepted but the FCU adopted something else" -- NOT established, and it is the first
+  thing to check with (1) the datum expression's value AT the command, (2) the FCU's ACK/statustext for
+  `MAV_CMD_NAV_TAKEOFF`, and (3) a sortie with the first setpoint arriving during the climb.
+
+  ROOT CAUSE, READ OUT OF THE FIRMWARE BY THE DELEGATING AGENT, AND IT IS A CONTRACT DEFECT THE PROJECT'S
+  OWN COMPENSATION TRIPS: `ArduCopter/takeoff.cpp` has TWO functions that disagree about what the take-off
+  altitude means --
+      bool Mode::do_user_takeoff_U_m(float takeoff_alt_m, ...)   // the GUARD:
+          if (takeoff_alt_m <= copter.current_loc.alt * 0.01) return false;   // an AMSL-scale number
+      void Mode::_TakeOff::start_m(float alt_m)                  // the EXECUTOR:
+          take_off_complete_alt_m = take_off_start_alt_m + alt_m; // ADDED to the current up-estimate
+  and `bridge/mavlink_impl.py::takeoff` deliberately satisfies the GUARD by sending `datum + alt_m`
+  (= 586.59), with a docstring that records the measured reason ("a request for 0.8 m is a takeoff
+  downwards: MAV_RESULT_FAILED, no statustext").  That reasoning is right about the guard and wrong about
+  the executor: the same number is then ADDED, i.e. read as relative.  WHY F1 FLEW CLEANLY ANYWAY: the FSM's
+  `hold` put a position setpoint (z = 2.5 m) on the wire about 2 s after take-off, and a position setpoint
+  CANCELS GUIDED's take-off SubMode -- so the runaway was cut off at ~0.5 m.  F2 holds the setpoints back
+  until the trigger and the runaway had 3+ s: the climb was bounded by an accident of timing, not by the
+  command.
+  CONSEQUENCES, ALL RECORDED AND ONLY PARTLY FIXED (no flight budget left in this round):
+    * the clamp that hides the defect is now the DEFAULT (`--trigger-on-airborne`), so the plan's setpoints
+      bound the climb from the moment the vehicle is airborne; `--trigger-after-hold` keeps F1's sequencing
+      for the A/B.  NOT FLOWN, and it changes the A4 window from a hover to a climb-and-transit;
+    * `--climb-guard-m` now names exactly this failure ("THE TAKE-OFF ALTITUDE DID NOT MATCH THE REQUEST",
+      with the firmware contract in the message), so the next occurrence costs a second, not a sortie;
+    * the take-off COMMAND itself is NOT fixed: the correct fix is one of (i) command the take-off in the
+      datum the EXECUTOR expects and satisfy the guard another way, (ii) take off under setpoint control
+      from the first moment, or (iii) a different mode/command path.  Whichever is chosen must be proved on
+      the bench and then in a sortie before any F2 acceptance number is quoted.
+
+  THE DESIGN SMELL THE SORTIE EXPOSED, and the two responses now IN THE CODE (neither flown):
+    * until the trigger, NO setpoint is on the wire, so for the hold plus the pre-trigger slack the only
+      thing between the aircraft and the FCU's take-off target is the FCU itself.  `--climb-guard-m`
+      (default 1.0) now aborts with a NAMED reason the moment the TRUTH climbs past the commanded take-off
+      altitude plus the guard -- the supervisor is the box allowed to read the truth, so the bound belongs
+      there;
+    * `--trigger-on-airborne` publishes the go as soon as the vehicle is airborne, so the plan's setpoints
+      bound the whole climb (it changes the flown A4 profile to a climb-and-transit, so it is off by default
+      and needs its own A/B).
+
+
+5. WHAT THIS ROUND COULD NOT DO
+-------------------------------
+* **F3 did not start.**  No acceptance re-flight, no ratio over sorties, no final figure for the refactor.
+* **The F2 acceptance sortie does not exist.**  RECT25-kill-plan is an abort case whose flight was already
+  bad (section 4); it is evidence for the abort and for nothing else.
+* **`--nav-source truth` (the calibration flight) is NOT ported.**  It needs a setpoint source and a
+  truth-fed estimator feed in the same process, and the split puts them in different ones; building it
+  would mean mission logic in the bridge or setpoints in the supervisor, both forbidden by design section 8.
+  The file it produces (`_stage/calib.json`) exists and is what both the plan box and the bridge load.
+* **The `mavros` transport still does not exist** (design section 8 item 11), unchanged by this round.

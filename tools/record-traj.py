@@ -128,7 +128,19 @@ def main() -> int:
     fh.write("t_us,t0_us,n,arc_m,clr_m,z_min_w,z_max_w,frame_id\n")
     pf = open(args.csv + ".points.csv", "w")
     pf.write("t_us,i,e,n,u,frame\n")
-    state = {"n": 0, "pts": 0, "last": None, "t0": None}
+    # THE REFERENCE AT THE RATE IT IS ACTUALLY PUBLISHED -- one row per MESSAGE, no de-duplication.
+    #
+    # WHY A SECOND FILE: `traj.csv.points.csv` deliberately holds one point per DISTINCT commanded
+    # position, because that is what the readers written against the old `nav_msgs/Path` need (one
+    # polyline per leg, grouped by `t0_us`).  MEASURED (and reported by the delegating agent on RECT24):
+    # that file therefore records 405 points for 6220 messages = 8.4/s, in a 20 mm raster, so "is the
+    # REFERENCE itself smooth, or is the aircraft failing to track a smooth reference?" -- the first
+    # question anyone asks about a crooked flight -- was unanswerable from the files a run keeps.
+    # This file answers it: every message, every field, in L.
+    cf = open(args.csv + ".cmd.csv", "w")
+    cf.write("t_us,x_l,y_l,z_l,vx_l,vy_l,vz_l,ax_l,ay_l,az_l,yaw,yaw_dot,trajectory_id,"
+             "trajectory_flag,frame_id\n")
+    state = {"n": 0, "pts": 0, "last": None, "t0": None, "msgs": 0}
 
     print("recording %s (%s) -> %s (world %s)" % (args.topic, args.msg, args.csv, args.world), flush=True)
     if world is None:
@@ -185,6 +197,13 @@ def main() -> int:
             """
             t = int(m.header.stamp.sec) * 1_000_000 + int(m.header.stamp.nanosec) // 1000
             p = np.array([m.position.x, m.position.y, m.position.z], dtype=float)
+            cf.write("%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%d,%d,%s\n"
+                     % (t, p[0], p[1], p[2],
+                        m.velocity.x, m.velocity.y, m.velocity.z,
+                        m.acceleration.x, m.acceleration.y, m.acceleration.z,
+                        m.yaw, m.yaw_dot, m.trajectory_id, m.trajectory_flag, m.header.frame_id))
+            cf.flush()
+            state["msgs"] += 1
             prev = state["last"]
             changed = prev is None or float(np.linalg.norm(p - prev)) > 1e-9
             if changed:
@@ -205,7 +224,9 @@ def main() -> int:
         pass
     fh.close()
     pf.close()
-    print("recorded %d messages, %d distinct commanded points" % (state["n"], state["pts"]))
+    cf.close()
+    print("recorded %d messages (%d distinct commanded points); the reference at its own rate is in %s"
+          % (state["n"], state["pts"], args.csv + ".cmd.csv"))
     node.destroy_node()
     rclpy.shutdown()
     return 0

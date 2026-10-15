@@ -166,6 +166,18 @@ class Bridge:
         """Non-blocking: drain the socket, update `state()`."""
         raise NotImplementedError
 
+    def request_rates(self) -> None:
+        """Ask THIS endpoint for the streams it needs (511 MAV_CMD_SET_MESSAGE_INTERVAL), and let a
+        consumer ask AGAIN.
+
+        Declared because a caller must be able to re-ask: MEASURED on the F2 supervisor's own endpoint, a
+        511 request issued while the FCU is still booting delivers 0 Hz forever after, and the F2 bench
+        measured the same shape from the other side (asked 50 -> 50.2 Hz, asked 30 -> 25.3, asked 20 -> 0.0).
+        The rule the two measurements produce is "request, MEASURE, and keep asking until it arrives" --
+        which needs this to be public rather than a constructor side effect.
+        """
+        raise NotImplementedError
+
     def counters(self) -> dict:
         """The transport's own tally, for a run's final line: at least `positions` and `external_nav`.
 

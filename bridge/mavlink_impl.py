@@ -73,9 +73,25 @@ class MavlinkBridge(Bridge):
         self._started = time.monotonic()
         self.log("bridge/mavlink: connected to %s, system %d component %d"
                  % (url, self.mav.target_system, self.mav.target_component))
+        self.request_hz = request_hz
+        self.position_hz = position_hz
+        self.attitude_hz = attitude_hz
+        self.request_rates()
+
+    def request_rates(self):
+        """Ask THIS link for the messages it needs (511), and let a caller ask AGAIN.
+
+        WHY IT IS PUBLIC AND RE-ISSUABLE.  MEASURED, twice, on two different links: a 511 request issued
+        while the FCU is still booting is accepted by nobody and nothing arrives -- the bench's second
+        channel (serial1) received LOCAL_POSITION_NED at 50.2 Hz once it asked AFTER the first channel's
+        preflight had run, and the F2 supervisor's own endpoint measured **0.0 Hz** after asking at t=0.6 s
+        of its own life (`logs/missionA-RECT25-kill-plan/supervisor.log`).  A transport that can only ask
+        once is a transport that silently gets nothing, so the request is a method and the CONSUMER
+        verifies the result and re-asks -- which is the same discipline the second-endpoint bench enforces.
+        """
         # ask for what we need; SR*_* defaults are ~0 in SITL
-        self._request_message(mavutil.mavlink.MAVLINK_MSG_ID_LOCAL_POSITION_NED, position_hz)
-        self._request_message(mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE, attitude_hz)
+        self._request_message(mavutil.mavlink.MAVLINK_MSG_ID_LOCAL_POSITION_NED, self.position_hz)
+        self._request_message(mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE, self.attitude_hz)
         self._request_message(mavutil.mavlink.MAVLINK_MSG_ID_EKF_STATUS_REPORT, 5.0)
         self._request_message(mavutil.mavlink.MAVLINK_MSG_ID_GPS_RAW_INT, 1.0)
         self._request_message(mavutil.mavlink.MAVLINK_MSG_ID_SYS_STATUS, 2.0)

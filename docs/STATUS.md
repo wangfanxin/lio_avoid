@@ -72,35 +72,38 @@ the metrics file that carries it is named.
 | 52 | **F1: the PLAN box became the EXECUTOR -- `/plan/cmd` flies the aircraft, the `nav_msgs/Path` and the FSM's corner walk are DELETED** | commit `4b5b004`.  `planner/rectangle_source.py` publishes `quadrotor_msgs/PositionCommand` on `/plan/cmd` from **its own 100 Hz wall timer** (measured **99.94 Hz** on the bench, against 4 Hz for the S3 shadow that rode the producer's `--rate 4` loop); `planner/cmd_stream.py::TourPacer` owns the five waypoints `[c1,c2,c3,c4,c1]`, the **estimate-only** arrival gate, the **settle**, the dwell and the leg timeout; `bridge/bridge_node.py` (new) consumes the stream and writes the newest sample to **MAVLink 84 at 50 Hz** (measured 48.31/48.43 Hz from `setpoints.csv`'s own clock); `fsm/mission_fsm.py` reads `trajectory_id` for its `leg` phases and `trajectory_flag = COMPLETED` for the end of the tour, and **1187 -> 869 lines** went with the corner walk (`_on_path`, `_path_in_hand`, `_legs_left`, `_await_next_leg`, `_fly_to_corner`, `legs`, `_corners_of`, and `follow_path` + `--follow path` with its nine switches).  **The bridge has ONE setpoint entry point now: `send_cmd(cmd_l, calib)`** -- `send_position`, `send_position_velocity` and `send_velocity` are deleted, so nothing above the bridge converts a frame (`send_external_nav_l` closed the estimator path's L -> wire step too).  Three tools died with their subjects: `tools/test-corner-tour.py`, `tools/hold-design-check.py`, `tools/test-shadow-ab.py`.  Evidence `docs/metrics/f1-plan-cmd-20261016.txt`; figure `docs/figures/f1-plan-cmd-RECT23-RECT24.png` |
 | 53 | **THE HOVER SURVIVES THE REFACTOR: 2 of 2 sorties with 4 of 4 corners >= 5.0 s, and the dwell clock now starts on SETTLED** | `RECT23-plan-cmd` / `RECT24-plan-cmd`, both on the **FROZEN** `params/ekf_trust_lio.parm` so the refactor is the only variable, both with `RECT_HOLD_S` **unset** -- the harness printed `dwell: 5.0 s ... from THE HARNESS DEFAULT` (the frozen world's `mission.hold_s` is 3.0 and is now deliberately not what a default sortie flies, row 42).  `tools/dwell-audit.py` on the truth tap: **4 of 4** each (default: c1 13.11/12.99, c2 7.99/7.89, c3 **6.35/6.34**, c4 7.96/8.02 s; `--airborne-m 0.5`: 9.01/8.89, 7.99/7.89, 6.35/6.34, 7.96/8.02 s) -- **8 of 8 corner visits**, against row 48's pre-F1 15 of 16.  **c3 is the fix's own evidence**: it was the corner RECT11 split into 1.33 s + 4.96 s, and it is now one 6.35 s span, because the dwell clock starts when the vehicle is inside `--arrive-m` **AND** below `--settle-speed` (both printed at every arrival) instead of on the first radius crossing.  The offline control proves the mechanism: with the settle removed the FLOWN dwell falls to 3.96 s at every corner.  Everything else is unmoved -- A1 3.59/3.45 mm, A2 4.41/4.29, A3 PASS, A4 17.41/18.34 (+10/+24 ms lag), B2 5 of 5 legs (worst 41.3/41.4 mm), B3 5 of 5 corners <= 4.6 mm, B4 landed + DISARMED at 72.88 s, C1 0.005/0.006 m, **C2 0 of 55320 / 0 of 55282 samples inside the 0.20 m footprint** (min pillar distance 0.547/0.551 m), **no ABORT, no leg timeout, no EKF failsafe**, and the phase log is `preflight takeoff hold leg1..leg5 land done` -- identical names, count and boundaries to the pre-F1 sorties (risk R1).  **B1 still FAILS** (E 2.159/2.170 against <= 2.10) -- the known defect of row 50, bound untouched |
 
+| 54 | **F2: the SUPERVISOR is its own process with its own MAVLink endpoint, and `fsm/mission_fsm.py` is DELETED** | `supervisor/supervisor.py` (new, its own process on `tcp:127.0.0.1:5761`) owns preflight, arm, take-off, the go (`/plan/trigger`), the four gates, the phase log, LAND and a NAMED abort; `bridge/bridge_node.py` gained `BridgeProcess` (its own process on serial0) carrying the estimator feed 331 and the plan's setpoints 84, publishing its health on `/bridge/status`; `tools/run-mission.sh` starts SITL with `--serial0 tcp:5760 --serial1 tcp:5761` and runs plan box -> bridge -> supervisor.  **`fsm/mission_fsm.py` is gone and nothing kept it alive**: every protection it carried has a named home (preflight/take-off/LAND/abort/geofence/phase-log -> the supervisor; setpoints + estimator feed -> the bridge; the corner walk -> the plan box; the stall gate -> the supervisor, carried).  The one-way rule is a GATE, not a promise: `tools/test-supervisor-authority.py` fails the build if the supervisor can reach a setpoint path or names class 84, with three negative controls.  Two new instruments answer what F1 could not record: `traj.csv.cmd.csv` (every `/plan/cmd` message, no de-duplication -- the de-duplicated points file held 405 points for 6220 messages = 8.4/s) and `wire.csv` (every setpoint on 84 with the L input, the W output, the NED z, the frame id and the type mask) |
+| 55 | **F2's gate: the SECOND MAVLINK ENDPOINT is a real capability, and A DEAD PLAN BOX IS NOW A NAMED ABORT — but the acceptance FLIGHT is NOT achieved and F3 did not start** | **Bench** (`tools/test-second-endpoint.py`, run by `_stage/f2-endpoint-bench.sh`): two clients, each with its own 511 requests, **no interference** -- A 50.2 Hz alone -> 50.2 Hz with B asking on its own link (0 % change), B gets ATT 49.7 / LPN 25.2 Hz on its own link, a command on B is state on both.  **The mechanism that makes this a rule rather than a hope**: 511 does not store an interval, it maps the message to a fixed set of "deferred message buckets" (`GCS_Common.cpp:3186-3245`, `:1734-1770`), so a rate between buckets can be ACCEPTED, READ BACK EXACTLY (the FCU answered 510 with 50000 us) and then never emitted (20 Hz asked -> 0.0 Hz) -- the supervisor therefore REQUESTS, MEASURES on its own channel and REFUSES TO ARM below its floor.  **Kill case, in flight** (`RECT25-kill-plan`, the plan box killed 8 s into the route): `preflight takeoff hold leg1 abort`, and the abort is NAMED -- "THE PLAN BOX HAS STOPPED TALKING: nothing on /plan/cmd for 3.0 s ... SILENCE IS NOT COMPLETION" -- where pre-F2 the same sortie landed and was scored COMPLETE.  **NOT ACHIEVED**: the acceptance flight.  RECT25's aircraft climbed to **9.6 m on a 2.50 m take-off command** (its own CTUN target ramped with the estimate to ~9.8 m and fell back to 2.0 m only when the plan's setpoints arrived), took 39 % of its samples inside the pillar footprint and is **INVALID for flight quality** -- the plan and the wire are exonerated sample-for-sample (`traj.csv.cmd.csv` and `wire.csv` carry ONE correct command: W (0.500, 0.400, 2.000)), the LIO is exonerated (starts at z = -0.0019 m at 200.11 Hz), and the open question is the take-off/altitude chain.  Two responses are implemented and NEITHER IS FLOWN: `--climb-guard-m` (abort if the truth climbs past the command) and `--trigger-on-airborne`.  Evidence `docs/metrics/f2-supervisor-20261016.txt` |
+
 ## Next, in order
 
-1. **F2 -- the supervisor becomes an independent process, and `fsm/mission_fsm.py` disappears.**  Its own
-   MAVLink endpoint, its own inputs (truth + link status only), the authority for preflight/arm/takeoff/
-   mode/LAND/RTL, the truth-fed geofence and a NAMED abort; the plan box declares completion with
-   `trajectory_flag = COMPLETED` and only the supervisor sends message class 76.  **The second MAVLink
-   endpoint is a NEW capability and must be bench-verified BEFORE it is flown** (two clients, their own 511
-   rate requests, no interference) -- if that bench test fails, F2 stops there rather than flying an
-   unverified link.  The bench must also kill the plan box mid-mission and require a NAMED abort: today a
-   dead plan box and a finished tour differ only because F1 added `CmdRelay.stalled_reason`, and that
-   change of behaviour has not yet been demonstrated on a running stack.
-2. **F3 -- the acceptance re-flight and the rate.**  Re-fly with the final architecture, then 3 more
-   sorties, and report "N of M sorties with 4 of 4 corners hovered >= 5.0 s" with the corner-visit
-   denominator, C2 with its denominator per sortie, and what the whole refactor changed against the
-   pre-refactor baselines.  The pre-F1 rate to beat is row 48's 3 of 4 sorties / 15 of 16 visits.
-3. **B1's East extent is still the last failing acceptance row** (rows 50, 52-53: 2.159/2.170 m against
-   <= 2.10 on the two F1 sorties, i.e. unchanged by the refactor).  It is the position loop's arrival ring
-   at the two corners arrived at ~1.7 m/s, the peak lands 4.1-4.2 s after arrival, and the dwell holds it
-   open.  The levers are the arm's `WP_SPD` (the slow arm flies the same square inside the bound 10 of 10)
-   or the arrival speed; the bound itself is NOT the thing to move.
-4. **Re-run the frozen batch after any change to the flight code** (`tools/run-mission-batch.sh 10` +
-   `tools/batch-summary.py`), so the mission-A numbers keep their denominators.  F1 changed the flight
-   code, so this is due again.
-5. **`--nav-source truth` (the calibration flight) is code-reviewed but NOT flight-proven since F1** moved
-   its setpoint onto the `send_cmd` path (`docs/metrics/f1-plan-cmd-20261016.txt` section 5).  One sortie
-   with `NAV_SOURCE=truth` would close it.
-6. **`tools/measure-rates.py`'s "setpoint 84" row is meaningless** (it reads `setpoints.csv`'s `t_wall`
-   column as if it were microseconds); the honest number is that column's median interval.  A measuring-tool
-   defect, not an architecture one, and it reproduces on every pre-F1 run too.
+1. **SETTLE THE TAKE-OFF ALTITUDE BEFORE ANY FURTHER FLIGHT.**  `RECT25-kill-plan` climbed to 9.6 m on a
+   2.50 m command while the plan's setpoints were held back for the trigger; the FCU's own CTUN target
+   ramped with its estimate to ~9.8 m and came back to 2.0 m as soon as the setpoints arrived.  The plan
+   and the wire are exonerated and the message bytes are provably identical to what F1 flew
+   (`tools/test-s4-l-to-wire.py`), so the candidates are: the take-off command's datum/origin at the moment
+   it is accepted (`ORGN` is set twice, 584.11 then 584.21), the GUIDED take-off SubMode being cancelled by
+   the first position setpoint, and the length of the un-supervised window before the trigger.  The
+   instruments to settle it are committed: `wire.csv` now carries the frame id and the mask, and
+   `--climb-guard-m` (see below) bounds the symptom rather than the cause.
+2. **F2's acceptance sortie, then F3.**  With the take-off question closed: one sortie through the new
+   three-process stack against F1's acceptance set, then the F3 batch (3 more) and the ratio
+   "N of M sorties with 4 of 4 corners hovered >= 5.0 s" with the corner-visit denominator, C2 with its
+   denominator per sortie, and `tools/acceptance-table.py` for the table.  The pre-F1 rate to beat is
+   3 of 4 sorties / 15 of 16 visits (row 48); F1's own rate is 2 of 2 / 8 of 8 (row 53).
+3. **`--climb-guard-m` and `--trigger-on-airborne` are implemented and NOT flown** (row 55).  The guard
+   turns "the FCU is going somewhere the mission did not ask for" into a NAMED abort in the supervisor --
+   the box allowed to read the truth -- and it is the cheap half; the trigger-on-airborne half changes the
+   flown A4 profile and needs its own A/B.
+4. **B1's East extent is still the last failing acceptance row** (rows 50, 52-53: 2.159/2.170 m against
+   <= 2.10, unchanged by the refactor).  The levers are the arm's `WP_SPD` or the arrival speed; the bound
+   is not the thing to move.
+5. **Re-run the frozen batch after any change to the flight code** (`tools/run-mission-batch.sh 10` +
+   `tools/batch-summary.py`).  F1 and F2 both changed the flight code, so this is due twice over.
+6. **`--nav-source truth` (the calibration flight) is not ported to F2** (it needs a setpoint source and a
+   truth-fed estimator feed in one process, and the split puts them in two).  The file it produces exists.
+7. **`tools/measure-rates.py`'s "setpoint 84" row is meaningless** (it reads `setpoints.csv`'s `t_wall`
+   column as if it were microseconds); the honest number is that column's median interval.
 
 ## Open questions, and the things kept for a decision
 
