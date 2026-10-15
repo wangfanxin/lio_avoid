@@ -271,3 +271,37 @@ TWO BUILD FAILURES, BOTH CAUGHT BY THE HARNESS AND AUTO-REVERTED, and each taugh
 The next single action is the flight at window 8, against the prediction recorded at the top of this plan
 (the plan's own minimum clearance rising from its measured +0.040..+0.126 m toward `dist0`; refutation: no
 change).  Revert is two commands, one per patch, both named in the build scripts.
+
+=== THE FLIGHT: THE DISTANCE-COST TERM IS FLOWN AND THE PREDICTION IS REFUTED (`DIAG29-distance-cost`) ==
+PATCH DISTANCE-FIELD/1 (the field, verified parked) and /2 (the cost term) applied and built; the hard diagonal
+flown at window 8, the best arm.  The prediction, written before any of the code existed:
+
+    "the PLAN's own minimum clearance rises from its measured +0.040..+0.126 m toward `dist0` (0.5 m), and the C2
+     footprint count falls below the window-8 arm's 1887..4749.  REFUTATION: no change in either."
+
+MEASURED:
+
+    run                        truth min     inside 0.20 m (the C2 row's denominator)     outcome
+    window-8 arm (4 runs)      +0.058..+0.167, one -0.276        1887..4749               rc=0
+    **DIAG29-distance-cost**   **-0.225 m**  **4960 of 20346 (24%)**                     **rc=1**
+
+**Refuted**: a penetration, a footprint fraction above every window-8 run, and the sortie did not even end
+cleanly (rc=1).  The first real obstacle-distance cost this planner has ever had did not improve the crossing.
+
+WHAT THIS DOES AND DOES NOT SAY, stated before anyone is tempted to over-read it:
+  * ONE run.  The arm's spread is sd 0.143 m, so a single sample cannot separate "no effect" from "an effect
+    smaller than the noise" -- but it CAN refute a prediction this strong (a rise toward 0.5 m), and it does.
+  * the term's weight is a LOCAL CONSTANT mirroring `optimization/lambda_collision` = 0.5, not wired to the
+    parameter (the node handle is a parameter of `setParam`, not a member -- see row 113); so `lambda_collision`
+    and `dist0` in our launch file still multiply nothing, and what was flown is the shape with 0.5 / 0.5.
+  * `rc=1` means the sortie did not complete; the cause is not yet examined, and it is the first thing to look at
+    if this line is pursued -- a term that destabilises the optimiser would show exactly this way.
+  * the field itself is NOT refuted by this: it was verified against `getInflateOccupancy` (parked, one sample),
+    it is built from the array the collision check reads, and it costs nothing when unread.  What this flight
+    refutes is the claim that ADDING THIS TERM, with these weights, improves the crossing.
+
+THE HONEST POSITION AFTER 29 SORTIES: every parameter this planner exposes, three code changes, and now a real
+(if unwired) obstacle-distance cost have been flown; none moved the C2 row.  The remaining questions are no
+longer "which knob" but whether the term needs a weight the launch file can set (one member added), whether the
+rc=1 is the term destabilising the optimiser, and whether this mission's 0.20 m footprint is the right bar for
+this planner at all.
