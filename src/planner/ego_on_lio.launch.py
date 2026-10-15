@@ -184,7 +184,22 @@ def generate_launch_description():
         # a file that leaves them out does not get the upstream behaviour -- it gets whatever the C++
         # defaults happen to be, silently.
         'optimization/lambda_smooth': 1.0,
-        'optimization/lambda_collision': 0.5,
+        'optimization/lambda_collision': 0.5,   # LIVE ONLY AT A LONG RELAY WINDOW, and this is the experiment.
+        'optimization/dist0': 0.5,               # Round 8 read the source and found this variant's distance cost
+                                                 # measures against `cps_.base_point`/`direction` -- other DRONES'
+                                                 # points, empty for one vehicle -- so both weights multiplied
+                                                 # NOTHING; that reading was taken at window 0, where the rebound
+                                                 # fired 43 times per crossing.  At window 8 the rebound fires
+                                                 # **2.2 M times and finds 15 000-17 000 collisions**, and
+                                                 # `check_collision_and_rebound()` is exactly the function that
+                                                 # populates those arrays and sets `cps_.clearance = dist0_`.  So
+                                                 # they are no longer no-ops -- and nobody has flown them there.
+                                                 # Every localisation points at this term: the map holds the
+                                                 # obstacle, the plan goes there anyway (four of four), and the
+                                                 # aircraft follows the plan to 0.003-0.044 m.  Prediction before
+                                                 # the flight: the plan's own minimum rises from its measured
+                                                 # +0.040..+0.126 m toward the 0.8 m standoff this now asks for.
+                                                 # Upstream: 0.5 and 0.5 (`advanced_param.launch.py:189,192`).
         'optimization/lambda_feasibility': 0.1,
         'optimization/lambda_fitness': 1.0,      # UPSTREAM'S VALUE, and the 4.0 experiment is now CLOSED:
                                                  # DIAG15 (4.0) cleared by +0.068 m with 1231 of 54097 samples

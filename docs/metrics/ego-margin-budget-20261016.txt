@@ -833,3 +833,25 @@ the plan's own minimum clearance in the best arm rises from its measured +0.040 
 standoff the cost now asks for, and the C2 footprint count falls below the best 1887 of 47406.  THE REFUTATION:
 no change -- which would mean the term is still effectively inert even when populated, and would close the last
 parameter-shaped door in this planner.
+
+=== THE LIVE-PARAMETER EXPERIMENT, FLOWN AND REVERTED (`DIAG27-dist0-08`) ===============================
+`optimization/dist0` 0.5 -> 0.8 m and `optimization/lambda_collision` 0.5 -> 2.0, at window 8, everything else at
+the documented baseline -- the term that round 8 found inert and round 26 found LIVE (2.2 M rebound calls,
+15 000-17 000 collisions populating exactly the arrays these weights multiply).
+
+    run                     truth min     inside 0.20 m     arm
+    window-8 arm (0.5/0.5)  +0.058 +0.167 -0.276 +0.089   1887..4749   mean +0.010 m, 3 of 4 cleared
+    **DIAG27 (2.0/0.8)**    **+0.154 m**  **4234 of 43901 (9.6%)**     one run
+
+The run is healthy (rc=0, completed, C1 PASS 0.006 m, A1 5.52 mm, A2 2.99 mm) and its numbers are **mid-band for
+the arm it was meant to improve**: a clearance inside the range the 0.5/0.5 runs already produced, and a footprint
+count above three of the four.  **The prediction written before the flight -- that the plan's own minimum would
+rise toward the 0.8 m standoff the cost asks for -- is not supported**, so the parameters are back at upstream's
+0.5 / 0.5 and the comment beside them records the flight.
+
+**That closes the last parameter-shaped door in this planner by its own flight rather than by argument.**  The
+standing picture is unchanged and now unusually complete: the map holds the obstacle at the moment of closest
+approach (four of six runs), the plan goes there anyway (four of four), the aircraft follows the plan to
+0.003-0.044 m, and the three code changes and every parameter tried have been flown and refuted.  What is left is
+outside this planner's architecture: a real obstacle-distance cost (the classic `evaluateEDTWithGrad` path this
+swarm variant removed), or a formal decision that the 0.20 m footprint is the wrong bar for it.
