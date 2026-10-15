@@ -774,3 +774,18 @@ ESDF, or the classic ego-planner's `evaluateEDTWithGrad` path that this swarm va
 decision that this mission's 0.20 m footprint is the wrong bar for this planner -- in which case the delivered
 measurements (per-pillar clearance, the map's view, the detour shape, and the +0.45 m control comparison) are the
 evidence the goal actually asks for.
+
+=== THE AIRCRAFT'S OWN CLOSEST APPROACH: MAPPED SPACE OR BLIND SPACE? ============================
+
+    run                     arm         truth min    the map AT the closest approach
+    ------------------------------------------------------------------------------------
+    DIAG9-window3           window 3       +0.150    free/blind
+    DIAG20-window8          window 8       +0.058    OCCUPIED
+    DIAG21-window8-repro    window 8       +0.167    OCCUPIED
+    DIAG22-window8-arm3     window 8       -0.276    free/blind
+    DIAG23-window8-arm4     window 8       +0.089    OCCUPIED
+    DIAG24-window15         window 15      +0.155    OCCUPIED
+
+    blind/outside: 2 of 6     occupied: 4 of 6
+
+The aircraft's closest approaches land in space its own map DID mark in 4 of 6 runs -- so with the map no longer blind, the residual C2 failures are the planner's and the controller's: the map holds the obstacle and the trajectory goes through it anyway.  That would move the conclusion one step further downstream than round 21 did, and it is the strongest statement yet that the next lever is not the map.
