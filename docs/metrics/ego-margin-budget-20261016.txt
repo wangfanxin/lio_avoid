@@ -527,3 +527,25 @@ The truth's own numbers do not improve with it (+0.058 m, 4749 of 47109 inside t
 for the 3 s runs) -- one more sample in the same noisy band (sd 0.143 m), which is the same lesson as before:
 **the plan's worst point moving by 0.27 m does not by itself move the flown result**, because that point may be
 replaced before it is flown.  rc=0, completed, C1 PASS 0.004 m, A1 6.13 mm, A2 3.53 mm.
+
+=== THE WINDOW-8 REPRODUCTION: 2 OF 2 CLEAN, AND THE BEST CROSSING RECORDED (`DIAG21-window8-repro`) =====
+Round 21's window-8 result was one run, so it was reproduced before being built on.  It came back BETTER than the
+first:
+
+    arm            run                     truth min     inside 0.20 m (the C2 row's own denominator)
+    window 0       6 crossings             -0.279 .. -0.129 m   all negative, 6 of 6 penetrated
+    window 3       DIAG9 / 10 / 14         +0.150 / +0.056 / **-0.222** m   2 of 3 cleared
+    **window 8**   DIAG20 / DIAG21         +0.058 / **+0.167** m           **2 of 2 cleared**
+                   DIAG21's own row:                    1887 of 47406 (4.0%)
+
+**+0.167 m is the largest minimum clearance of all thirteen ego crossings** (the previous best was DIAG9's
++0.150 m), and window 8 is the **first arm in which every run cleared** -- two of two, against two of three for
+window 3 and zero of six for window 0.  Both window-8 runs also flew cleanly (rc=0, C1 PASS 0.003/0.004 m,
+A1 5.82/6.13 mm, A2 3.16/3.53 mm), so the longer union costs nothing operational.
+
+WHAT THIS DOES AND DOES NOT SETTLE.  It does not pass C2 -- 1887 samples still lie inside the 0.20 m footprint,
+and the row asks for zero -- and two runs against a baseline whose spread is sd 0.143 m is suggestive, not
+conclusive; the arm needs more runs before `EGO_CLOUD_WINDOW` could be promoted from 0.0 to 8.0 as a default.
+What it does establish is that the persistence lever round 20 named is the first one whose arm shows a
+consistent sign: **the configuration that stopped the map being blind is the configuration whose crossings
+clear.**
