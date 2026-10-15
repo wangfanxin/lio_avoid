@@ -39,6 +39,53 @@ def read(world):
             "geofence_m": float(geo), "arena": {"x": xs, "y": ys}}
 
 
+class PillarWorld:
+    """The world file's pillars as finite cylinders, with the clearance EVERY tool must agree on.
+
+    WHY THIS LIVES HERE, AND WHY IT IS ONE DEFINITION.  The signed distance to the nearest pillar surface
+    used to be `planner/ego_adapter.World.clearance`, imported by path from the tools that needed it, so
+    that a recorder and the gate that refused a planner's paths could not disagree.  The ego-planner line
+    was dropped on 2026-10-15 and the adapter with it, so the same rule -- horizontal distance minus r
+    inside the pillar's z band, and the true CORNER distance above or below it (a point over a pillar's
+    cap is not 0 m from it) -- moved here, into the one file that reads the world file.
+
+    `tools/metrics.py` measures C2 independently and on the FLIGHT's own truth (a horizontal band test,
+    which is what "did the vehicle ever come closer than 0.20 m" needs and is deliberately not this
+    function): C2 is the acceptance number, this one is what the recorders print next to a plan.
+    """
+
+    def __init__(self, cyl):
+        self.cyl = cyl                      # (M,5): x, y, r, z0, z1
+
+    @staticmethod
+    def load(path):
+        import numpy as np
+        with open(path) as fh:
+            d = yaml.safe_load(fh) or {}
+        pl = d.get("pillars") or []
+        arr = (np.array([[p["x"], p["y"], p["r"], p.get("z0", 0.0), p.get("z1", 4.0)] for p in pl],
+                        dtype=float) if pl else np.zeros((0, 5)))
+        return PillarWorld(arr)
+
+    def clearance(self, P):
+        import numpy as np
+        P = np.atleast_2d(np.asarray(P, dtype=float))
+        if self.cyl.shape[0] == 0:
+            return np.full(len(P), np.inf)
+        best = np.full(len(P), np.inf)
+        for x, y, r, z0, z1 in self.cyl:
+            dh = np.hypot(P[:, 0] - x, P[:, 1] - y)
+            dz = np.maximum.reduce([z0 - P[:, 2], P[:, 2] - z1, np.zeros(len(P))])
+            d = np.where(dz <= 0.0, dh - r, np.hypot(np.maximum(dh - r, 0.0), dz))
+            best = np.minimum(best, d)
+        return best
+
+
+def load_world(path):
+    """`PillarWorld.load`, by the name the recorders used when this came from the adapter."""
+    return PillarWorld.load(path)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--world", required=True)

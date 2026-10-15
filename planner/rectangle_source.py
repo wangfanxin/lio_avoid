@@ -2,9 +2,10 @@
 """The rectangle trajectory source: publishes `/planner/traj` for mission A.
 
 This is the *frozen* interface of PLAN.md decision 11 and 4.1: a `nav_msgs/Path` in L, points dense
-enough that the FSM can difference it for velocity.  Today the square comes from here; later the
-ego-planner arrives as an adapter that publishes the same Path, and nothing in the FSM changes -- which
-is the point of building the rectangle this way rather than hard-coding corners in the flight code.
+enough that the FSM can difference it for velocity.  It is the ONLY trajectory source in the tree: an
+ego-planner used to publish the same Path behind an adapter, but the owner dropped that line on
+2026-10-15 and did not change one line of the FSM -- which is exactly what building the rectangle
+against the interface rather than hard-coding corners in the flight code bought.
 
 The path is written in W (the world file's frame, ENU, origin at the pad) and converted to L with the
 PREDICTED calibration: the vehicle spawns facing North (decision 14), so L's x axis is the body's

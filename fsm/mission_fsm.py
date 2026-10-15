@@ -96,10 +96,9 @@ class Mission:
         self.phase_t0 = time.monotonic()
         self.yaw_last = float(args.yaw)          # the heading actually streamed (velocity mode slews it)
         self.yaw_track_err = 0.0
-        self.yaw_hold = False                    # set by the follower near a station: freeze the heading
         self.last_end_dist = float("nan")        # how far the vehicle was from the plan's end at completion
-        self.stop_index = None                   # the sequencer's stop index (-1 = sequence complete)
-        # F3 (planner-death visibility): the planner's own stall signal, and when the last plan arrived.
+        # F3 (source-death visibility): the trajectory source's own stall signal, and when the last plan
+        # arrived.  KEPT, NEEDS A DECISION: the dropped planner chain was its only publisher.
         self.planner_stalled = False
         self.planner_stall_since = None
         self.last_path_wall = time.monotonic()
@@ -140,12 +139,6 @@ class Mission:
         self.abort_reason = None
         self.node = None
         self.phase_pub = None
-        # THE PLAN'S EXACT DYNAMICS (see _on_traj_dyn/_dynamics_for): None until a message that MATCHES the
-        # Path in hand arrives, so the initial state is the honest one -- "nothing received yet".
-        self.dyn_t = None
-        self.dyn_v = None
-        self.dyn_a = None
-        self.dyn_seen = 0
 
     # ------------------------------------------------------------------ plumbing
     def _make_bridge(self):
@@ -191,87 +184,19 @@ class Mission:
         self.node.create_subscription(Odometry, self.args.truth_topic,
                                       lambda m: self.tap.on_odom(m), best_effort)
         self.node.create_subscription(Path, self.args.traj_topic, self._on_path, latched)
-        # THE PLAN'S OWN VELOCITY AND ACCELERATION, from the parallel `--traj-dyn-topic`.  Same latched QoS:
-        # it is the same plan, published in the same tick by planner/ego_adapter.py, and a consumer that
-        # starts late should still find one.  The Path stays the plan of record -- if this topic is silent,
-        # absent or inconsistent with the Path, the follower keeps differencing the Path (and SAYS so, see
-        # the DYNAMICS line in _spline_once): the dyn stream can only ever make the reference better, never
-        # become a second source of truth for what to fly.
-        if self.args.traj_dyn_topic:
-            try:
-                from trajectory_msgs.msg import MultiDOFJointTrajectory
-                self.node.create_subscription(MultiDOFJointTrajectory, self.args.traj_dyn_topic,
-                                              self._on_traj_dyn, latched)
-            except Exception as exc:                                     # noqa: BLE001
-                self.log("no trajectory_msgs (%s): the plan's exact velocity/acceleration cannot be "
-                         "received and the reference stays a finite difference of the Path" % exc)
-        # THE PLANNER'S OWN LIFELINE (audit F3).  planner/ego_adapter.py publishes /planner/stalled = true
-        # once the SAME trajectory has been withheld for --stall-s, which is what a DEAD planner looks like
-        # from outside -- and MEASURED (AP5) nothing in the repository subscribed to it: the FSM waited out
-        # its 60 s and aborted naming "the trajectory source", i.e. the reporter blamed the messenger.
+        # THE TRAJECTORY SOURCE'S OWN LIFELINE (audit F3).  A source that has stopped producing plans can
+        # SAY so on `--stall-topic` (`std_msgs/Bool`) -- MEASURED (AP5) nothing in the repository subscribed
+        # to it: the FSM waited out its 60 s and aborted naming "the trajectory source", i.e. the reporter
+        # blamed the messenger.  KEPT, NEEDS A DECISION: the publisher of this signal was the dropped
+        # planner chain, so today nothing raises it; it costs one subscription and it is the only NAMED
+        # cause for "the source is dead", which any future source may want.
         from std_msgs.msg import Bool as _Bool
         try:
             self.node.create_subscription(_Bool, self.args.stall_topic, self._on_stall, 10)
         except Exception as exc:                                       # noqa: BLE001
             self.log("cannot subscribe %s (%s): a planner stall will only be visible as a timeout"
                      % (self.args.stall_topic, exc))
-        # THE SEQUENCER'S STATE.  The FSM does not count stops any more (see follow_spline_stations): it
-        # reads the mission's own stop index, so the two cannot drift apart.  Volatile + reliable: the
-        # sequencer publishes at 1 Hz and the value is a state, not an event.
-        from std_msgs.msg import Int32
-        self.node.create_subscription(Int32, self.args.stop_topic, self._on_stop, 10)
         self.rclpy = rclpy
-
-    def _on_traj_dyn(self, m):
-        """ego's exact velocity/acceleration for the plan, keyed by the SAME per-point stamps as the Path.
-
-        The absolute stamp of point i is `header.stamp + time_from_start[i]` -- by construction the same
-        number the Path's i-th pose carries (the adapter writes start_time + t_i in both encodings), so the
-        check that a dyn message belongs to the Path in hand is a comparison of stamp ARRAYS.  It is a
-        comparison and not an assumption on purpose: the two messages arrive as separate messages, and a
-        dyn from the previous tick must never be paired with the Path of this one.
-        """
-        n = len(m.points)
-        if n == 0:
-            return
-        t0 = float(m.header.stamp.sec) + 1e-9 * float(m.header.stamp.nanosec)
-        ts = np.zeros(n)
-        v = np.zeros((n, 3))
-        a = np.zeros((n, 3))
-        for i, pt in enumerate(m.points):
-            d = pt.time_from_start
-            ts[i] = t0 + float(d.sec) + 1e-9 * float(d.nanosec)
-            if len(pt.transforms) and len(pt.velocities):
-                v[i] = [pt.velocities[0].linear.x, pt.velocities[0].linear.y, pt.velocities[0].linear.z]
-            if len(pt.accelerations):
-                a[i] = [pt.accelerations[0].linear.x, pt.accelerations[0].linear.y,
-                        pt.accelerations[0].linear.z]
-        self.dyn_t = ts
-        self.dyn_v = v
-        self.dyn_a = a
-        self.dyn_seen = getattr(self, "dyn_seen", 0) + 1
-
-    def _dynamics_for(self):
-        """(V, A, why) for the Path in hand: the exact stream if it MATCHES, else None and a named reason.
-
-        NO SILENT FALLBACK is the requirement here: the caller prints exactly one of these reasons at 1 Hz,
-        so a sortie's log says which reference the aircraft was actually flown on.  The three ways the
-        exact stream can fail to apply are all named, because "the acceleration looks wrong" and "the
-        planner's derivative stream never arrived" are different findings.
-        """
-        if not self.args.traj_dyn_topic:
-            return None, None, "disabled (--traj-dyn-topic '')"
-        if getattr(self, "dyn_v", None) is None:
-            return None, None, "no dyn message on %s" % self.args.traj_dyn_topic
-        if self.path_t is None:
-            return None, None, "no Path stamps to match against"
-        if len(self.dyn_t) != len(self.path_t):
-            return None, None, ("dyn %d points vs Path %d" % (len(self.dyn_t), len(self.path_t)))
-        dt = float(np.max(np.abs(self.dyn_t - self.path_t)))
-        if dt > 1e-6:
-            return None, None, ("dyn stamps differ from the Path's by up to %.3f ms (a dyn of another plan)"
-                                % (dt * 1e3))
-        return self.dyn_v, self.dyn_a, "matched to the Path (max stamp diff %.2e s)" % dt
 
     def _on_stall(self, m):
         """The PLANNER says it is stalled: the same trajectory withheld for seconds on end.
@@ -306,13 +231,6 @@ class Mission:
                 "%.1f s (the planner process is dead or wedged -- check planner.log for 'terminate called', "
                 "'std::bad_alloc' or an aborted node; this is NOT a trajectory-source timeout)"
                 % (self.args.stall_topic, up, self.args.traj_topic, quiet))
-
-    def _on_stop(self, m):
-        """The sequencer's current stop index (0-based; -1 = the sequence is complete)."""
-        prev = self.stop_index
-        self.stop_index = int(m.data)
-        if prev is None or prev != self.stop_index:
-            self.log("sequencer stop index %d" % self.stop_index)
 
     def _on_lio(self, m):
         now = time.monotonic()
@@ -355,12 +273,11 @@ class Mission:
         pts, ts = [], []
         for ps in m.poses:
             pts.append([ps.pose.position.x, ps.pose.position.y, ps.pose.position.z])
-            # THE PER-POINT STAMP IS THE TIME PARAMETERISATION.  `planner/ego_adapter.py` stamps every point
-            # with the spline's start_time + that point's trajectory time, and the planner uses the SYSTEM
-            # clock (`RCL_SYSTEM_TIME`, noted in the adapter), i.e. the same domain this node's wall clock is
-            # in.  So a follower can recover the planned position, velocity AND acceleration at any t from
-            # the Path alone -- no interface change, and no dependency on the planner's message type
-            # (PLAN 4.1 keeps those out of the flight-critical code).
+            # THE PER-POINT STAMP IS THE TIME PARAMETERISATION.  `planner/rectangle_source.py` stamps every
+            # point with the source's start time + that point's trajectory time, in the SYSTEM clock, i.e.
+            # the same domain this node's wall clock is in.  So a consumer can recover the planned position,
+            # velocity AND acceleration at any t from the Path alone -- no interface change, and no
+            # dependency on the producer's message type.
             ts.append(float(ps.header.stamp.sec) + 1e-9 * float(ps.header.stamp.nanosec))
         if pts:
             self.path_l = np.array(pts)
@@ -392,19 +309,18 @@ class Mission:
         Frame: the bridge writes this number straight into LOCAL_NED's yaw field, where 0 IS North and +90
         deg IS East -- the same convention as `--yaw` and as `atan2(v_E, v_N)`.
 
-        ARRIVAL FREEZE (the user's rule, 2026-10-14: *"命令速度 <0.4 m/s 且 距当前站 <0.5 m 时，保持当时航向
-        不转；离开站再开始跟速度"*).  MEASURED before it: with the nose following the velocity, each arrival
-        command reversed the direction of travel, so the heading whipped round by up to 49 deg at up to
-        68 deg/s while the vehicle was station-keeping -- the "spinning at the waypoint" the user saw.  The
-        freeze is exactly the rule above: `yaw_hold` is set by the follower when the vehicle is within
-        `--yaw-hold-m` of the trajectory's END (which IS the station) and the commanded speed is below
-        `--yaw-v-min`; while it is set the last heading is streamed unchanged.
+        REMOVED WITH THE DROPPED LINE: the ARRIVAL FREEZE (`yaw_hold`), which held the heading while the
+        vehicle station-kept within `--yaw-hold-m` of a trajectory's END.  It was set by the B-spline
+        follower, which went with the planner; `--follow corner` never set it, so it was dead here.
+        MEASURED before it was written, for the record: with the nose following the velocity each arrival
+        command reversed the direction of travel and the heading whipped round by up to 49 deg at up to
+        68 deg/s -- the "spinning at the waypoint" the user saw.
         """
         if self.args.yaw_mode != "velocity" or velocity is None:
             return self.args.yaw
         v_e, v_n = float(velocity[0]), float(velocity[1])
         speed = math.hypot(v_e, v_n)
-        if self.yaw_hold or speed < self.args.yaw_v_min:
+        if speed < self.args.yaw_v_min:
             return self.yaw_last
         want = math.atan2(v_e, v_n)
         d = (want - self.yaw_last + math.pi) % (2.0 * math.pi) - math.pi
@@ -552,19 +468,6 @@ class Mission:
         if reasons:
             self.abort_reason = "; ".join(reasons)
 
-    def phase_mark(self, name):
-        """A one-shot marker in the phase log, for events that are not phases.
-
-        `--stations N` uses it after every stop, so the metrics can count how many stops the flight actually
-        completed and where each one ended -- the "多少分之多少" the user asked for.
-        """
-        self.log("mark -> %s" % name)
-        self.log_fh.write("%.3f,%d,%s,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n" % (
-            time.monotonic(), self.tap.t_us, name, self.cmd[0], self.cmd[1], self.cmd[2],
-            self.lio["p"][0], self.lio["p"][1], self.lio["p"][2],
-            self.tap.p[0], self.tap.p[1], self.tap.p[2]))
-        self.log_fh.flush()
-
     # ------------------------------------------------------------------ phases
     def set_phase(self, phase):
         if phase == self.phase:
@@ -691,578 +594,6 @@ class Mission:
         self.log("holding at [%+.3f %+.3f %+.3f] for %.1f s" % (*target, seconds))
         self.pump(seconds, setpoint=target)
         return None
-
-    def follow_spline(self):
-        """Follow the trajectory the way the PLANNER parameterised it: position + velocity feed-forward at t.
-
-        This is what `traj_server` does upstream, and it is the honest consumer of a time-parameterised
-        B-spline.  Our `--follow path` instead throws the timing away and re-derives speed from a look-ahead,
-        which measured a 12x too-slow first version (`0.45 + 0.6 v`) and then corner cutting (`1.2 + 0.8 v`:
-        C2 0.574 m where the plan's own margin was 0.62 m).  Feeding the planned velocity as well removes the
-        reason for either compromise: the FCU is told how fast the plan wants to be going, not just where it
-        should be.
-
-        Implementation: the Path's per-point stamps ARE the trajectory timeline (`t0 + t_i`, system clock,
-        same domain as this node), so the reference at wall time `now` is obtained by interpolating the
-        path IN TIME -- position, and by differencing, velocity and acceleration.  ArduPilot honours
-        position + velocity in `SET_POSITION_TARGET_LOCAL_NED`; the acceleration field is sent too, but for
-        a copter it is generally ignored (`PSC` uses the velocity target and its own accel limits), so the
-        A/B below measures what the FCU actually does rather than what the message could carry.
-
-        `--stations N > 1` flies a SEQUENCE: one trajectory per commanded stop, each one waited for
-        separately (see `follow_spline_stations`).  That is mission B's shape: the goal sequencer feeds ego
-        one stop at a time and the FSM consumes the trajectory each stop produces.
-        """
-        if self.args.stations > 1:
-            return self.follow_spline_stations(self.args.stations)
-        if not self._wait_for_spline(None):
-            return self.abort_reason or ("no trajectory on %s after %.0f s (a planner that never plans "
-                                         "looks exactly like this)"
-                                         % (self.args.traj_topic, self.args.traj_wait_s))
-        return self._spline_once()
-
-    def _traj_usable(self):
-        """Is the trajectory in hand one the FSM should fly?  Length is the test, and it is measured.
-
-        MEASURED 2026-10-14 (the first 12-stop attempt): the adapter republishes the CURRENT spline at 4 Hz
-        from `t_cur` onward, so when a plan is nearly exhausted what it publishes is a STUB -- 23 points,
-        0.43 s, 0.17 m.  The FSM's freshness test (a different `path_t[0]`) is satisfied by any new Path, so
-        it took that stub as "station 2", "flew" it in 2.1 s and burned a station of the mission on 17 cm.
-        A trajectory shorter than `--min-traj-m` is therefore not a station's plan and is skipped.
-        """
-        if self.path_l is None or self.path_t is None:
-            return False
-        if len(self.path_l) < 2:
-            return False
-        seg = float(np.sum(np.linalg.norm(np.diff(self.path_l[:, :2], axis=0), axis=1)))
-        return seg >= self.args.min_traj_m
-
-    def _plan_in_f(self):
-        """The plan in hand, converted ONCE from L to F -- the frame `bridge.state()` is in.
-
-        F1 OF THE PIPELINE AUDIT (docs/metrics/phaseB-pipeline-audit-20261015.txt).  `self.path_l` is in the
-        LIO's frame L; `bridge.state().pos` is in F (`bridge/base.py:33` -- what the FCU is told, LOCAL_NED);
-        the L->F conversion existed only inside `_spline_once` (`:930`) and inside the geometric follower
-        (`:1155`).  Three consumers compared the two frames DIRECTLY:
-          * `_traj_starts_here()` -- so `--reaccept-m` could never be satisfied: MEASURED (AP5) the FSM logged
-            "DIAG: 66 message(s), arc 0.312 m, 36 points, first point 6.373 m from the vehicle" while the
-            adapter logged "start 0.0251 m from the vehicle" for the SAME plan.  The re-projection fallback --
-            the one that exists so a re-published plan is flown instead of the FSM starving on its freshness
-            test -- therefore never fired, and the sortie aborted blaming the trajectory source;
-          * the WAIT-LOOP HOLD, which streamed `path_l[-1]` as a position SETPOINT: a command that is 90 deg
-            and several metres away from the plan's own endpoint, i.e. the vehicle was pulled sideways
-            through the forest while it waited;
-          * the 1 Hz refusal DIAG, which printed the same wrong distance (the number an operator uses to
-            decide whether the planner is at fault).
-        A 90.05 deg yaw between the two frames (the measured calibration) is what makes the error LARGE rather
-        than subtle: for a plan that starts 0.03 m from the vehicle the wrong comparison reads 6.37 m.
-        """
-        if self.path_l is None:
-            return None
-        R, t = self.calib.R_WL, self.calib.t_WL
-        return (R @ self.path_l.T).T + t
-
-    def _traj_starts_here(self):
-        """Does the plan in hand start where the vehicle is?
-
-        THE FRESHNESS TEST ALONE STARVES THE MISSION.  `_wait_for_spline` accepts a plan only when its
-        first-point stamp differs from the last one flown, on the assumption that every plan the planner
-        publishes is new.  MEASURED 2026-10-14 (sorties AA1-AD1, the circle): once the vehicle comes to rest,
-        ego's commits collapse to ~0.2 Hz (it enters WAIT_TARGET by design on arrival and each goal re-arms it
-        only once), so the adapter re-publishes THE SAME plan 4 times a second -- re-projected onto the
-        vehicle's CURRENT position every time, because that is what planner/ego_adapter.py's build_path does.
-        The FSM therefore threw away 19 of the 20 distinct plans the recorder saw and waited out its 60 s:
-        "ABORT: no new trajectory on /planner/traj within 60 s after 1 trajectories (sequencer at stop 2)".
-        A re-projected plan IS a usable plan: its first point is at the vehicle.  This is the test for that.
-
-        BOTH SIDES IN F (audit F1): the comparison used to be `st.pos` (F) minus `path_l[0]` (L), which is
-        never small -- it is the bug above, not a tolerance problem.
-        """
-        if self.path_l is None or len(self.path_l) < 2:
-            return False
-        pf = self._plan_in_f()
-        if pf is None:
-            return False
-        st = self.bridge.state()
-        here = np.array(st.pos)
-        return float(np.linalg.norm(here[:2] - pf[0, :2])) < self.args.reaccept_m
-
-    def _wait_for_spline(self, last_t0):
-        """Wait for a trajectory, optionally one NEWER than `last_t0` (its first point stamp).
-
-        Returns True when a usable trajectory is in hand.  A planner's trajectory is ASYNCHRONOUS, so the
-        wait is what makes the same FSM work for a source that answers instantly (the rectangle) and for one
-        that does not; MEASURED 2026-10-14, without it the spline arm aborted at 16 s with "no trajectory"
-        while the planner was still initialising.
-        """
-        def ok():
-            if not self._traj_usable():
-                return False
-            if last_t0 is None:
-                return True
-            if self.path_t is not None and float(self.path_t[0]) != float(last_t0):
-                return True
-            # ... or a re-published copy that the adapter has re-projected onto the vehicle (see
-            # _traj_starts_here): MEASURED, without this the FSM flies 1 of 20 published plans.
-            return self.args.reaccept_m > 0.0 and self._traj_starts_here()
-
-        if self.path_l is not None and ok():
-            return True
-        # HOLD AT A VERIFIED POINT WHILE WAITING.  MEASURED 2026-10-14 (sortie AE1, the circle): this loop
-        # streamed NOTHING while it waited (`pump` with no setpoint sends no setpoint), so the aircraft stayed
-        # wherever the last fragment had left it -- and the truth spent 80.4 % of its airborne samples in a
-        # 0.1 x 0.16 m box at (E 4.00..4.10, N 0.31..0.47), 0.35 m north of the stop and only 0.12-0.19 m from
-        # pillar #52's surface, i.e. BELOW the 0.20 m contract for most of the flight, while every plan the
-        # adapter published was >= 0.210 m clear.  The endpoint of the last usable plan IS a verified point
-        # (the adapter's gate guarantees it), so the wait holds the vehicle there with zero velocity instead
-        # of letting it sit wherever a time-expired fragment ended.
-        hold_pt = None
-        if self.path_l is not None and len(self.path_l) >= 2:
-            # IN F, BECAUSE THIS NUMBER GOES OUT AS A POSITION SETPOINT (audit F1).  It used to be
-            # `np.array(self.path_l[-1])` -- an L-frame point streamed as an F-frame command.  With the
-            # measured 90.05 deg calibration that is not a rounding error: it aims the aircraft somewhere
-            # else entirely, while it is waiting, at up to `--hold`-loop rates.
-            pf = self._plan_in_f()
-            hold_pt = None if pf is None else np.array(pf[-1], dtype=float)
-        t_wait = time.monotonic()
-        t_diag = 0.0
-        self.log("waiting up to %.0f s on %s for %s"
-                 % (self.args.traj_wait_s, self.args.traj_topic,
-                    "a trajectory" if last_t0 is None else "the NEXT stop's trajectory"))
-        while time.monotonic() - t_wait < self.args.traj_wait_s:
-            if self.abort_reason:
-                return False
-            if self.path_l is not None and ok():
-                self.log("trajectory arrived after %.1f s: %d points, t0 %.3f%s"
-                         % (time.monotonic() - t_wait, len(self.path_l),
-                            float(self.path_t[0]) if self.path_t is not None else float("nan"),
-                            " (a re-projected copy, accepted because it starts at the vehicle)"
-                            if last_t0 is not None and self.path_t is not None
-                            and float(self.path_t[0]) == float(last_t0) else ""))
-                return True
-            if hold_pt is not None and self._hold_is_legal(hold_pt):
-                self.pump(0.1, setpoint=hold_pt, velocity=np.zeros(3))
-            else:
-                self.pump(0.1)
-            # WHY IS THE PLAN IN HAND NOT ACCEPTED?  Once a second, say which test refuses it -- the same
-            # discipline that resolved every other link in this chain (see
-            # docs/metrics/phaseB-plan-supply-loop-20261014.txt: 16 usable plans published, 1 flown).
-            if time.monotonic() - t_diag >= 1.0:
-                t_diag = time.monotonic()
-                seen = getattr(self, "paths_seen", 0)
-                if self.path_l is None or len(self.path_l) < 2:
-                    self.log("DIAG: no plan in hand (%d message(s) received)" % seen)
-                else:
-                    arc = float(np.sum(np.linalg.norm(np.diff(self.path_l[:, :2], axis=0), axis=1)))
-                    here = np.array(self.bridge.state().pos)
-                    # BOTH NUMBERS, SO THE FIX IS CHECKABLE FROM THE LOG (audit F1).  The F distance is the
-                    # decision; the L one is what the DIAG printed before, and it is quoted so a reader can
-                    # see that the refusal was a frame mix and not a planner 6 m away.
-                    pf = self._plan_in_f()
-                    d0 = float(np.linalg.norm(here[:2] - pf[0, :2])) if pf is not None else float("nan")
-                    d0_l = float(np.linalg.norm(here[:2] - self.path_l[0, :2]))
-                    same = (last_t0 is not None and self.path_t is not None
-                            and float(self.path_t[0]) == float(last_t0))
-                    why = ("arc %.3f < %.2f m" % (arc, self.args.min_traj_m) if arc < self.args.min_traj_m
-                           else ("stamp unchanged and the first point is %.3f m away (need < %.2f)"
-                                 % (d0, self.args.reaccept_m) if same and d0 >= self.args.reaccept_m
-                                 else "accepted on the next evaluation"))
-                    self.log("DIAG: %d message(s), arc %.3f m, %d points, first point %.3f m from the vehicle "
-                             "(F frame, the one the decision uses; %.3f m if the same point is read as L -- the "
-                             "frame mix fixed here), stamp %s -> refused because: %s"
-                             % (seen, arc, len(self.path_l), d0, d0_l,
-                                "same as the last flown" if same else "new", why))
-        return False
-
-    def _load_world(self):
-        """The adapter's own world model, imported rather than re-implemented (same rule as tools/record-traj).
-
-        Loaded LAZILY and by PATH: planner/ego_adapter.py is not a ROS package, and importing it by path is
-        what tools/record-traj.py does for the same reason.  A failure here must never stop a flight -- the
-        hold simply falls back to "stream nothing", which is the safe behaviour.
-        """
-        try:
-            import importlib.util
-            import os as _os
-            p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "planner", "ego_adapter.py")
-            spec = importlib.util.spec_from_file_location("ego_adapter_fsm", p)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            if not _os.path.exists(self.args.world_file):
-                self.log("no world file at %s -- the wait-loop hold is disabled" % self.args.world_file)
-                return None
-            return mod.World.load(self.args.world_file)
-        except Exception as exc:                              # noqa: BLE001
-            self.log("could not load the world model (%s) -- the wait-loop hold is disabled" % exc)
-            return None
-
-    def _hold_clearance(self, target):
-        """Smallest world clearance on the straight line from the vehicle to `target`, or None.
-
-        Split out of `_hold_is_legal` so the wedge diagnostic can PRINT the number that made the decision
-        instead of only reporting the verdict.
-        """
-        if getattr(self, "_world", None) is None and not getattr(self, "_world_tried", False):
-            self._world_tried = True
-            self._world = self._load_world()
-        if self.path_l is None or getattr(self, "_world", None) is None:
-            return None
-        here = np.array(self.bridge.state().pos)
-        seg = np.linspace(here, np.asarray(target, dtype=float), 24)[:, :3]
-        try:
-            return float(self._world.clearance(seg).min())
-        except Exception:                                     # noqa: BLE001  (never block the flight on this)
-            return None
-
-    def _pull_along_plan(self, plan_f, t0_cur):
-        """Stream a legal point ON the plan (B of the AP6 forensics), or return False.
-
-        The plan's points were all verified clear by the adapter's gate, and the only unverified part of
-        flying to one is the straight segment from where the vehicle is NOW.  So walk from the plan's END
-        backwards (the end is the goal, which is what the tour wants to reach) and take the FARTHEST point
-        whose straight segment is clear; stream it at the plan's own end-of-plan velocity, which is ZERO for
-        an expired plan.  Capped at `--pull-step-m` per call so the aircraft does not jump: the point chosen
-        is the farthest legal one WITHIN that cap, measured along the plan.
-        """
-        if plan_f is None or len(plan_f) < 2 or not self.args.pull_along_plan:
-            return False
-        st = self.bridge.state()
-        here = np.array(st.pos)
-        # the plan's points near the vehicle first: sort candidates by distance from the vehicle along the
-        # plan, farthest-first within the cap
-        d = np.linalg.norm(plan_f - here, axis=1)
-        i_near = int(np.argmin(d))
-        best = None
-        for i in range(len(plan_f) - 1, i_near - 1, -1):
-            step = float(np.sum(np.linalg.norm(np.diff(plan_f[i_near:i + 1], axis=0), axis=1))) \
-                if i > i_near else 0.0
-            if step > self.args.pull_step_m:
-                continue
-            if self._hold_is_legal(plan_f[i]):
-                best = i
-                break
-        if best is None:
-            return False
-        target = np.array(plan_f[best], dtype=float)
-        clr = self._hold_clearance(target)
-        if time.monotonic() - getattr(self, "_pull_log", 0.0) >= 1.0:
-            self._pull_log = time.monotonic()
-            self.log("PULL ALONG THE PLAN: the plan's clock is out and the straight pull to its end is "
-                     "refused; streaming point %d/%d of the VERIFIED plan at [%.2f %.2f %.2f] (%.2f m from "
-                     "the vehicle, segment clearance %s against the %.2f m contract)"
-                     % (best + 1, len(plan_f), target[0], target[1], target[2],
-                        float(np.linalg.norm(target[:2] - here[:2])),
-                        ("%.3f m" % clr) if clr is not None else "unavailable",
-                        self.args.footprint_contract))
-        self.yaw_hold = False
-        self.pump(0.05, setpoint=target, velocity=np.zeros(3))
-        return True
-
-    def _hold_is_legal(self, target):
-        """Is pulling straight at `target` legal?  The straight line is the whole question.
-
-        MEASURED 2026-10-14, three sorties that differ only in this decision (the circle):
-          AF1  hold always at the last plan's endpoint: 20 trajectories flown, 8 of 12 stops REACHED,
-               sequence complete, landed -- and C2 min -0.376 m with 14.03 % of the samples INSIDE a pillar,
-               because the endpoint belonged to another stop and the aircraft flew STRAIGHT at it;
-          AG1  hold only within 0.50 m:                 1 trajectory flown, 1 of 12 stops, C2 min +0.340 m,
-               0 of 87032 samples below the contract -- legal and starved;
-          AE1  no hold at all:                          3 trajectories, 1 of 12 stops, same starvation.
-        The mission advances only while the VEHICLE MOVES (ego's replanning follows the vehicle's state, and
-        the adapter refuses plans whose nearest point is far from it), and the only motion the FSM can create
-        on its own is this pull.  So the pull must be gated on what actually makes it illegal: the straight
-        segment from the vehicle to `target`.  Sample it and check it against the same world model the
-        adapter's gate uses; if the segment is clear, the pull is legal motion and keeps the mission fed.
-        """
-        if getattr(self, "_world", None) is None and not getattr(self, "_world_tried", False):
-            self._world_tried = True
-            self._world = self._load_world()
-        clr = self._hold_clearance(target)
-        return clr is not None and clr >= self.args.footprint_contract
-
-    def follow_spline_stations(self, n):
-        """Fly the mission's stops in sequence, and land when the SEQUENCER says the sequence is over.
-
-        WHY THIS IS DRIVEN BY THE SEQUENCER AND NOT BY COUNTING TRAJECTORIES.  The first version counted the
-        trajectories it flew (`--stations N`) and matched freshness by the plan's start stamp.  MEASURED
-        2026-10-14 on four consecutive sorties: that counter drifts out of step with the stops the mission
-        actually commanded -- a stale plan still passes the freshness test after the FSM has moved on, so the
-        FSM ends up waiting for a "next" trajectory that the sequencer has already stopped sending, and the
-        flight aborts on its wait (B2b at station 8, B3 at 8, B4 and B5 at 4, B7 at 4) even though the
-        vehicle and the planner were both healthy.
-
-        The sequencer already knows exactly where the mission is: it publishes its current stop index on
-        `--stop-topic` (`std_msgs/Int32`, -1 = sequence complete).  This loop therefore does the simple,
-        checkable thing: follow each fresh trajectory to its end, print which stop it was, and stop when the
-        sequencer says there are no more.  Stop bookkeeping (reached / missed, and with what error) stays in
-        ONE place -- the sequencer's own log.
-        """
-        self.log("following trajectories until the sequencer says the sequence is done "
-                 "(stop topic %s); %d stops expected" % (self.args.stop_topic, n))
-        last_t0 = None
-        flown = 0
-        while True:
-            if self.abort_reason:
-                return self.abort_reason
-            if self.stop_index is not None and self.stop_index < 0:
-                self.log("sequence complete: %d trajectories flown, the sequencer reports every stop done"
-                         % flown)
-                return None
-            if not self._wait_for_spline(last_t0):
-                if self.stop_index is not None and self.stop_index < 0:
-                    return None
-                return ("no new trajectory on %s within %.0f s after %d trajectories (sequencer at stop %s)"
-                        % (self.args.traj_topic, self.args.traj_wait_s, flown, self.stop_index))
-            last_t0 = float(self.path_t[0]) if self.path_t is not None else None
-            t_stop = time.monotonic()
-            stop_at_start = self.stop_index
-            rc = self._spline_once()
-            flown += 1
-            if rc:
-                return "trajectory %d: %s" % (flown, rc)
-            self.log("trajectory %d done in %.1f s (sequencer now at stop %s)"
-                     % (flown, time.monotonic() - t_stop, self.stop_index))
-            self.phase_mark("traj%d" % flown)
-            # HOLD THE STATION WHILE THE SEQUENCER DWELLS.  MEASURED 2026-10-14 (sortie C3, the user's
-            # "hover 10 s" mission): with nothing streamed between trajectories the FCU kept flying to the
-            # LAST TARGET, ego kept replanning to the same stop, this loop kept following each new plan, and
-            # the aircraft DRIFTED out of the arena -- 12.2 % of the truth samples were outside the walls
-            # (N down to -6.89 against a wall at -6.00) while 0 of 3480 published plan points were.  A dwell
-            # means standing still, so hold the position the vehicle is at NOW, at 50 Hz, until the
-            # sequencer moves on.
-            #
-            # AND ONLY ON A REAL ARRIVAL.  MEASURED 2026-10-14 (sortie C4): gating the hold on "the stop
-            # index did not change" alone froze the aircraft 4.808 m short of the stop, because ego had
-            # published a short hop (5.8 s) and the index had simply not advanced yet.  The hold therefore
-            # also requires that the trajectory ended where the VEHICLE is -- `last_end_dist`, the distance
-            # from the vehicle to the plan's last point at the moment the trajectory completed.
-            if self.stop_index is not None and self.stop_index == stop_at_start \
-                    and self.last_end_dist < self.args.hold_at_m:
-                t_hold = time.monotonic()
-                st_h = self.bridge.state()
-                hold_pt = np.array(st_h.pos)                 # hold where it ARRIVED, not where it drifts to
-                self.log("holding the station (%.3f m from the plan's end) until the sequencer moves on "
-                         "(up to %.0f s)" % (self.last_end_dist, self.args.hold_max_s))
-                while self.stop_index == stop_at_start:
-                    if self.abort_reason:
-                        return self.abort_reason
-                    self.pump(0.05, setpoint=hold_pt, velocity=np.zeros(3))
-                    if time.monotonic() - t_hold > self.args.hold_max_s:
-                        self.log("the sequencer did not move on within %.0f s; continuing"
-                                 % self.args.hold_max_s)
-                        break
-                self.log("station hold ended after %.1f s (sequencer at stop %s)"
-                         % (time.monotonic() - t_hold, self.stop_index))
-
-    def _spline_once(self):
-        """Follow the trajectory currently in `self.path_l` / `self.path_t` in TIME, to its end."""
-        if self.path_t is None or len(self.path_t) != len(self.path_l):
-            return ("the Path carries no usable per-point stamps (%s), so the time parameterisation cannot "
-                    "be recovered -- use --follow path for a geometric source like the rectangle"
-                    % ("none" if self.path_t is None else "%d stamps for %d points"
-                       % (len(self.path_t), len(self.path_l))))
-        R, t = self.calib.R_WL, self.calib.t_WL
-
-        def snapshot():
-            """The plan in hand, in F, with its time base: (points, times, duration)."""
-            q = (R @ self.path_l.T).T + t
-            ts = self.path_t - self.path_t[0]             # seconds from this trajectory's start
-            return q, ts, float(ts[-1])
-
-        p, tt, dur = snapshot()
-        if dur <= 1e-6:
-            return "the Path's stamps span %.6f s -- not a trajectory" % dur
-        self.log("follow-spline: %d points, %.2f s of trajectory (%.2f m), stamps in the system clock"
-                 % (len(p), dur, float(np.sum(np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1)))))
-        # WHICH REFERENCE THIS PLAN WILL BE FLOWN ON, decided once here and re-decided on every plan switch
-        # below.  `V`/`A` are the plan's EXACT velocity and acceleration when a dyn message matched this
-        # Path, None otherwise -- and `dyn_why` carries the reason either way, because the 1 Hz DIAG must be
-        # able to say why the exact stream is not in use.
-        V, A, dyn_why = self._dynamics_for()
-        self._dyn_log = 0.0
-        if V is not None:
-            self.log("plan dynamics: EXACT (dyn stamp match: %s; %d points, |v|max %.2f m/s, |a|max %.2f m/s^2)"
-                     % (dyn_why, len(V), float(np.max(np.linalg.norm(V, axis=1))),
-                        float(np.max(np.linalg.norm(A, axis=1)))))
-        else:
-            self.log("plan dynamics: FINITE DIFFERENCE of the Path's poses (%s)" % dyn_why)
-
-        def ref_at(pos_p, times, t_rel):
-            """(position, velocity, acceleration) of the plan at t_rel seconds from its start.
-
-            VELOCITY AND ACCELERATION COME FROM THE PLAN'S OWN DERIVATIVES WHEN THEY ARE IN HAND.  The Path
-            carries positions only, so this used to recover the velocity by differencing consecutive poses
-            (a SEGMENT AVERAGE, i.e. the value half a sample late) and the acceleration by a second
-            difference (zeroed at both ends of the plan).  `planner/ego_adapter.py` now publishes ego's exact
-            velocity and acceleration on `--traj-dyn-topic` for exactly these points, and the measurement
-            that motivated it is in docs/ARCHITECTURE.md: the 20 ms finite difference is "exact enough at
-            1 m/s and the wrong shape at 3 m/s".  MEASURED on the 20 ms grid of a real committed spline
-            (tools/dyn-audit.py, sortie AP5): the finite-difference velocity is the segment average and
-            differs from the exact value at the sample by a median of 0.128 m/s (max 0.276) on a plan whose
-            own speed is 2.29 m/s median, and the second difference's acceleration is off by a median of
-            12.8 m/s^2 -- and is IDENTICALLY ZERO on the last two samples of every plan, which is where the
-            aircraft is braking into the stop.
-            """
-            # WHEN THE PLAN IS EXHAUSTED THE FEEDFORWARD MUST GO TO ZERO.  MEASURED 2026-10-14 (sortie F2,
-            # the diagonal): the position was clamped to the plan's last point -- but `vel` was the LAST
-            # SEGMENT's velocity, so the FSM kept streaming "sit at (-1.79,-1.81) AND fly at 2.43 m/s
-            # north-west".  ArduPilot's GUIDED position+velocity setpoint follows the velocity feedforward,
-            # so the aircraft flew on at 2.43 m/s, passed the stop, left the arena and tripped the geofence
-            # gate: "ABORT: trajectory 1: geofence: truth at [-6.54 -6.64]" -- 8 m of flight on a command
-            # that had stopped 4.18 m behind it.  Sortie F3 did the same at its first circle stop
-            # ("geofence: truth at [+6.60 -0.25]").  The bug was always there; it only became destructive
-            # once the plans got fast, which is what unpinning manager/max_vel did (plans went from a
-            # 1.0 m/s time allocation to the params file's 3.0).
-            # THE RULE IS KEPT VERBATIM FOR BOTH SOURCES: past the end, the reference is the last point and
-            # ZERO velocity/acceleration, whatever the spline's own derivative says there.
-            if t_rel >= times[-1] - 1e-9:
-                return np.array(pos_p[-1], dtype=float), np.zeros(3), np.zeros(3)
-            k = int(np.clip(np.searchsorted(times, t_rel, side="right") - 1, 0, len(times) - 2))
-            h = max(times[k + 1] - times[k], 1e-6)
-            w = float(np.clip((t_rel - times[k]) / h, 0.0, 1.0))
-            pos = pos_p[k] + w * (pos_p[k + 1] - pos_p[k])
-            if V is not None:
-                # the exact values at the samples, interpolated linearly between them at the same weight as
-                # the position: at 50 Hz of trajectory time the interpolation error is O(h^2 * jerk), and a
-                # zero-order hold would be a 20 ms step the FCU would have to filter.
-                vel = V[k] + w * (V[k + 1] - V[k])
-                acc = A[k] + w * (A[k + 1] - A[k])
-                return pos, vel, acc
-            vel = (pos_p[k + 1] - pos_p[k]) / h
-            if 0 < k < len(times) - 2:
-                acc = ((pos_p[k + 2] - pos_p[k + 1]) / max(times[k + 2] - times[k + 1], 1e-6) - vel) / h
-            else:
-                acc = np.zeros(3)
-            return pos, vel, acc
-
-        self.set_phase("traj")
-        t_start = time.monotonic()
-        # THE SPLINE'S OWN TIMELINE, NOT A REBASED ONE.  This used to set `t_wall0 = time.time()` on every
-        # plan switch, i.e. it treated the published Path as a GEOMETRIC path to be joined from its first
-        # point -- which is what created the "connector" (the straight line from the vehicle to the path's
-        # start) that the adapter then had to gate, and what starved the mission whenever that line crossed a
-        # pillar.  upstream's consumer does the opposite (src/planner/plan_manage/src/traj_server.cpp):
-        #     t_cur = (now - start_time_).seconds();  ... traj_[i].evaluateDeBoorT(t_cur)
-        # i.e. it evaluates the spline ON THE SPLINE'S OWN CLOCK, with no rebasing, and hovers at the end once
-        # t_cur passes the duration.  The per-point stamps the adapter writes (start_time + t_i) carry exactly
-        # that clock, so this is the same rule with no interface change.
-        t0_cur = float(self.path_t[0])
-        n_switch = 0
-        self._late_since = None                               # when the "plan clock is out and the pull is
-        self._late_log = 0.0                                  # illegal" wedge started, and its 1 Hz clock
-        self._late_plan_t0 = None
-        while True:
-            if self.abort_reason:
-                return self.abort_reason
-            if self.args.follow_latest and self.path_t is not None \
-                    and float(self.path_t[0]) != t0_cur and self._traj_usable():
-                p, tt, dur = snapshot()
-                t0_cur = float(self.path_t[0])
-                n_switch += 1
-                # A NEW PLAN MEANS A NEW DECISION ABOUT THE DYNAMICS: the dyn message that matched the old
-                # Path must not be used for the new one, so the match is re-made here rather than assumed.
-                V, A, dyn_why = self._dynamics_for()
-                if n_switch <= 3 or n_switch % 20 == 0:
-                    self.log("switched to a newer plan (%d so far): %d points, %.2f s, %.2f m, dynamics %s"
-                             % (n_switch, len(p), dur,
-                                float(np.sum(np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1))),
-                                "EXACT" if V is not None else "finite-difference"))
-            t_rel = (time.time() - t0_cur) + self.args.spline_lead
-            pos, vel, acc = ref_at(p, tt, t_rel)
-            # WHICH REFERENCE IS IN FORCE, at 1 Hz, for the whole time the plan is flown.  This is the line a
-            # sortie is judged on: "DYNAMICS: analytic" means the FCU was streamed ego's own derivatives;
-            # "DYNAMICS: finite-difference (<reason>)" names why it was not.  A fallback that leaves no line
-            # in the log is indistinguishable from the fix having worked.
-            if time.monotonic() - self._dyn_log >= 1.0:
-                self._dyn_log = time.monotonic()
-                if V is not None:
-                    self.log("DYNAMICS: analytic (%s, %d points, |v|%.2f/%.2f m/s, |a|%.2f/%.2f m/s^2 now)"
-                             % (dyn_why, len(V), float(np.linalg.norm(vel)), float(np.max(np.linalg.norm(V, axis=1))),
-                                float(np.linalg.norm(acc)), float(np.max(np.linalg.norm(A, axis=1)))))
-                else:
-                    self.log("DYNAMICS: finite-difference (no dyn message: %s) -- vel is a segment average, "
-                             "acc a second difference of the Path's poses, zeroed at both ends (%d points)"
-                             % (dyn_why, len(p)))
-            # A PLAN WHOSE CLOCK HAS RUN OUT IS NOT A TARGET.  On the spline's own timeline a stale plan
-            # evaluates to its LAST point (upstream hovers there, and for their drone that point is the goal
-            # it was already heading for).  Here it can be metres away, and commanding it is a straight line
-            # through the forest: MEASURED (sortie AF1) that produced 8 of 12 stops AND 46.6 % of samples below
-            # the contract with 14.03 % INSIDE a pillar, while every published plan held 0.20 m.  So when the
-            # clock is out and the straight segment to that end point is not verified clear, hold where we are
-            # and wait for a fresh plan instead.
-            if t_rel >= dur and not self._hold_is_legal(pos) and self._pull_along_plan(p, t0_cur):
-                # B (AP6 forensics): THE PLAN'S OWN POINTS ARE LEGAL, SO THEY ARE THE MOTION.  MEASURED
-                # (AP6-rect-dyn): the plan ran out with its end 0.092 m from the corner, the vehicle was
-                # 3.385 m from it, the straight pull was refused (two of the rectangle's four legs cross
-                # pillars) and this FSM then sent NOTHING for the rest of the sortie -- the aircraft cannot
-                # advance its tour and ego cannot see new space, because nothing moves.  `_pull_along_plan`
-                # streams a point that lies ON the verified plan (the adapter's gate checked every one of
-                # them) and whose straight segment from the vehicle is clear, so the aircraft moves along
-                # ground the plan already called free.  It returns False when no such point exists, and the
-                # old behaviour (hold + a 1 Hz DIAG with the clearance) is unchanged in that case.
-                continue
-            if t_rel >= dur and not self._hold_is_legal(pos):
-                # NO SILENT WAITING.  This branch used to be a bare `pump(0.05); continue`.  MEASURED sortie
-                # AO1 (2026-10-14): ego accepted stop 2's goal (`GOAL-TRACE ... |end-new|=0.000 have_target=1`
-                # 29 times) but stopped publishing splines at t = 29.5 s, and the FSM then sat IN THIS BRANCH
-                # for 490 s printing NOTHING -- no DIAG, no hold, no abort -- while the sequencer walked the
-                # circle stop by stop on its own timeout (2,3,...,11 at 45.2 s each, then -1) and the aircraft
-                # hovered at stop 1 the whole time.  A wedge that leaves no line in the log is
-                # indistinguishable from a crash, so: name the mechanism at 1 Hz, and give up LOUDLY with the
-                # same attribution every other abort carries, instead of burning the rest of the sortie.
-                if self._late_since is None:
-                    self._late_since = time.monotonic()
-                    self._late_plan_t0 = t0_cur
-                late_s = time.monotonic() - self._late_since
-                if time.monotonic() - self._late_log >= 1.0:
-                    self._late_log = time.monotonic()
-                    clr = self._hold_clearance(pos)
-                    st_l = self.bridge.state()
-                    away = float(np.linalg.norm(np.asarray(st_l.pos)[:3] - np.asarray(pos, dtype=float)[:3]))
-                    self.log("DIAG: no flyable plan -- the newest plan's clock ran out %.2f s ago (t %.2f of "
-                             "%.2f s, plan age %.1f s, %s), its last point [%.2f %.2f %.2f] is %.2f m from the "
-                             "vehicle, straight line to it clearance %s against the %.2f m contract -> "
-                             "refusing to pull, waiting for a plan that starts at the vehicle (%.1f s)"
-                             % (t_rel - dur, t_rel, dur, time.time() - t0_cur,
-                                "no newer plan has arrived"
-                                if self.path_t is not None and float(self.path_t[0]) == self._late_plan_t0
-                                else "a NEWER plan arrived and its clock is out too",
-                                pos[0], pos[1], pos[2], away,
-                                ("%.3f m" % clr) if clr is not None else "unavailable",
-                                self.args.footprint_contract, late_s))
-                if late_s > self.args.late_plan_abort_s:
-                    return ("no plan that starts at the vehicle for %.0f s: the newest plan's clock ran out "
-                            "%.2f s ago and the straight line to its last point [%.2f %.2f %.2f] (%.2f m away) "
-                            "has %s clearance against the %.2f m contract, so the FSM refused to pull and the "
-                            "planner published no replacement that starts here"
-                            % (late_s, t_rel - dur, pos[0], pos[1], pos[2], away,
-                               ("%.3f m" % clr) if clr is not None else "unavailable",
-                               self.args.footprint_contract))
-                self.pump(0.05)
-                continue
-            self._late_since = None
-            self.cmd = pos
-            st = self.bridge.state()                       # the FCU's own state, read BEFORE the freeze test
-            here = np.array(st.pos)
-            # THE ARRIVAL FREEZE (see yaw_command): near the END of this trajectory -- which is the station --
-            # and slower than --yaw-v-min, stop steering the nose.  Without it each arrival reversed the
-            # commanded direction and the heading whipped round (measured: up to 49 deg at 68 deg/s).
-            self.yaw_hold = (float(np.linalg.norm(here[:2] - p[-1, :2])) < self.args.yaw_hold_m
-                             and float(np.linalg.norm(np.asarray(vel)[:2])) < self.args.yaw_v_min)
-            self.pump(0.05, setpoint=pos, velocity=vel, accel=acc)
-            left = dur - t_rel
-            if time.monotonic() - t_start > self.args.traj_timeout_s:
-                return ("trajectory timed out after %.0f s: t %.2f of %.2f s, %.2f m from the end, "
-                        "%d plan switches" % (self.args.traj_timeout_s, t_rel, dur,
-                                              float(np.linalg.norm(here[:2] - p[-1, :2])), n_switch))
-            if left < self.args.arrive_m / max(self.args.follow_speed, 0.1) and \
-                    float(np.linalg.norm(np.array(st.vel)[:2])) < self.args.settle_speed:
-                self.last_end_dist = float(np.linalg.norm(here[:2] - p[-1, :2]))
-                self.log("trajectory complete (spline): %.2f s of plan, final speed %.3f m/s, "
-                         "%.3f m from the last point, %d plan switches"
-                         % (dur, float(np.linalg.norm(np.array(st.vel)[:2])),
-                            self.last_end_dist, n_switch))
-                return None
 
     def follow_path(self):
         """Follow the published Path itself: look-ahead along the arc, one setpoint per 50 Hz tick.
@@ -1474,13 +805,11 @@ class Mission:
                 # WHICH CONSUMER flies the published Path.  `corner` (the flown default, and what every
                 # table in docs/metrics/ was measured with) visits the path's corners one at a time with
                 # position setpoints -- correct for the rectangle, whose corners ARE its geometry.
-                # `path` follows the trajectory itself with a look-ahead point, which is what PLAN.md 4.1
-                # obliges the FSM to do and what a B-spline from ego-planner needs: a planner path has no
-                # corners to visit, and corner-to-corner flying would cut straight through the pillars it
-                # was planned to avoid.
-                if self.args.follow == "spline":
-                    steps.append(self.follow_spline)
-                elif self.args.follow == "path":
+                # `path` follows the trajectory itself with a look-ahead point: for a producer whose path
+                # has no corners.  KEPT, NEEDS A DECISION: it was written for a planner's smooth path and
+                # the rectangle does not need it; it is a generic consumer of the same frozen Path, so it
+                # stayed.
+                if self.args.follow == "path":
                     steps.append(self.follow_path)
                 else:
                     steps.append(self.legs)
@@ -1583,12 +912,6 @@ def main() -> int:
                          "If this topic also has none, the FSM differentiates the pose instead and says "
                          "so in the log")
     ap.add_argument("--traj-topic", default="/planner/traj")
-    ap.add_argument("--traj-dyn-topic", default="/planner/traj_dyn",
-                    help="trajectory_msgs/MultiDOFJointTrajectory: the SAME plan as --traj-topic with the "
-                         "planner's EXACT velocity and acceleration per point (planner/ego_adapter.py's "
-                         "bspline_derivs), stamps identical to the Path's.  When a message matches the Path "
-                         "in hand the follower takes vel/acc from it; otherwise it differentiates the Path "
-                         "and says so at 1 Hz (DYNAMICS: ...).  '' disables the topic")
     ap.add_argument("--nav-source", default="lio", choices=["lio", "truth"],
                     help="'lio' = mission A as defined; 'truth' = the calibration flight whose "
                          "recordings identify L->F (and which must never be used for the mission)")
@@ -1636,92 +959,24 @@ def main() -> int:
                     help="velocity mode: below this speed the last heading is held (the azimuth of a hover "
                          "is noise, and a spinning yaw feeds back into the EKF).  Raised from 0.20 to 0.40 m/s "
                          "by the user's rule, 2026-10-14")
-    ap.add_argument("--yaw-hold-m", type=float, default=0.50,
-                    help="velocity mode: within this horizontal distance of the trajectory's END (the "
-                         "station) the heading is FROZEN, so arriving does not spin the aircraft")
-    ap.add_argument("--follow", default="corner", choices=["corner", "path", "spline"],
+    ap.add_argument("--follow", default="corner", choices=["corner", "path"],
                     help="corner: visit the path's corners (the rectangle; every table in docs/metrics/ "
-                         "was flown this way).  path: follow the trajectory itself with a look-ahead "
-                         "point, which is what a planner's B-spline needs (PLAN.md 4.1)")
-    ap.add_argument("--stations", type=int, default=1,
-                    help="spline mode: the number of stops the mission EXPECTS (only printed; the loop is "
-                         "driven by --stop-topic so the FSM and the sequencer cannot drift apart).  1 = the "
-                         "single-trajectory behaviour")
+                         "was flown this way).  path: follow the trajectory itself with a look-ahead point")
     ap.add_argument("--stall-topic", default="/planner/stalled",
-                    help="std_msgs/Bool from planner/ego_adapter.py: true while the SAME trajectory has been "
-                         "withheld for seconds.  With --stall-abort-s of silence on --traj-topic the FSM "
-                         "aborts NAMING THE PLANNER instead of waiting out --traj-wait-s and blaming the "
-                         "trajectory source (MEASURED AP5: the node was dead for 60 s and the abort said "
-                         "'no new trajectory')")
+                    help="std_msgs/Bool: the trajectory source says it has stopped producing plans.  With "
+                         "--stall-abort-s of silence on --traj-topic the FSM aborts NAMING THE SOURCE "
+                         "instead of waiting out --traj-wait-s and blaming the trajectory (MEASURED AP5: a "
+                         "dead source for 60 s and an abort that said only 'no new trajectory').  KEPT, "
+                         "NEEDS A DECISION: the dropped planner chain was its only publisher")
     ap.add_argument("--stall-abort-s", type=float, default=3.0,
-                    help="abort when the planner's stall signal has been up this long AND no plan has arrived "
-                         "for the same time.  MEASURED AP5: the adapter raises it after 2 s of withholding, so "
-                         "3 s here aborts ~5 s after the node dies, against 60 s of blaming the wrong link")
-    ap.add_argument("--stop-topic", default="/mission/stop",
-                    help="spline mode with >1 stop: the sequencer's current stop index (std_msgs/Int32, "
-                         "-1 = sequence complete).  The FSM follows trajectories until it reads -1")
-    ap.add_argument("--hold-max-s", type=float, default=20.0,
-                    help="spline mode: how long to HOLD the current position while the sequencer dwells on "
-                         "a stop before giving up and waiting for the next trajectory")
-    ap.add_argument("--reaccept-m", type=float, default=0.50,
-                    help="spline mode: also accept a plan whose first-point STAMP is unchanged, provided its "
-                         "first point is within this many metres of the vehicle -- i.e. a re-published copy "
-                         "that the adapter has re-projected onto the current position.  MEASURED 2026-10-14 "
-                         "(sorties AA1-AD1): ego's commit rate collapses to ~0.2 Hz once the vehicle rests, so "
-                         "without this the FSM flew 1 of the 20 distinct plans the recorder saw and aborted on "
-                         "its 60 s wait.  0 disables the fallback (the historical behaviour)")
-    ap.add_argument("--hold-radius-m", type=float, default=0.50,
-                    help="spline mode: DEPRECATED (kept for the A/B record) -- the wait-loop hold is now gated "
-                         "on the straight segment's measured clearance (--footprint-contract) instead of on "
-                         "distance.  MEASURED 2026-10-14: holding always at a far endpoint advanced the mission "
-                         "(8 of 12 stops) but cut 0.376 m inside a pillar for 14.03 %% of the samples; holding "
-                         "only within 0.50 m was legal (C2 0 of 87032) and starved (1 of 12)")
-    ap.add_argument("--footprint-contract", type=float, default=0.20,
-                    help="spline mode: the clearance the FSM itself requires of the straight segment it would "
-                         "fly while waiting for the next plan (the same 0.20 m the adapter's gate enforces on "
-                         "published plans).  This is what lets the wait pull the vehicle toward a legal point -- "
-                         "the pull is the only motion the FSM can create on its own, and the mission only "
-                         "advances while the vehicle moves")
-    ap.add_argument("--world-file", default="/mnt/d/distill_self/lio_avoid/worlds/forest_b.yaml",
-                    help="spline mode: the world the wait-loop hold checks its straight segment against")
-    ap.add_argument("--pull-along-plan", dest="pull_along_plan", action="store_true", default=True,
-                    help="when the plan's clock is out and the straight pull to its END is refused, stream a "
-                         "point that lies ON the plan (every point of it passed the adapter's clearance gate) "
-                         "whose straight segment from the vehicle is clear, instead of standing still.  "
-                         "MEASURED AP6-rect-dyn: without this the FSM sent nothing for 70 s while the aircraft "
-                         "stood 3.385 m from the corner, so the tour could never advance")
-    ap.add_argument("--no-pull-along-plan", dest="pull_along_plan", action="store_false")
-    ap.add_argument("--pull-step-m", type=float, default=0.60,
-                    help="how far along the plan one pull may reach, m (a bound on the step, not a target)")
-    ap.add_argument("--hold-at-m", type=float, default=0.50,
-                    help="spline mode: only hold the station if the trajectory ended within this distance of "
-                         "the vehicle -- otherwise the plan was a short hop and the mission is still moving")
-    ap.add_argument("--min-traj-m", type=float, default=0.50,                    help="spline mode: ignore a published trajectory whose horizontal arc length is below "
-                         "this (m).  The adapter republishes the current spline at 4 Hz from t_cur, so an "
-                         "almost-exhausted plan arrives as a 0.17 m stub, and a station must not be burned "
-                         "on one")
-    ap.add_argument("--follow-latest", dest="follow_latest", action="store_true", default=True,
-                    help="spline mode: switch to a NEWER published plan the moment one arrives, rebasing the "
-                         "trajectory clock (this is what upstream's traj_server does).  Default ON: MEASURED "
-                         "2026-10-14, following the plan the FSM happened to start with let ego's 4 Hz "
-                         "replans accumulate as deviation -- 0.200 m at <= 0.05 s of plan age against 0.368 m "
-                         "at 0.30-0.50 s, which is what pushed the truth below the 0.20 m contract")
-    ap.add_argument("--no-follow-latest", dest="follow_latest", action="store_false",
-                    help="keep the historical behaviour: follow the plan that was in hand when the "
-                         "trajectory started, to its end")
+                    help="abort when the source's stall signal has been up this long AND no plan has arrived "
+                         "for the same time")
     ap.add_argument("--lookahead-base", type=float, default=0.45,
                     help="path mode: look-ahead distance at zero speed, m")
     ap.add_argument("--lookahead-gain", type=float, default=0.60,
                     help="path mode: extra look-ahead per m/s of speed")
     ap.add_argument("--traj-timeout-s", type=float, default=180.0,
                     help="path mode: give up if the trajectory is not finished in this long")
-    ap.add_argument("--spline-lead", type=float, default=0.0,
-                    help="spline mode: start this many seconds into the plan (a small lead hides the"
-                         " first setpoint's staleness; 0 = follow the plan from its own t=0)")
-    ap.add_argument("--late-plan-abort-s", type=float, default=20.0,
-                    help="spline mode: abort with a named mechanism if the newest plan's clock has run out "
-                         "and the straight pull to its last point is illegal for this long (sortie AO1 sat "
-                         "in that state for 490 s printing nothing while the sequencer timed out the circle)")
     ap.add_argument("--traj-wait-s", type=float, default=45.0,
                     help="path mode: wait this long for the source to publish a first trajectory "
                          "(a planner needs the map before it can plan)")

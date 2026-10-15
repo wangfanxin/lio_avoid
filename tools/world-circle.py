@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
-"""Mission B's flight path -- the ONE place that turns the world file's circle into points.
+"""The world file's circle as points -- the ONE place that turns `mission_b.circle` into a list.
 
 The world file stores the circle as five numbers (`mission_b.circle`: centre, radius, altitude, number of
-points, start angle).  Everything else -- the confirmation figure, the goal sequencer that feeds
-ego-planner, and the metrics that judge the flight -- derives its point list from HERE, so the circle
-drawn, the circle commanded and the circle scored cannot drift apart.  This is the same rule as mission
-A's corners (tools/world-info.py): geometry is read once, from the world file.
+points, start angle).  Everything else -- a confirmation figure, a metrics run, a station list -- derives
+its point list from HERE, so the circle drawn, the circle commanded and the circle scored cannot drift
+apart.  This is the same rule as mission A's corners (tools/world-info.py): geometry is read once, from
+the world file.
 
-The path a mission-B flight actually flies is
+STATUS: THE MISSION THAT USED THIS IS DROPPED.  Mission B (ego-planner, the r = 4 m circle in
+`worlds/forest_b.yaml`) was dropped by the owner on 2026-10-15, so nothing in the working pipeline
+(Mission A: the rectangle) calls this file.  It is KEPT because `tools/plot-run.py` imports it to label a
+flight's path, because `mission_b.circle` is still the record of what was tried, and because the owner's
+cleanup list named it.  `world_clearance` below no longer imports `planner/ego_adapter.py` -- that file
+was deleted with the rest of the ego chain.
+
+The path a mission-B flight actually flew is
 
     pad (0, 0, z)  ->  circle point 0  ->  1  ->  ...  ->  n-1  ->  (back to 0)
 
@@ -63,28 +70,28 @@ _WORLD_CACHE = {}
 
 
 def world_clearance(world, pts):
-    """Signed distance from each point to the nearest TRUE pillar surface, via the adapter's own function.
+    """Signed distance from each point to the nearest TRUE pillar surface, from the ONE definition.
 
-    IMPORTED, not re-implemented: PLAN.md 4.1's contract is defined by `planner/ego_adapter.World.clearance`
-    (finite cylinders, corner distance above the cap), and a second copy here could disagree with the gate
-    that actually refuses paths.  `ego_adapter` imports rclpy only inside its Node class, so this stays
-    usable from a plain python3 with no ROS sourced.
+    ONE DEFINITION, IMPORTED RATHER THAN RE-IMPLEMENTED.  This used to import
+    `planner/ego_adapter.World.clearance`; the ego-planner line was dropped on 2026-10-15 and the adapter
+    with it, so the same finite-cylinder rule (horizontal distance minus r inside the pillar's z band,
+    the true CORNER distance above or below it) now lives in `tools/world-info.py::PillarWorld`, and the
+    recorders import it from there too.  This is the rule the project's numbers are quoted against;
+    `tools/metrics.py` measures C2 independently, on the flight's own truth.
 
-    The loaded world is CACHED: MEASURED 2026-10-14, the first version re-parsed the yaml and re-imported
-    the adapter on EVERY point test, which made the 24-waypoint snap search take longer than a 600 s
-    timeout (thousands of file parses for one figure).
+    The loaded world is CACHED: MEASURED 2026-10-14, the first version re-parsed the yaml on EVERY point
+    test, which made the 24-waypoint snap search take longer than a 600 s timeout.
     """
     import numpy as np
     key = os.path.abspath(world)
     if key not in _WORLD_CACHE:
         import importlib.util
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "planner", "ego_adapter.py")
-        spec = importlib.util.spec_from_file_location("ego_adapter_wc", path)
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "world-info.py")
+        spec = importlib.util.spec_from_file_location("world_info_wc", path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        _WORLD_CACHE[key] = mod.World.load(key)
-    w = _WORLD_CACHE[key]
-    return np.asarray(w.clearance(np.atleast_2d(np.asarray(pts, dtype=float))), dtype=float)
+        _WORLD_CACHE[key] = mod.PillarWorld.load(key)
+    return _WORLD_CACHE[key].clearance(np.atleast_2d(np.asarray(pts, dtype=float)))
 
 
 def slide_points(world, need, step_deg=0.05, max_deg=90.0):
@@ -94,7 +101,7 @@ def slide_points(world, need, step_deg=0.05, max_deg=90.0):
     i.e. walk along the path in the direction of travel until the circle leaves that pillar, and command
     the exit point.  The stop keeps radius r (only its angle changes), every pillar stays in the world, and
     the reference is still "a circle of r = 4 m about the pad".  A goal inside a pillar is not an obstacle to
-    avoid: it is an unreachable target (MEASURED 2026-10-14 -- commanding one made the adapter withhold 81
+    avoid: it is an unreachable target (MEASURED 2026-10-14 -- commanding one made the path gate withhold 81
     of 93 paths and left the vehicle 0.7338 m short).
 
     `need` is the clearance the exit point must have, so the stop is not exactly ON the surface: it is the
@@ -105,7 +112,7 @@ def slide_points(world, need, step_deg=0.05, max_deg=90.0):
       * each blocked stop to its OWN nearest free spot (either direction): two neighbours converged, spacing
         fell from 1.047 m nominal to 0.035 m;
       * forward-only with an extra minimum gap: stops marched and left ONE 22.4 m gap (a single command
-        covering 320 deg, which ego answers by cutting straight across the interior);
+        covering 320 deg, which the dropped planner answered by cutting straight across the interior);
       * spacing the stops evenly in the circle's free arc length: correct spacing, but it moves every stop,
         including the ones that were already fine.
     This one moves ONLY the blocked stops, which is what the user asked for.

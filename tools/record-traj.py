@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Record every `/planner/traj` the FSM is offered, so the PLAN can be compared with the TRUTH afterwards.
 
-WHY THIS EXISTS.  MEASURED 2026-10-14 on the 12-stop circle: C2 (the truth's own clearance) failed with
+WHY THIS EXISTS.  MEASURED 2026-10-14 on a 12-stop circle flight: C2 (the truth's own clearance) failed with
 55.9 % of the samples inside the 0.20 m contract and 1.6 % inside a pillar, worst -0.349 m -- while the
-adapter had published only paths it had verified to be >= 0.20 m clear.  Both statements can be true at
+source had published only paths verified to be >= 0.20 m clear.  Both statements can be true at
 once only if the vehicle does not follow the plan exactly, and there was no record of the plan to measure
 that against: the run dir held the truth (tap.csv), the LIO (lio.csv), the phase log and the FCU's BIN, and
 nothing else.  "The gate cannot see the truth" was an argument; this file turns it into a number.
 
-One row per message (the adapter republishes at 4 Hz, so a plan appears many times):
+One row per message (a source may republish, so one plan appears many times):
     t_us   the message's own stamp (system clock seconds -> us)
     t0_us  the trajectory's start stamp (what the FSM uses as the timeline)
     n      points in this message
@@ -16,7 +16,7 @@ One row per message (the adapter republishes at 4 Hz, so a plan appears many tim
     clr_m  the path's own minimum clearance to the world file's pillars
     then one row per point in <csv>.points.csv, tagged with t_us so the two can be joined.
 
-usage: tools/record-traj.py --csv out.csv --world worlds/forest_b.yaml [--topic /planner/traj] [--seconds N]
+usage: tools/record-traj.py --csv out.csv --world worlds/pillars.yaml [--topic /planner/traj] [--seconds N]
 """
 from __future__ import annotations
 
@@ -30,13 +30,18 @@ import numpy as np
 
 
 def load_world(path):
-    """The adapter's own clearance definition, imported rather than re-implemented."""
+    """The pillar clearance, IMPORTED rather than re-implemented.
+
+    It used to come from `planner/ego_adapter.py`; that file was deleted with the rest of the dropped
+    ego-planner line on 2026-10-15, and the same finite-cylinder rule now lives in the one file that
+    reads the world file (`tools/world-info.py::PillarWorld`).
+    """
     here = os.path.dirname(os.path.abspath(__file__))
-    p = os.path.join(here, "..", "planner", "ego_adapter.py")
-    spec = importlib.util.spec_from_file_location("ego_adapter_rt", p)
+    p = os.path.join(here, "world-info.py")
+    spec = importlib.util.spec_from_file_location("world_info_rt", p)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    return mod.World.load(path)
+    return mod.PillarWorld.load(path)
 
 
 def main() -> int:
@@ -44,7 +49,7 @@ def main() -> int:
     ap.add_argument("--topic", default="/planner/traj")
     ap.add_argument("--csv", required=True)
     ap.add_argument("--world", default=os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                    "..", "worlds", "forest_b.yaml"))
+                                                    "..", "worlds", "pillars.yaml"))
     ap.add_argument("--seconds", type=float, default=0.0, help="0 = until Ctrl-C")
     args = ap.parse_args()
 

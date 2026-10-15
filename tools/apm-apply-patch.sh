@@ -32,13 +32,15 @@ echo "ArduPilot: $AP_TREE"
 echo "revision : $(git -C "$AP_TREE" describe --tags --always) $(git -C "$AP_TREE" rev-parse --short HEAD)"
 echo
 
-# THE GLOB IS NOT `patches/*.patch`, AND THAT IS THE WHOLE POINT.  patches/ holds patches for TWO trees:
-# the ArduPilot truth tap (`apm-*.patch`) and the ego-planner series (`00NN-*.patch`).  MEASURED 2026-10-15:
-# with `patches/*.patch` this script tried to apply all eight ego patches to the ArduPilot tree (and
-# tools/ego-apply-patch.sh's `00[0-9][0-9]-*` tried to apply the ArduPilot patch to the ego tree, where it
-# died on `libraries/SITL/SIM_Aircraft.cpp: No such file or directory` and -- because of `set -e` -- left the
-# ego series with NOTHING applied).  Each script now selects its own tree's patches by name.
-# The reverse order is the same rule as the ego script's: a stack comes off the top.
+# THE GLOB IS NOT `patches/*.patch`, AND THAT IS THE WHOLE POINT.  patches/ once held patches for TWO
+# trees: the ArduPilot truth tap (`apm-*.patch`) and the ego-planner series (`00NN-*.patch`, DELETED
+# 2026-10-15 with the rest of the dropped line).  MEASURED 2026-10-15: with `patches/*.patch` this script
+# tried to apply all eight ego patches to the ArduPilot tree (and the ego patcher's `00[0-9][0-9]-*` tried
+# to apply the ArduPilot patch to the ego tree, where it died on
+# `libraries/SITL/SIM_Aircraft.cpp: No such file or directory` and -- because of `set -e` -- left the ego
+# series with NOTHING applied).  Each script selected its own tree's patches by name, and this one still
+# does: `apm-*.patch` is now the only family left, and a future patch series gets its own prefix.
+# The reverse order is the same rule the ego script used: a stack comes off the top.
 PATCHES=()
 for p in patches/apm-*.patch; do
     [ -e "$p" ] || { echo "no apm-*.patch in patches/"; exit 0; }

@@ -81,10 +81,11 @@ def main() -> int:
     arena = (wcfg.get("arena", {}) or {}).get("walls", {}) or {}
     ax_x, ax_y = arena.get("x", [-5.0, 5.0]), arena.get("y", [-5.0, 5.0])
 
-    # EVERY PATH EGO PUBLISHED, in full, drawn over the truth -- the user asked for exactly this
-    # ("每次ego发布新的path，你整条存下来画在图里，这样我才知道跟踪效果").  The recorder stores every point of every
-    # Path message; the adapter republishes the SAME B-spline at 4 Hz, so the lines are grouped by the
-    # trajectory's own start stamp (t0_us) -- one line per distinct PLAN, not per message.
+    # EVERY PATH THE TRAJECTORY SOURCE PUBLISHED, in full, drawn over the truth -- the user asked for
+    # exactly this ("每次ego发布新的path，你整条存下来画在图里，这样我才知道跟踪效果"), and the rule outlived the
+    # planner it was written for: for Mission A the source is planner/rectangle_source.py.  The recorder
+    # stores every point of every Path message; a source that republishes the same trajectory is grouped by
+    # the trajectory's own start stamp (t0_us) -- one line per distinct PLAN, not per message.
     plans = []
     _tp = os.path.join(args.run, "traj.csv")
     _pp = _tp + ".points.csv"
@@ -166,7 +167,7 @@ def main() -> int:
             cb = fig.colorbar(sm, ax=ax, fraction=0.035, pad=0.02)
             cb.set_label("plan start time [s since epoch]", fontsize=8)
             ax.plot([], [], lw=1.2, color=cm.viridis(0.5),
-                    label="ego's published paths (%d plans, in full)" % len(plans))
+                    label="published paths (%d plans, in full)" % len(plans))
         ax.plot(p_t[:, 0], p_t[:, 1], lw=1.6, color="#1f4fd8", label="truth (1200 Hz)", zorder=5)
         ax.plot(p_lw[:, 0], p_lw[:, 1], lw=0.9, color="#e8791a", alpha=0.9,
                 label="LIO odometry (200 Hz, L->W)")
@@ -238,7 +239,7 @@ def main() -> int:
             ax.set_title("whole flight: pad, take-off, route, landing (%d pillars drawn)" % len(pillars))
             ax.legend(loc="upper left", fontsize=8)
     fig.suptitle("%s top view -- %s"
-                 % ("Mission B (circle, ego-planner)" if (circle and not has_square) else "Mission A", tag))
+                 % ("the circle world (dropped mission B)" if (circle and not has_square) else "Mission A", tag))
     fig.tight_layout()
     f1 = os.path.join(out, "traj-xy-%s.png" % tag)
     fig.savefig(f1, dpi=130)
@@ -271,7 +272,7 @@ def main() -> int:
         axs[2].legend(loc="upper right", fontsize=9)
     axs[2].set_xlabel("time from recording start [s]")
     fig.suptitle("%s position vs time -- %s"
-                 % ("Mission B (circle, ego-planner)" if (circle and not has_square) else "Mission A", tag))
+                 % ("the circle world (dropped mission B)" if (circle and not has_square) else "Mission A", tag))
     fig.tight_layout()
     f2 = os.path.join(out, "traj-xyzt-%s.png" % tag)
     fig.savefig(f2, dpi=130)
