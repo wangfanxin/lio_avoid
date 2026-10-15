@@ -328,3 +328,32 @@ WHERE THE LINE STANDS, for whoever picks it up:
     this planner on this mission.
 
 Figure `docs/figures/traj-xy-DIAG29-distance-cost.png`, sha256 985a74023b039e61aa1c6c47b0bedb5df242876e7eb76cd6481f0c6621312e8b -- the last flight beside the best crossing, same mission and same style.
+
+=== QUESTION 1, MADE EXACT: WIRING THE DISTANCE COST TO THE LAUNCH PARAMETERS ======================
+The first flight of the term used a LOCAL CONSTANT (`lambda_collision = 0.5`) because the build refused
+`node->get_parameter(...)` with `'node' was not declared in this scope` -- and the reason is now known, read from
+the header: **the node handle is a PARAMETER of the initialiser, not a member**:
+
+    bspline_optimizer.h:95     void setParam(rclcpp::Node::SharedPtr node);
+
+and `dist0_` -- which the same style of call sets (`node->get_parameter("optimization/dist0", dist0_);`, seen at
+`bspline_optimizer.cpp:28`, inside `setParam`) -- IS a member, which is why `cps_.clearance = dist0_` compiles
+inside the class and the parameter read does not.  So the wiring is three lines, and they are known:
+
+  1. in the class (bspline_optimizer.h, beside the other members):
+         rclcpp::Node::SharedPtr node_;          // the handle setParam is given, kept so cost terms can read
+  2. in setParam, where the other parameters are read:
+         node_ = node;
+  3. in `calcFieldDistanceCost`, replacing the constant:
+         double lambda_collision = 0.5;
+         node_->get_parameter("optimization/lambda_collision", lambda_collision);
+
+WHY IT MATTERS RATHER THAN BEING COSMETIC: with the constant, the launch file's `optimization/lambda_collision`
+and `optimization/dist0` STILL multiply nothing, so the flown term was "the shape with 0.5 / 0.5" and the two
+parameters that were supposed to drive it have never actually been used in this planner.  Wiring them makes the
+term tunable from the launch file like every other weight, and -- more importantly for this investigation --
+makes `dist0` mean what upstream's name says for the first time.
+
+AND THE OTHER TWO QUESTIONS, unchanged and still open: whether the `rc=1` of the term's one flight was the term
+destabilising the optimiser (a term that does that would show exactly this way, and it is the first thing to look
+at), and whether the 0.20 m footprint is the right bar for this planner on this mission.
