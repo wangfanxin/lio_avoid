@@ -39,6 +39,11 @@ import numpy as np
 sys.path.insert(0, "/mnt/d/distill_self/lio_avoid")
 from common import frames          # noqa: E402
 
+# THE ACCEPTANCE TARGETS, NAMED ONCE.  A3's wander bound is DERIVED from A1's target ("10% of A1"), which
+# is the entire justification of its size -- so the two numbers cannot be typed twice and drift apart.
+A1_TARGET_MM = 20.0
+A2_TARGET_MM = 50.0
+
 
 def read_tap(path, wire=False):
     """The truth tap.  Default: positions in W (ENU).  wire=True: as recorded (NED), for A4."""
@@ -197,8 +202,9 @@ def main() -> int:
     v_resid = resid[:, 2] - float(np.mean(resid[:, 2]))
     v_rms = float(np.sqrt(np.mean(v_resid ** 2)))
     print()
-    print("A1 route horizontal rms  %8.2f mm   (target <= 20)" % (h_rms * 1e3))
-    print("A2 route vertical rms    %8.2f mm   (target <= 50, mean removed)" % (v_rms * 1e3))
+    print("A1 route horizontal rms  %8.2f mm   (target <= %.0f)" % (h_rms * 1e3, A1_TARGET_MM))
+    print("A2 route vertical rms    %8.2f mm   (target <= %.0f, mean removed)" % (v_rms * 1e3,
+                                                                                 A2_TARGET_MM))
 
     # ---- A3 delivered-odometry continuity.
     #
@@ -217,20 +223,59 @@ def main() -> int:
     # own log: VISP at 48.2 Hz).  So A3 is computed on the samples as delivered, and its bounds are
     # anchored to the acceptance table, not to a ratio:
     #   delivery  rate within 20% of the LIO's configured output, and no gap above 3x the median period
-    #             (a drop-out is a silent accuracy loss)
+    #             (a drop-out is a silent accuracy loss) -- over EVERY delivered sample, because a
+    #             drop-out anywhere is a drop-out
     #   wander    rms of the second difference <= 2.0 mm per axis = 10% of A1's 20 mm target, so the
     #             per-sample wander cannot dominate the accuracy the table already demands
     #   outliers  99th percentile of the single-sample step <= 10.0 mm (= 2 m/s implied at 200 Hz, 8x the
     #             mission's 0.25 m/s).  The WORST step is reported with its time rather than gated: the
     #             largest ones are the take-off transient (measured 58.2 mm at t=0.06 s of the flight),
     #             and one transient is not a habit.
+    #
+    # THE WANDER'S WINDOW IS THE ROUTE WINDOW, AND THAT IS WHAT DECIDED THIS GATE (2026-10-15).  PLAN.md 3
+    # and this file's own header have always said "route window" -- A1/A2/B1/B2/B3 are all computed over the
+    # route or airborne window -- while the code computed the wander over the WHOLE recording, take-off
+    # climb and landing descent included, where a 200 Hz second difference is dominated by the REAL vertical
+    # acceleration of climbing and levelling off, not by estimator wander.  MEASURED on 16 sorties (the six
+    # recent ones plus the ten of the frozen stepB10 batch), recomputed offline:
+    #
+    #   run                  whole stream E/N/U (mm)      route window E/N/U (mm)
+    #   RECT1-noego          0.527 0.540 2.049            0.783 0.833 0.472
+    #   RECT6-clean-square   0.545 0.557 2.077            0.807 0.857 0.491
+    #   stepB10-01..10       0.850-1.011 0.979-1.071 1.784-1.887  1.053-1.255 1.214-1.348 0.714-0.867
+    #
+    # i.e. U reads 1.78-2.31 mm over the whole stream (which is what FAILED on the six recent sorties) and
+    # 0.32-0.87 mm over the route window on every one of the 16.  So the FAIL was real for the quantity the
+    # code computed, and the quantity was the wrong one -- it was measuring the take-off and the landing.
+    # NO BOUND CHANGED: 2.00 mm per axis stays, and the E/N values are the same order in either window.
+    # Both numbers are printed, so nothing is hidden by the window: the whole-stream value keeps its own
+    # line and its name.
+    t_sim_all = np.array([int(r.get("t_sim_us", 0)) for r in phases])
+    leg_idx = [phases.index(r) for r in legs]
+    if leg_idx:
+        t_a3_0 = t_sim_all[leg_idx[0]]
+        t_a3_1 = t_sim_all[leg_idx[-1] + 1] if leg_idx[-1] + 1 < len(phases) else int(t_lio[-1])
+    elif traj_mode:
+        j_tr = [i for i, r in enumerate(phases) if r["phase"] == "traj"][0]
+        t_a3_0 = t_sim_all[j_tr]
+        t_a3_1 = t_sim_all[j_tr + 1] if j_tr + 1 < len(phases) else int(t_lio[-1])
+    else:
+        t_a3_0, t_a3_1 = int(t_lio[0]), int(t_lio[-1])
+    m_a3 = np.flatnonzero((t_lio >= t_a3_0) & (t_lio <= t_a3_1))
+
+    def _rms2(p):
+        """rms of the second difference per axis, mm -- the per-sample wander."""
+        if len(p) < 3:
+            return np.full(3, np.nan)
+        return np.sqrt(np.mean((p[2:] - 2.0 * p[1:-1] + p[:-2]) ** 2, axis=0)) * 1e3
+
     if len(t_lio) >= 3:
         dt_l = np.diff(t_lio) * 1e-6
         rate_l = (len(t_lio) - 1) / max((t_lio[-1] - t_lio[0]) * 1e-6, 1e-9)
         med_l = float(np.median(dt_l)) * 1e3
         gap_l = float(dt_l.max()) * 1e3
-        d2_l = p_lio[2:] - 2.0 * p_lio[1:-1] + p_lio[:-2]
-        jit = np.sqrt(np.mean(d2_l ** 2, axis=0)) * 1e3
+        jit = _rms2(p_lio[m_a3]) if len(m_a3) > 2 else _rms2(p_lio)
+        jit_all = _rms2(p_lio)
         steps = np.abs(np.diff(p_lio, axis=0)) * 1e3
         p99 = np.percentile(steps, 99.0, axis=0)
         # THE OUTLIER BOUND HAS TO KNOW THE SPEED.  A sample at 2 m/s moves 10 mm in the 5 ms between
@@ -247,12 +292,25 @@ def main() -> int:
         worst_i = int(np.argmax(np.linalg.norm(steps, axis=1)))
         ok_rate = rate_l >= 0.8 * args.lio_nominal_hz
         ok_gap = gap_l <= 3.0 * med_l
-        ok_jit = bool(np.all(jit <= 2.0))
+        jit_bound = 0.10 * A1_TARGET_MM                 # 2.00 mm, the same on every axis
+        ok_jit = bool(np.all(jit <= jit_bound))
         ok_out = bool(np.all(p99 <= out_bound))
         print("A3 delivered-odometry continuity (rate %.1f Hz over %d samples, dt median %.3f ms, worst "
               "gap %.3f ms):" % (rate_l, len(t_lio), med_l, gap_l))
-        print("   wander  rms 2nd difference  E %6.3f N %6.3f U %6.3f mm   (<= 2.00, 10%% of A1)   [%s]"
-              % (jit[0], jit[1], jit[2], "PASS" if ok_jit else "FAIL"))
+        print("   wander  rms 2nd difference  E %6.3f N %6.3f U %6.3f mm   (<= %.2f per axis = 10%% of A1's "
+              "%.0f mm, ROUTE window)   [%s]"
+              % (jit[0], jit[1], jit[2], jit_bound, A1_TARGET_MM, "PASS" if ok_jit else "FAIL"))
+        print("      window %d of %d delivered samples (sim t %.1f..%.1f s, the leg phases B1/B2 use); over "
+              "EVERY delivered sample, take-off and landing included, it is E %6.3f N %6.3f U %6.3f mm "
+              "[REPORTED, not gated]"
+              % (len(m_a3), len(t_lio), (t_a3_0 - t_tap[0]) * 1e-6, (t_a3_1 - t_tap[0]) * 1e-6,
+                 jit_all[0], jit_all[1], jit_all[2]))
+        if not ok_jit:
+            print("      the bound is exceeded on %s: %s -- the axis is NAMED because the all-axis form of "
+                  "this test is what printed FAIL next to three East-axis numbers"
+                  % (", ".join("ENU"[k] for k in range(3) if not (jit[k] <= jit_bound)),
+                     ", ".join("%s %.3f > %.2f" % ("ENU"[k], jit[k], jit_bound)
+                               for k in range(3) if not (jit[k] <= jit_bound))))
         print("   outliers p99 single step    E %6.3f N %6.3f U %6.3f mm   (<= %5.2f = 3x the truth's own "
               "p99 %.2f mm/sample)   [%s]"
               % (p99[0], p99[1], p99[2], out_bound, t_p99, "PASS" if ok_out else "FAIL"))
@@ -367,8 +425,7 @@ def main() -> int:
     # (0,0) and the square starts at (0.5, 0.4), so the box was measuring pad->square, not the square.
     # The window is now from the arrival at corner 1 (the phase log's leg2 entry) to the end of the
     # last leg, which is the route the acceptance talks about.
-    t_sim_all = np.array([int(r.get("t_sim_us", 0)) for r in phases])
-    leg_idx = [phases.index(r) for r in legs]
+    # t_sim_all / leg_idx are computed above, where A3 needed the route window; B1/B2/B3 use the same pair.
     if traj_mode:
         # B1/B2/B3 are defined against a commanded rectangle and a leg phase log; a followed trajectory
         # has neither.  Skipped EXPLICITLY (this used to raise IndexError and truncate the evidence file
