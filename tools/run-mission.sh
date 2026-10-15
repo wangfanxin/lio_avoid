@@ -228,13 +228,25 @@ fi
 # or care who produces it.  It is the only source there is: the ego-planner line was dropped on
 # 2026-10-15 and its adapter, its station list and its switches went with it.
 #
-# RECT_HOLD_S=5 -> hover 5 s at every corner (the producer then publishes one leg per message and keeps
-# publishing the leg past its flight time, so the FSM holds at the corner; 0/unset = one continuous path)
+# RECT_HOLD_S=5 -> hover 5 s at every corner.  The producer then publishes ONE LEG PER MESSAGE, ADVANCES ON
+# ARRIVAL (it subscribes /lio/robo/odom and converts L->W with the SAME calibration it publishes with) and
+# holds each corner for that long before it publishes the next leg; the FSM accepts the next leg
+# mid-mission and keeps commanding the corner it is parked on while it waits -- that interval is the hover.
+# 0/unset = one continuous path (the old behaviour, RECT6's configuration).
+#
+# THE TWO CLOCKS ARE ONE NUMBER.  The FSM must not give up on the tour while the producer is legitimately
+# dwelling, so its wait for the next leg is derived from the same RECT_HOLD_S (+10 s of arrival detection
+# and publish slack) instead of being a second default in a second file.
+NEXT_LEG_ARG=""
+if [ -n "${RECT_HOLD_S:-}" ]; then
+    NEXT_LEG_ARG="--next-leg-wait-s $(awk -v h="$RECT_HOLD_S" 'BEGIN{printf "%.1f", h + 10.0}')"
+fi
 python3 "$REPO/planner/rectangle_source.py" --world "$WORLD" $TRAJ_CALIB_ARG \
     ${RECT_HOLD_S:+--hold-s "$RECT_HOLD_S"} > "$OUT/traj.log" 2>&1 &
 TRAJ_PID=$!
 python3 "$REPO/fsm/mission_fsm.py" --nav-source "$NAV_SOURCE" $CALIB_ARG \
     --tap-port 0 --alt "$TAKEOFF_ALT" --hold 3.0 --geofence-m "$GEOFENCE_M" ${FSM_ARGS:-} \
+    ${NEXT_LEG_ARG} \
     ${YAW_MODE:+--yaw-mode "$YAW_MODE"} \
     --phase-log "$OUT/phase.csv" --setpoint-log "$OUT/setpoints.csv" > "$OUT/fsm.log" 2>&1
 FSM_RC=$?

@@ -9,7 +9,9 @@ The phase machine, and the place where every finding of S3-S7 is enforced rather
   takeoff     command the takeoff and stream ONLY external nav until the vehicle is airborne --
               sending position setpoints here cancels the takeoff (they replace GUIDED's SubMode).
   hold        a few seconds at the takeoff point, which is the A4 window.
-  leg1..leg4  stream the path at 50 Hz, leg by leg, advancing on arrival.
+  leg1..leg4  stream the path at 50 Hz, leg by leg, advancing on arrival.  With the corner hold ON the
+              source publishes ONE LEG PER MESSAGE: this node accepts the next one mid-mission and holds
+              the corner it is parked on until it arrives (that interval IS the owner's 5 s hover).
   land        LAND, then wait for the disarm.
   abort       any gate firing: report, LAND, stop.
 
@@ -102,6 +104,8 @@ class Mission:
         self.planner_stalled = False
         self.planner_stall_since = None
         self.last_path_wall = time.monotonic()
+        self.path_ident = None           # which leg is in hand (see _on_path)
+        self.traj_last_empty = False     # the newest message on the topic was an EMPTY path ("no more legs")
         self.log_fh = open(args.phase_log, "w")
         self.log_fh.write("t_wall,t_sim_us,phase,cmd_x,cmd_y,cmd_z,lio_x,lio_y,lio_z,truth_x,truth_y,"
                           "truth_z\n")
@@ -282,11 +286,28 @@ class Mission:
         if pts:
             self.path_l = np.array(pts)
             self.path_t = np.array(ts)
+            # THE PATH'S IDENTITY, for a consumer that must tell "the same leg, republished" from "the NEXT
+            # leg".  The corner-hold producer republishes at 4 Hz while it flies a leg and holds its corner,
+            # so a message COUNTER cannot answer that question; the leg's LAST POINT can -- a leg ends at the
+            # corner it is flying to, and consecutive legs of the tour end at different corners.
+            self.path_ident = (len(pts), round(pts[-1][0], 5), round(pts[-1][1], 5), round(pts[-1][2], 5))
+            self.traj_last_empty = False
             self.last_path_wall = time.monotonic()      # F3: "the planner is still talking to me"
             # HOW MANY PLANS ACTUALLY ARRIVE.  MEASURED 2026-10-14 (sortie AH1): the adapter published 38
             # plans, 20 with distinct stamps and 16 usable (arc >= 0.30 m, clearance >= 0.281 m), and this FSM
             # flew ONE -- so the acceptance decision is the last unexplained link and it needs a denominator.
             self.paths_seen = getattr(self, "paths_seen", 0) + 1
+        else:
+            # AN EMPTY PATH IS THE SOURCE SAYING "THERE ARE NO MORE LEGS".  `planner/rectangle_source.py`
+            # publishes one after the last leg's dwell.  Recorded rather than ignored: without it the corner
+            # consumer can only guess that a tour is over by TIMING OUT, and a guess that is too short ends
+            # the mission in the middle of a legitimate dwell (which is exactly the failure this round is
+            # fixing).  Its own `--next-leg-wait-s` stays as the safety net for a source that says nothing.
+            # The FLAG is what is kept, not a timestamp: "the newest thing the source published is empty"
+            # answers the question whatever the ordering, including an empty path that arrives while this
+            # node is still settling on the last corner.
+            self.traj_last_empty = True
+            self.last_path_wall = time.monotonic()
 
     def yaw_command(self, velocity, period):
         """The yaw to stream with this setpoint.
@@ -690,92 +711,199 @@ class Mission:
                             v_now, float(np.linalg.norm(here[:2] - p[-1, :2]))))
                 return None
 
-    def legs(self):
-        if self.path_l is None:
-            return "no trajectory on %s" % self.args.traj_topic
+    def _path_in_hand(self):
+        """The published path in F, its detected corners, and whether it is a whole TOUR or one LEG.
+
+        A CLOSED path (its first and last points coincide, `--closed-m`) is the whole tour in one message --
+        the shape RECT1/RECT6 were flown with, whose 5 corners are the four mission corners plus the closing
+        point.  An OPEN path is ONE LEG of a tour, and the source will publish the next one when the vehicle
+        has arrived (the corner-hold contract in `planner/rectangle_source.py`).
+        """
         R, t = self.calib.R_WL, self.calib.t_WL
         path_f = (R @ self.path_l.T).T + t
-        self.log("path: %d points, F box E[%+.2f %+.2f] N[%+.2f %+.2f] U[%+.2f %+.2f]"
-                 % (len(path_f), path_f[:, 0].min(), path_f[:, 0].max(), path_f[:, 1].min(),
-                    path_f[:, 1].max(), path_f[:, 2].min(), path_f[:, 2].max()))
         corners = _corners_of(path_f)
-        self.log("%d corners to visit" % len(corners))
-        for i, corner in enumerate(corners, start=1):
-            self.set_phase("leg%d" % i)
-            t_leg = time.monotonic()
-            while True:
-                # APPROACH, THEN HOLD.  MEASURED 2026-10-13: a pure position setpoint lets the
-                # controller arrive at its own speed, and it then carries the overshoot PAST the corner
-                # while turning -- B2's turning legs came out at 66 mm against a 50 mm target and B1's
-                # box 1-2 mm over its limit in some flights.  So the leg is flown as a velocity command
-                # that stops at a slow radius, and only inside that radius does the FSM command the
-                # position itself.  Both are GUIDED setpoints; only the last few centimetres are flown
-                # as a position, which is also what makes the arrival repeatable.
-                st = self.bridge.state()
-                to_corner = corner - np.array(st.pos)
-                d_h = float(np.linalg.norm(to_corner[:2]))
-                # APPROACH MODE, and the default is the MEASURED BETTER one.
-                #
-                # `position` (default): a position setpoint for the whole leg.  Measured over 10 flights:
-                #   B1 box N 1.238-1.261 (limit 1.26) and B2 26 of 50 legs passing.
-                # `velocity`: a velocity command that stops at a slow radius and then hands over to a
-                #   position setpoint, which was meant to kill the corner overshoot.  MEASURED on 3
-                #   flights: it made BOTH worse -- B1's north extent 1.306-1.335 m and B2 3 of 15 legs --
-                #   because the direction "toward the corner" is recomputed as the vehicle moves, so the
-                #   path curves into the corner instead of being a straight leg.  Kept as a switch rather
-                #   than deleted, so the next person can see the experiment and its result.
-                if self.args.approach == "velocity" and d_h > GATES["slow_radius_m"]:
-                    direction = to_corner.copy()
-                    direction[2] = 0.0
-                    n = np.linalg.norm(direction)
-                    v = (direction / n) * GATES["speed_mps"] if n > 1e-6 else np.zeros(3)
-                    self.cmd = corner
-                    self.pump(0.05, velocity=v)
-                else:
+        closed = (len(path_f) > 1 and
+                  float(np.linalg.norm(path_f[0, :2] - path_f[-1, :2])) <= self.args.closed_m)
+        return path_f, corners, closed
+
+    def _legs_left(self, curve):
+        """The corners to fly, MINUS the ones the vehicle is already standing on.
+
+        WHY THE SUBTRACTION.  With the corner hold ON the source publishes ONE LEG PER MESSAGE and advances
+        on arrival, so consecutive messages SHARE a corner: leg i ends where leg i+1 begins.  `_corners_of`
+        reports an open leg as its two ENDS (the detector wraps the path, so the ends read as 180 deg turns),
+        and without this the shared corner would become a zero-length "leg": B2's per-leg table -- the
+        evidence the acceptance reads -- would grow rows that measured nothing, and the FSM would command a
+        corner it is already standing on.
+
+        THE RADIUS IS `--leg-join-m` (0.25 m), NOT the arrival tolerance, because it answers a different
+        question: not "has the aircraft arrived" (0.06 m, and the position loop leaves it 0.005-0.03 m short
+        -- MEASURED C1 0.031 m) but "is this the same corner I am parked on".  The choice is not delicate:
+        the corners of this mission are 1.2-2.0 m apart and the shared one is where the aircraft is sitting,
+        so ANY radius between the parking error and half the shortest leg gives the same answer -- the
+        measured parking error is <= 0.031 m and the nearest OTHER corner is 1.20 m away.
+        """
+        here = np.array(self.bridge.state().pos)
+        keep = [c for c in curve if float(np.linalg.norm(c[:2] - here[:2])) > self.args.leg_join_m]
+        if not keep and len(curve):
+            keep = [curve[-1]]              # a path whose every corner is under us: still fly its end
+        return keep
+
+    def _await_next_leg(self, n_done, corner, ident):
+        """HOLD the corner just reached until the source publishes the next leg.  Returns (more, why).
+
+        THIS IS THE DWELL, on the consumer's side.  The producer holds its corner for `--hold-s` before it
+        publishes the next leg; what keeps the AIRCRAFT there for that interval is this loop, which streams
+        the corner it is parked on as the position setpoint at the FSM's 50 Hz -- the same command as the
+        settle loop, continued.  So the hover is the producer's CLOCK and this node's SETPOINT, and neither
+        log is the evidence for it: `tools/dwell-audit.py` measures it from the truth tap.
+        """
+        self.log("HOLDING corner %d at [%+.3f %+.3f %+.3f]: waiting up to %.1f s for the next leg on %s "
+                 "(an EMPTY path on that topic ends the tour)"
+                 % (n_done, corner[0], corner[1], corner[2], self.args.next_leg_wait_s,
+                    self.args.traj_topic))
+        t0 = time.monotonic()
+        while True:
+            self.pump(0.05, setpoint=corner)
+            if self.abort_reason:
+                return False, ("aborted while holding corner %d: %s" % (n_done, self.abort_reason))
+            if getattr(self, "traj_last_empty", False):
+                return False, ("the newest message on %s is an EMPTY path: the source has no more legs, so "
+                               "the tour is complete (corner %d was held %.1f s)"
+                               % (self.args.traj_topic, n_done, time.monotonic() - t0))
+            if self.path_ident != ident:
+                return True, ("a NEW leg arrived on %s after %.1f s of holding corner %d (%d points, ends at "
+                              "[%+.3f %+.3f %+.3f])"
+                              % (self.args.traj_topic, time.monotonic() - t0, n_done, len(self.path_l),
+                                 *self.path_l[-1]))
+            if time.monotonic() - t0 > self.args.next_leg_wait_s:
+                return False, ("no new leg and no EMPTY path on %s within %.1f s of holding corner %d: the "
+                               "tour ends here (if the source was still dwelling, --next-leg-wait-s is the "
+                               "parameter that was too short)"
+                               % (self.args.traj_topic, self.args.next_leg_wait_s, n_done))
+
+    def _fly_to_corner(self, i, corner):
+        """One corner: approach, then settle before turning in.  None, or a NAMED reason to abort."""
+        self.set_phase("leg%d" % i)
+        t_leg = time.monotonic()
+        while True:
+            # APPROACH, THEN HOLD.  MEASURED 2026-10-13: a pure position setpoint lets the
+            # controller arrive at its own speed, and it then carries the overshoot PAST the corner
+            # while turning -- B2's turning legs came out at 66 mm against a 50 mm target and B1's
+            # box 1-2 mm over its limit in some flights.  So the leg is flown as a velocity command
+            # that stops at a slow radius, and only inside that radius does the FSM command the
+            # position itself.  Both are GUIDED setpoints; only the last few centimetres are flown
+            # as a position, which is also what makes the arrival repeatable.
+            st = self.bridge.state()
+            to_corner = corner - np.array(st.pos)
+            d_h = float(np.linalg.norm(to_corner[:2]))
+            # APPROACH MODE, and the default is the MEASURED BETTER one.
+            #
+            # `position` (default): a position setpoint for the whole leg.  Measured over 10 flights:
+            #   B1 box N 1.238-1.261 (limit 1.26) and B2 26 of 50 legs passing.
+            # `velocity`: a velocity command that stops at a slow radius and then hands over to a
+            #   position setpoint, which was meant to kill the corner overshoot.  MEASURED on 3
+            #   flights: it made BOTH worse -- B1's north extent 1.306-1.335 m and B2 3 of 15 legs --
+            #   because the direction "toward the corner" is recomputed as the vehicle moves, so the
+            #   path curves into the corner instead of being a straight leg.  Kept as a switch rather
+            #   than deleted, so the next person can see the experiment and its result.
+            if self.args.approach == "velocity" and d_h > GATES["slow_radius_m"]:
+                direction = to_corner.copy()
+                direction[2] = 0.0
+                n = np.linalg.norm(direction)
+                v = (direction / n) * GATES["speed_mps"] if n > 1e-6 else np.zeros(3)
+                self.cmd = corner
+                self.pump(0.05, velocity=v)
+            else:
+                self.pump(0.05, setpoint=corner)
+            if self.abort_reason:
+                return self.abort_reason
+            st = self.bridge.state()
+            err_cmd = float(np.linalg.norm(np.array(st.pos) - corner))
+            err_truth = float(np.linalg.norm(self.tap.p - corner))
+            h_cmd = float(np.linalg.norm(np.array(st.pos)[:2] - corner[:2]))
+            h_truth = float(np.linalg.norm(self.tap.p[:2] - corner[:2]))
+            dz_truth = float(self.tap.p[2] - corner[2])
+            # ARRIVAL IS HORIZONTAL, and the vertical gets a band.  MEASURED 2026-10-13, and it is
+            # this configuration's own documented property rather than a defect: with step (a) the
+            # altitude loop runs on the BAROMETER (EK3_SRC1_POSZ = 1, PLAN.md decision 15), the EKF's
+            # z sits at 1.97-2.01 while the truth is 2.09-2.19, so a 3-D arrival test could never
+            # pass -- it read as a 0.18 m "estimator bias" when the horizontal error was 3-5 cm.
+            # Every route metric (B1 box, B2 straightness, B3 corners) is horizontal; A2 removes the
+            # vertical mean for exactly this reason.
+            if (h_cmd < GATES["arrive_m"] and h_truth < GATES["arrive_m"] and
+                    abs(dz_truth) < GATES["arrive_z_m"]):
+                self.log("corner %d reached: horizontal FCU %.3f m / truth %.3f m, vertical %+.3f m "
+                         "(band %.2f), %.1f s" % (i, h_cmd, h_truth, dz_truth,
+                                                  GATES["arrive_z_m"],
+                                                  time.monotonic() - t_leg))
+                # SETTLE BEFORE TURNING IN.  MEASURED 2026-10-13: the FSM advanced to the next leg
+                # the instant the corner was inside tolerance, while the vehicle was still moving,
+                # so it carried the overshoot PAST the corner -- which is what B2 sees on the turning
+                # legs (53-72 mm against a 50 mm target) and what puts B1's box 1-2 mm over its limit
+                # in some flights.  The corner is therefore held until the FCU's own horizontal speed
+                # is small, with a bounded wait so a noisy estimate cannot stall the mission.
+                t_settle = time.monotonic()
+                while time.monotonic() - t_settle < GATES["settle_s"]:
                     self.pump(0.05, setpoint=corner)
-                if self.abort_reason:
-                    return self.abort_reason
-                st = self.bridge.state()
-                err_cmd = float(np.linalg.norm(np.array(st.pos) - corner))
-                err_truth = float(np.linalg.norm(self.tap.p - corner))
-                h_cmd = float(np.linalg.norm(np.array(st.pos)[:2] - corner[:2]))
-                h_truth = float(np.linalg.norm(self.tap.p[:2] - corner[:2]))
-                dz_truth = float(self.tap.p[2] - corner[2])
-                # ARRIVAL IS HORIZONTAL, and the vertical gets a band.  MEASURED 2026-10-13, and it is
-                # this configuration's own documented property rather than a defect: with step (a) the
-                # altitude loop runs on the BAROMETER (EK3_SRC1_POSZ = 1, PLAN.md decision 15), the EKF's
-                # z sits at 1.97-2.01 while the truth is 2.09-2.19, so a 3-D arrival test could never
-                # pass -- it read as a 0.18 m "estimator bias" when the horizontal error was 3-5 cm.
-                # Every route metric (B1 box, B2 straightness, B3 corners) is horizontal; A2 removes the
-                # vertical mean for exactly this reason.
-                if (h_cmd < GATES["arrive_m"] and h_truth < GATES["arrive_m"] and
-                        abs(dz_truth) < GATES["arrive_z_m"]):
-                    self.log("corner %d reached: horizontal FCU %.3f m / truth %.3f m, vertical %+.3f m "
-                             "(band %.2f), %.1f s" % (i, h_cmd, h_truth, dz_truth,
-                                                      GATES["arrive_z_m"],
-                                                      time.monotonic() - t_leg))
-                    # SETTLE BEFORE TURNING IN.  MEASURED 2026-10-13: the FSM advanced to the next leg
-                    # the instant the corner was inside tolerance, while the vehicle was still moving,
-                    # so it carried the overshoot PAST the corner -- which is what B2 sees on the turning
-                    # legs (53-72 mm against a 50 mm target) and what puts B1's box 1-2 mm over its limit
-                    # in some flights.  The corner is therefore held until the FCU's own horizontal speed
-                    # is small, with a bounded wait so a noisy estimate cannot stall the mission.
-                    t_settle = time.monotonic()
-                    while time.monotonic() - t_settle < GATES["settle_s"]:
-                        self.pump(0.05, setpoint=corner)
-                        v = np.array(self.bridge.state().vel)[:2]
-                        if float(np.linalg.norm(v)) < GATES["settle_speed_mps"]:
-                            break
-                    vs = float(np.linalg.norm(np.array(self.bridge.state().vel)[:2]))
-                    self.log("   corner %d settled: FCU speed %.3f m/s after %.1f s"
-                             % (i, vs, time.monotonic() - t_settle))
-                    break
-                if time.monotonic() - t_leg > GATES["leg_timeout_s"]:
-                    off = np.array(st.pos) - self.tap.p
-                    return ("corner %d timed out after %.0f s: horizontal FCU %.3f m / truth %.3f m, "
-                            "vertical %+.3f m, estimator-vs-truth offset [%+.3f %+.3f %+.3f] m"
-                            % (i, GATES["leg_timeout_s"], h_cmd, h_truth, dz_truth, *off))
-        return None
+                    v = np.array(self.bridge.state().vel)[:2]
+                    if float(np.linalg.norm(v)) < GATES["settle_speed_mps"]:
+                        break
+                vs = float(np.linalg.norm(np.array(self.bridge.state().vel)[:2]))
+                self.log("   corner %d settled: FCU speed %.3f m/s after %.1f s"
+                         % (i, vs, time.monotonic() - t_settle))
+                return None
+            if time.monotonic() - t_leg > GATES["leg_timeout_s"]:
+                off = np.array(st.pos) - self.tap.p
+                return ("corner %d timed out after %.0f s: horizontal FCU %.3f m / truth %.3f m, "
+                        "vertical %+.3f m, estimator-vs-truth offset [%+.3f %+.3f %+.3f] m"
+                        % (i, GATES["leg_timeout_s"], h_cmd, h_truth, dz_truth, *off))
+
+    def legs(self):
+        """Fly the published path's corners -- and KEEP FLYING when the source publishes the next leg.
+
+        THE CONTRACT WITH THE CORNER HOLD (2026-10-15), because this method is the half that had to change.
+        `planner/rectangle_source.py --hold-s 5` publishes ONE LEG PER MESSAGE and advances ON ARRIVAL,
+        holding each corner for the dwell first.  Two shapes therefore arrive on `--traj-topic`:
+          * an OPEN path is ONE LEG of a tour, and there will be more of them;
+          * a CLOSED path is the WHOLE tour in one message -- the shape RECT1/RECT6 were flown with -- and
+            when its corners are visited the mission is over.  That branch is the OLD behaviour, unchanged.
+        An EMPTY path ends the tour on a statement; `--next-leg-wait-s` bounds the wait for a source that
+        says nothing.  MEASURED before this change (`logs/missionA-RECT4-clean`, `-RECT5-clean`): the FSM
+        read the path ONCE, so a one-leg message meant "2 corners to visit" and the flight landed after one
+        leg of the square.
+        """
+        if self.path_l is None:
+            return "no trajectory on %s" % self.args.traj_topic
+        n_leg = 0
+        while True:
+            path_f, curve, closed = self._path_in_hand()
+            ident = self.path_ident
+            if not curve:
+                return ("the published path has no corners (%d points): there is nothing to visit"
+                        % len(path_f))
+            keep = self._legs_left(curve)
+            arc = float(np.sum(np.linalg.norm(np.diff(path_f[:, :2], axis=0), axis=1)))
+            self.log("path: %d points, %.2f m, F box E[%+.2f %+.2f] N[%+.2f %+.2f] U[%+.2f %+.2f]"
+                     % (len(path_f), arc, path_f[:, 0].min(), path_f[:, 0].max(), path_f[:, 1].min(),
+                        path_f[:, 1].max(), path_f[:, 2].min(), path_f[:, 2].max()))
+            self.log("%d corners to visit: %s -- %d detected, %d already reached"
+                     % (len(keep), "CLOSED tour (one message holds the whole square)" if closed
+                        else "OPEN leg (the source publishes the next one on arrival)",
+                        len(curve), len(curve) - len(keep)))
+            for corner in keep:
+                n_leg += 1
+                err = self._fly_to_corner(n_leg, corner)
+                if err:
+                    return err
+            if closed:
+                self.log("the tour is complete: the path in hand is CLOSED and all %d of its corners have "
+                         "been visited" % len(curve))
+                return None
+            more, why = self._await_next_leg(n_leg, keep[-1], ident)
+            self.log(why)
+            if not more:
+                return None
 
     def land(self):
         self.set_phase("land")
@@ -804,7 +932,9 @@ class Mission:
                         "measured calibration flight (a parked window cannot identify it)")
                 # WHICH CONSUMER flies the published Path.  `corner` (the flown default, and what every
                 # table in docs/metrics/ was measured with) visits the path's corners one at a time with
-                # position setpoints -- correct for the rectangle, whose corners ARE its geometry.
+                # position setpoints -- correct for the rectangle, whose corners ARE its geometry -- and
+                # since 2026-10-15 it also accepts the NEXT LEG mid-mission, which is what makes the corner
+                # hold's one-leg-per-message contract fly the whole square (see legs()).
                 # `path` follows the trajectory itself with a look-ahead point: for a producer whose path
                 # has no corners.  KEPT, NEEDS A DECISION: it was written for a planner's smooth path and
                 # the rectangle does not need it; it is a generic consumer of the same frozen Path, so it
@@ -980,6 +1110,24 @@ def main() -> int:
     ap.add_argument("--traj-wait-s", type=float, default=45.0,
                     help="path mode: wait this long for the source to publish a first trajectory "
                          "(a planner needs the map before it can plan)")
+    ap.add_argument("--next-leg-wait-s", type=float, default=15.0,
+                    help="corner mode with an OPEN path: how long to keep holding the corner just reached "
+                         "before deciding the tour is over (s).  It has to OUTLAST the source's own dwell -- "
+                         "RECT_HOLD_S, 5 s -- plus the source's arrival detection and publish period, which "
+                         "is why tools/run-mission.sh derives it from the same RECT_HOLD_S (hold + 10 s) "
+                         "instead of leaving two clocks to be guessed separately.  The source also publishes "
+                         "an EMPTY path when the tour is done, which ends this wait immediately")
+    ap.add_argument("--closed-m", type=float, default=0.05,
+                    help="a published path whose first and last points are within this (m) is CLOSED: it is "
+                         "the WHOLE tour (RECT1/RECT6's shape, 5 legs) and the mission ends when its corners "
+                         "are visited.  An OPEN path is ONE LEG and the source will publish more of them")
+    ap.add_argument("--leg-join-m", type=float, default=0.25,
+                    help="corner mode, OPEN path: a corner of the path in hand this close (m) to the vehicle "
+                         "is one it is already standing on (the corner shared between two legs) and is not "
+                         "flown again.  Not the arrival tolerance: that answers 'has it arrived' (0.06 m and "
+                         "the loop leaves 0.005-0.03 m of standing error), while this answers 'is this the "
+                         "same corner'.  The choice is not delicate -- the mission's corners are 1.2-2.0 m "
+                         "apart, so anything between the parking error and half a leg gives one answer")
     ap.add_argument("--follow-mode", default="pos", choices=["pos", "vel"],
                     help="pos: stream the look-ahead point as a position setpoint (the verified first "
                          "version).  vel: stream a velocity along the path tangent plus a cross-track "

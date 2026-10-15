@@ -13,6 +13,19 @@ forward axis at init, i.e. W's North, and L's origin is the housing's position t
 (`Calib.predicted(world_axes="body")`).  What the FSM then MEASURES at preflight is compared against
 this prediction and logged -- a mismatch is a finding, not something to smooth over.
 
+THE CORNER HOLD IS PACED BY THE VEHICLE, NOT BY A CLOCK (2026-10-15).  With `--hold-s > 0` this node
+publishes ONE LEG PER MESSAGE and advances to the next leg only when the vehicle has ARRIVED at the leg's
+end -- measured from `/lio/robo/odom`, converted L -> W with the SAME calibration this node publishes
+with.  After the arrival it holds the corner for `--hold-s` (keeping the same leg published, so the FSM
+stays parked on that corner) and only then publishes the next leg.  The old version advanced on a TIMER
+(`leg_len / --leg-speed`), which is what the dwell was measured against on 2026-10-15: three sorties with
+the hold on, **1 of 4 corners hovered >= 5 s in each** (`tools/dwell-audit.py`), and the two most recent
+ones flew ONE leg and landed, because the FSM reads the published path once and a one-leg message means
+"two corners to visit".  A timer can only ever say where the aircraft OUGHT to be; the arrival gate is the
+only thing that can say where it IS, and `--leg-timeout-s` bounds the wait so a missed arrival cannot hang
+the mission.  The consumer half is `fsm/mission_fsm.py::legs()`, which keeps walking its corner list and
+accepts the next leg mid-mission.
+
 usage: planner/rectangle_source.py [--z 0.8] [--rate 4] [--speed 0.25]
 """
 from __future__ import annotations
@@ -79,14 +92,40 @@ def main() -> int:
     ap.add_argument("--spacing", type=float, default=0.05, help="path point spacing, m")
     ap.add_argument("--rate", type=float, default=4.0, help="republish rate, Hz")
     ap.add_argument("--hold-s", type=float, default=-1.0,
-                    help="HOVER THIS LONG AT EVERY CORNER: the producer then publishes one LEG per message and "
-                         "keeps publishing the leg past its flight time, so the consumer holds at the corner. "
-                         "-1 (default) = use the world file's mission_a.hold_s; 0 = one continuous path (old)")
+                    help="HOVER THIS LONG AT EVERY CORNER: the producer then publishes one LEG per message "
+                         "and holds each corner this long after ARRIVING at it (measured on --odom), so the "
+                         "consumer holds there.  -1 (default) = use the world file's mission_a.hold_s; "
+                         "0 = one continuous path (old)")
     ap.add_argument("--leg-speed", type=float, default=0.30,
-                    help="assumed speed used to decide that a leg has been flown (leg_len / this = the wait "
-                         "before the corner dwell starts).  The measured route speed on this mission is "
-                         "~0.15-0.25 m/s including the corners, so the default is deliberately slow: the "
-                         "dwell then begins after the aircraft has almost certainly arrived")
+                    help="NO LONGER PACES ANYTHING (kept because the log line that used it is how the "
+                         "timed version was read): the legs advance on ARRIVAL.  It is still used to PRINT "
+                         "the flight time a leg would take at this speed, next to the measured one.")
+    ap.add_argument("--odom", default="/lio/robo/odom",
+                    help="the vehicle's own pose, L frame, ~200 Hz (that topic carries ONLY the pose: its "
+                         "twist is identically zero).  Converted to W with the calibration below; this is "
+                         "what 'the vehicle has arrived at the corner' is measured from")
+    ap.add_argument("--arrive-m", type=float, default=0.10,
+                    help="arrival gate, horizontal, m.  From the measurement, not from taste: the corner "
+                         "arrival residuals on RECT1-noego were -42.6 / +71.0 / +1.8 / -51.8 mm, so the "
+                         "gate has to be ABOVE the worst of them (71 mm) or the arrival that the FSM "
+                         "considers arrived is not the one this node does.  0.10 m = the measured worst "
+                         "case + 29 mm, and 1.67x the FSM's own 0.06 m gate (so this node cannot lead the "
+                         "consumer into the next leg before the consumer has settled)")
+    ap.add_argument("--leg-start-m", type=float, default=0.30,
+                    help="a leg's clock arms when the vehicle is within this of the leg's START corner.  "
+                         "Needed because the FIRST leg starts at corner 1, which is 0.64 m from the pad: "
+                         "the aircraft spends ~25 s of preflight, takeoff and hold before it flies there, "
+                         "and a timeout armed at publish time would fire on a healthy mission")
+    ap.add_argument("--leg-timeout-s", type=float, default=20.0,
+                    help="SAFETY NET: if the armed flight clock runs this long without an arrival, say so "
+                         "with a NAMED reason and advance anyway (a missed arrival must not hang the "
+                         "mission).  20 s < the FSM's own 25 s per-corner gate (mission_fsm.py "
+                         "GATES['leg_timeout_s']), so this fires FIRST and names the cause; the longest leg "
+                         "here is 2.0 m and takes 4-9 s at the measured 0.22-0.50 m/s")
+    ap.add_argument("--empty-mark-s", type=float, default=2.0,
+                    help="after the last leg's dwell, publish an EMPTY Path for this long: that is how the "
+                         "source says 'there are no more legs', instead of the FSM having to guess it with "
+                         "a timeout")
     ap.add_argument("--calib-file", default="",
                     help="the MEASURED L->W calibration -- the SAME file the FSM converts with.  "
                          "Without it this node publishes the path using the PREDICTED transform, and if "
@@ -146,11 +185,17 @@ def main() -> int:
     print("   L<-W: yaw %+.3f deg, t = [%+.4f %+.4f %+.4f] m;  worst W->L->F round-trip error %.6f mm"
           % (math.degrees(math.atan2(R_LW[1, 0], R_LW[0, 0])), -calib.t_WL[0], -calib.t_WL[1],
              -calib.t_WL[2], float(err.max()) * 1e3))
+    if legs_l is not None:
+        print("   corner hold : %.1f s dwell at each corner, ONE LEG PER MESSAGE, advanced ON ARRIVAL "
+              "(gate %.3f m) -- the vehicle's pose comes from %s, converted L->W with the SAME calibration "
+              "printed above.  The leg's flight clock arms within %.2f m of the leg's START corner, and "
+              "%.1f s without an arrival prints a NAMED reason and advances anyway."
+              % (hold_s, args.arrive_m, args.odom, args.leg_start_m, args.leg_timeout_s))
 
     import rclpy
     from rclpy.node import Node
     from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
-    from nav_msgs.msg import Path
+    from nav_msgs.msg import Path, Odometry
     from geometry_msgs.msg import PoseStamped
 
     try:
@@ -182,39 +227,151 @@ def main() -> int:
         return m
 
     msgs = [make_path(leg) for leg in legs_l] if legs_l is not None else [make_path(path_l)]
-    msg = msgs[0]
+    # THE SOURCE'S OWN "THERE IS NOTHING MORE TO FLY".  An EMPTY Path needs no new message type and no
+    # change to the interface's meaning: a path with no poses is a trajectory with no points.  It is
+    # published after the last leg's dwell so the consumer can END THE TOUR ON A STATEMENT rather than on a
+    # guessed timeout (it honours both: see --next-leg-wait-s).
+    empty_msg = Path()
+    empty_msg.header.frame_id = "lio_world"
 
     import time
-    print("publishing %d poses on %s at %.1f Hz (frame lio_world)" % (len(msg.poses), args.topic,
-                                                                      args.rate), flush=True)
-    t0 = time.monotonic()
+    print("publishing %d poses on %s at %.1f Hz (frame lio_world)" % (len(msgs[0].poses), args.topic,
+                                                                     args.rate), flush=True)
     period = 1.0 / args.rate
-    if len(msgs) > 1:
-        print("corner holds ON: %d legs, %.1f s dwell at each corner (assumed leg speed %.2f m/s)"
-              % (len(msgs), hold_s, args.leg_speed), flush=True)
-    i_leg, leg_len, t_leg, t_hold = 0, None, time.monotonic(), None
-    while rclpy.ok():
-        if len(msgs) > 1:
-            if leg_len is None:
-                leg_len = float(np.sum(np.linalg.norm(np.diff(legs_l[i_leg][:, :2], axis=0), axis=1)))
-                t_leg, t_hold = time.monotonic(), None
-                print("LEG %d -> corner %d: %.3f m, %.1f s of flight then %.1f s of hold"
-                      % (i_leg, (i_leg + 1) % len(legs_l), leg_len, leg_len / args.leg_speed, hold_s),
-                      flush=True)
-            if time.monotonic() - t_leg >= leg_len / args.leg_speed:
-                if t_hold is None:
-                    t_hold = time.monotonic()
-                    print("HOLD at corner %d: dwelling %.1f s" % ((i_leg + 1) % len(legs_l), hold_s), flush=True)
-                elif time.monotonic() - t_hold >= hold_s and i_leg < len(msgs) - 1:
-                    i_leg += 1
-                    leg_len = None
-        msg = msgs[i_leg]
+    if legs_l is not None:
+        print("corner holds ON: %d legs, %.1f s dwell at each corner, PACED BY ARRIVAL on %s "
+              "(gate %.3f m); timeout %.1f s" % (len(msgs), hold_s, args.odom, args.arrive_m,
+                                                 args.leg_timeout_s), flush=True)
+    else:
+        print("corner holds OFF: one continuous path, republished (no arrival pacing)", flush=True)
+
+    # the vehicle's own pose in L.  BEST_EFFORT/depth 200 is what every other consumer of this topic uses
+    # (tools/record-odom.py, fsm/mission_fsm.py): the LIO publishes it as a sensor stream.
+    best_effort = QoSProfile(depth=200, history=HistoryPolicy.KEEP_LAST,
+                             reliability=ReliabilityPolicy.BEST_EFFORT)
+    odom = {"p_l": None, "n": 0, "wall": 0.0}
+
+    def on_odom(m):
+        odom["p_l"] = np.array([m.pose.pose.position.x, m.pose.pose.position.y, m.pose.pose.position.z])
+        odom["n"] += 1
+        odom["wall"] = time.monotonic()
+
+    node.create_subscription(Odometry, args.odom, on_odom, best_effort)
+
+    def here_w():
+        """The vehicle in W.  The SAME calibration this node publishes with, read the other way.
+
+        Every commanded point travels W -> L as `R_LW @ (p - t_WL)`; this is `R_WL @ p_l + t_WL` with
+        `R_WL = R_LW.T`, i.e. the inverse of exactly that expression -- not a second convention.  The
+        first version of the corner hold compared an L-frame pose with a W-frame world and would have
+        measured a 90 deg rotated error, which is the same defect `tools/record-traj.py` had.
+        """
+        if odom["p_l"] is None:
+            return None
+        return calib.R_WL @ odom["p_l"] + calib.t_WL
+
+    def publish(msg):
         stamp = node.get_clock().now().to_msg()
         msg.header.stamp = stamp
         for ps in msg.poses:
             ps.header.stamp = stamp
         pub.publish(msg)
         rclpy.spin_once(node, timeout_sec=0.0)
+
+    def leg_len_w(i):
+        return float(np.sum(np.linalg.norm(np.diff(np.asarray(legs_w[i])[:, :2], axis=0), axis=1)))
+
+    if legs_l is None:
+        # ---- hold OFF: one continuous path, republished forever.  The historical behaviour, unchanged.
+        while rclpy.ok():
+            publish(msgs[0])
+            time.sleep(period)
+        return 0
+
+    # ---- hold ON: one LEG per message, and the next leg is published only after an ARRIVAL -------------
+    n_leg = len(msgs)
+    i_leg, armed, t_armed, t_hold, done, t_done = 0, False, None, None, False, None
+    t_warn = time.monotonic()
+    tour_t0 = time.monotonic()
+
+    while rclpy.ok():
+        now = time.monotonic()
+        if done:
+            # THE EMPTY PATH IS THE END OF THE TOUR, and it is published for --empty-mark-s so a consumer
+            # that is still settling at the last corner cannot miss it.  After that the node stops
+            # publishing and stays alive: the sample is LATched (TRANSIENT_LOCAL depth 1), so a consumer
+            # that joins later still finds it, and the sortie's launcher owns this process.
+            if now - t_done < args.empty_mark_s:
+                publish(empty_msg)
+            else:
+                rclpy.spin_once(node, timeout_sec=period)
+            time.sleep(period)
+            continue
+        start_w = corners[i_leg][:2]
+        end_w = corners[(i_leg + 1) % len(corners)][:2]
+        p_w = here_w()
+        if t_hold is None:
+            if not armed:
+                # THE LEG'S CLOCK ARMS WHEN THE VEHICLE IS AT THE LEG'S START.  It has to: leg 1's path
+                # begins at corner 1, which is 0.64 m from the pad, and the aircraft spends ~25 s of
+                # preflight, takeoff and hold before it flies there.  A clock armed at publish time
+                # would report a timeout on a mission that is going perfectly.
+                d_start = float("inf") if p_w is None else float(np.linalg.norm(p_w[:2] - start_w))
+                if d_start <= args.leg_start_m:
+                    armed, t_armed = True, now
+                    print("LEG %d (corner %d -> %d, %.3f m): the vehicle is %.3f m from the leg's start "
+                          "-- flight clock ARMED (arrival gate %.3f m, timeout %.1f s, predicted %.1f s "
+                          "at %.2f m/s)"
+                          % (i_leg, i_leg, (i_leg + 1) % len(corners), leg_len_w(i_leg), d_start,
+                             args.arrive_m, args.leg_timeout_s, leg_len_w(i_leg) / args.leg_speed,
+                             args.leg_speed), flush=True)
+                elif now - t_warn > 15.0:
+                    t_warn = now
+                    print("LEG %d has not started: the vehicle is %s from the leg's start corner %d "
+                          "(needs <= %.2f m); %d pose samples on %s%s"
+                          % (i_leg, "not known" if p_w is None else "%.3f m" % d_start, i_leg,
+                             args.leg_start_m, odom["n"], args.odom,
+                             "" if odom["n"] else "  <-- NOTHING ON THAT TOPIC: the arrival cannot be "
+                                                  "measured, and the FSM's own 25 s corner gate is what "
+                                                  "will end this"), flush=True)
+            else:
+                d = float("inf") if p_w is None else float(np.linalg.norm(p_w[:2] - end_w))
+                if d <= args.arrive_m:
+                    t_hold = now
+                    print("ARRIVED at corner %d: the vehicle is %.3f m from it (gate %.3f m) after "
+                          "%.1f s of flight; holding %.1f s, then the next leg is published"
+                          % ((i_leg + 1) % len(corners), d, args.arrive_m, now - t_armed, hold_s),
+                          flush=True)
+                elif now - t_armed > args.leg_timeout_s:
+                    print("LEG %d TIMEOUT: THE VEHICLE NEVER ARRIVED -- it is %s from the commanded "
+                          "corner %d after %.1f s of flight (gate %.3f m), %d pose samples on %s, the "
+                          "newest %.1f s old.  Advancing to the next leg so a missed arrival cannot "
+                          "hang the mission; the FSM's own corner gate will abort if it disagrees."
+                          % (i_leg, "not known" if p_w is None else "%.3f m" % d,
+                             (i_leg + 1) % len(corners), now - t_armed, args.arrive_m, odom["n"],
+                             args.odom, now - odom["wall"]), flush=True)
+                    if i_leg >= n_leg - 1:
+                        done, t_done = True, now
+                    else:
+                        i_leg += 1
+                        armed, t_armed, t_hold = False, None, None
+        elif now - t_hold >= hold_s:
+            # THE DWELL IS OVER.  It ran with the SAME leg still published, i.e. with the consumer's last
+            # corner unchanged: publishing the next leg earlier would end the dwell, because the consumer
+            # advances as soon as a new corner is in hand.
+            if i_leg >= n_leg - 1:
+                done, t_done = True, now
+                print("TOUR COMPLETE: leg %d held corner %d for %.1f s (total %.1f s of tour).  Publishing "
+                      "an EMPTY path for %.1f s -- the consumer ends the tour on that statement, not on a "
+                      "timeout."
+                      % (i_leg, (i_leg + 1) % len(corners), now - t_hold, now - tour_t0,
+                         args.empty_mark_s), flush=True)
+            else:
+                i_leg += 1
+                armed, t_armed, t_hold = False, None, None
+                print("LEG %d (corner %d -> %d, %.3f m) published after the %.1f s hold"
+                      % (i_leg, i_leg, (i_leg + 1) % len(corners), leg_len_w(i_leg), hold_s), flush=True)
+        publish(msgs[i_leg])
         time.sleep(period)
     return 0
 
