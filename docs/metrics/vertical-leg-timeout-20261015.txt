@@ -1,0 +1,97 @@
+THE VERTICAL CLIMB LEG'S TIMEOUT: THE CLOCK ARMED ON THE PAD
+==============================================================================
+Written 2026-10-15 by the round that fixed it.  Every number is read from `RECT33-accept`'s own files by
+`_stage/why-no-climb.py` and `_stage/dump-logs.sh`; the run directory is
+`/home/fanxin/lio_avoid/logs/missionA-RECT33-accept`.  NO FLIGHT HAS BEEN MADE WITH THE FIX YET, so this
+file settles the MECHANISM and the code change, and it explicitly does NOT claim the profile now works.
+
+
+1. THE SYMPTOM, IN THE RUN'S OWN WORDS
+--------------------------------------
+`traj.log:15-17` (the plan box's log):
+
+  LEG 1 (waypoint 0 -> 1 ): the vehicle is 0.000 m from the leg's start -- flight clock ARMED ...
+  LEG 1 arrival rule: TESTING the HEIGHT (this leg has no horizontal extent); horizontal error 0.0033 m,
+      3-D error 2.3872 m, height error 2.3872 m, gate 0.260 m;
+      leg_start_w=[-0.0026 -0.002 0.1128] target_w=[0.  0.  2.5] p_w=[-0.0026 -0.002   0.1128]
+  LEG 1 TIMEOUT: THE VEHICLE NEVER ARRIVED -- it is 1.817 m from the commanded waypoint 1 after 20.0 s of
+      flight (gate 0.060 m), 4003 pose samples on /lio/robo/odom, the newest 0.0 s old.
+
+The arrival RULE was right (the height, gate 0.260 m = the 0.060 m gate + the 0.20 m vertical slack) and the
+TARGET was right (`wire.csv` row 1 carries `p_w=(0.000000, 0.000000, 2.500000)`).  The leg still failed.
+
+
+2. WHAT THE VEHICLE WAS DOING: 0.885 s OF CLIMB, NOT 20 s
+---------------------------------------------------------
+The bridge relayed exactly 2169 class-84 setpoints (`bridge.log:7`, `sent=2169`), and the FIRST one on the
+wire is at sim t 30.301 s (`setpoints.csv`/`wire.csv` row 1, `t_sim_us=30301208`):
+
+  t_sim 30.301 s   cmd=(0.000, 0.000, 2.500)   fcu_z=0.279   truth_z=0.192   <- the vertical leg
+  t_sim 31.186 s   cmd=(0.500, 0.400, 2.000)   fcu_z=0.718   truth_z=0.769   <- waypoint 2, and the climb
+                                                                                only now begins in earnest
+
+So the climb leg was ON THE WIRE for 0.885 s.  The timeout's own residual closes the arithmetic:
+2.500 - 1.817 = 0.683 m, and the leg-2 line reports the same height from the other side,
+`p_w=[-0.005 0.0035 0.6839]`.  THE VEHICLE CLIMBED 0.68 m OF THE COMMANDED 2.50 m AND THE LEG GAVE UP.
+It then climbed normally to the corner altitude once waypoint 2's setpoint was in force (B3's vertical
+column: -0.104 ... -0.208 m, and every corner leg passed), which is why A4 passed and the aircraft hovered:
+the mission was flown by corner 1's setpoint, NOT by the climb leg.
+
+
+3. WHY THE CLOCK HAD ALREADY RUN: `arm_near_m` ASKED OF A LEG WHOSE TARGET IS THE PAD
+-------------------------------------------------------------------------------------
+`planner/cmd_stream.py::TourPacer._arm` arms a leg's flight clock on ANY of three facts, one of which is
+"it is already within `arm_near_m` of the waypoint" (`arm_near_m` = 0.30 m, from
+`rectangle_source.py:353 arm_near_m=args.leg_start_m`, default 0.30).  For the take-off's climb leg the
+target IS the pad -- `target_w = (0, 0, 2.5)` and the parked vehicle is 0.0033 m from it in the horizontal
+plane (`leg_start_w` above) -- so that rule is satisfied WHILE THE AIRCRAFT IS PARKED.  The clock armed at
+the pad, and the leg's own log records the pad as its start, not flight: `leg_start_w` z = 0.1128 m, which is
+the calibration's own offset (t_WL z = +0.1156 m) plus the parked LIO z, i.e. the ground.
+
+TIME ARITHMETIC.  The timeout fires exactly 20.0 s after arming (same log, `after 20.0 s of flight`,
+`4003` pose samples at ~200 Hz), and it fired at sim t 31.186 s, so the clock armed at sim t ~11.2 s:
+19.1 s before the first setpoint could reach the FCU (the relay only opens when the aircraft is airborne --
+`supervisor.log:27-30`, and `bridge.log:5` `relay: ENABLED (the supervisor's /plan/trigger)`), and ~6.5 s
+before the supervisor's own airborne line (`[17.72] airborne: truth altitude 0.205 m`, sim ~30.3 s).  The
+vertical leg was therefore given, at most, 0.885 s to accomplish a 2.30 m climb.  No gate or timeout
+tuning can fix that; the clock must not start until the vehicle has left the pad, which is exactly what the
+rule's own docstring says it is for.
+
+NOT THE OTHER SUSPECTS, each measured (not argued):
+  * the target on the wire: right, 2.500 m, `wire.csv` row 1;
+  * the arrival test: right, the height with a 0.26 m gate, and the same test then arrived on legs 2..6;
+  * the relay: it opened at the airborne trigger and carried 2169 packets, no `refused`;
+  * the bridge's L->W conversion: `p_w_z=2.500000` on the wire, and every corner was reached to 0.6-3.8 mm.
+
+
+4. THE FIX (planner/cmd_stream.py)
+----------------------------------
+ONE RULE, IN ONE PLACE: `TourPacer.vertical_leg()` answers "does the leg in hand have no horizontal
+extent?" -- the same question, with the same `arrive_m / 10` tolerance, that the arrival block already asks
+to decide whether the arrival is measured on the HEIGHT or on the horizontal distance.  `_arm` now asks it
+too:
+
+    if not self.vertical_leg() and norm(p_w[:2] - target_w[:2]) <= arm_near_m:  return True
+
+so a climb leg arms on the two rules that are facts about having LEFT THE PAD -- `arm_move_m` (0.50 m of
+motion since the plan box first saw the vehicle) or `arm_above_m` (0.50 m of absolute W altitude, which
+covers a plan box that starts while the aircraft is already flying).  Every leg with horizontal extent is
+unchanged: the arrival gate, the settle gate and the 20 s timeout are untouched, and `vertical_slack` still
+applies to the climb leg only.
+
+
+5. THE TEST, AND ITS NEGATIVE CONTROL (`tools/test-cmd-stream.py`)
+------------------------------------------------------------------
+CASE 10, new: a six-waypoint tour with a VERTICAL FIRST TARGET in front of it, the vehicle parked on the
+pad for 25.0 s and then moving toward the pacer's target in 3-D at 0.5 m/s.
+
+  with the fix : no leg armed before take-off (first arming at t=25.990 s); the climb ARRIVED at waypoint 1;
+                 the tour then ran to completion over all 6 waypoints.  `CMD-STREAM TEST PASSED`.
+  control      : `_arm`'s pre-fix body restored verbatim (a bound method carrying the old three rules) --
+                 "the mutated producer armed leg 1 at t=0.000 s and produced 1 timeout line(s)
+                 LEG 1 TIMEOUT: THE VEHICLE NEVER ARRIVED -- it is 2.500 m from the commanded waypoint 1
+                 after 20.0 s of flight (gate 0.060 m), 3999 pose samples".  `FAILS as required`.
+
+The control reproduces the flown defect from the same code that produced it, which is why it is a control
+and not a demonstration.  Gates before the commit: `tools/frozen-check.py` 49 of 49 unchanged,
+`tools/docs-budget.py` OK (4 of 5).

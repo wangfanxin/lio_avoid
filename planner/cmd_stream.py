@@ -220,6 +220,22 @@ class TourPacer:
             return self.p_first if self.p_first is not None else None
         return np.asarray(self.targets_w[self.i_leg - 1], dtype=float)
 
+    def vertical_leg(self, tol=None):
+        """True when the leg in hand has NO HORIZONTAL EXTENT -- its question is the HEIGHT.
+
+        ONE RULE, TWO USES.  It decides which quantity the arrival is measured against (the height, not the
+        horizontal distance) and it decides whether the leg may arm on `arm_near_m`.  Both are the same
+        question about the same pair of points, so they are asked in one place; the tolerance is the same
+        fraction of the arrival gate the arrival block documents (see the long note there).
+        """
+        start = self.leg_start_w()
+        tgt = np.asarray(self.target_w, dtype=float)
+        if start is None or tgt.shape[0] < 3:
+            return False
+        t = float(self.arrive_m / 10.0 if tol is None else tol)
+        return (abs(float(tgt[0]) - float(start[0])) < t and
+                abs(float(tgt[1]) - float(start[1])) < t)
+
     # ---- the decision -------------------------------------------------------------------------------
     def _arm(self, p_w, now):
         """Start the leg's flight clock -- but only once the vehicle has LEFT THE PAD.
@@ -234,10 +250,27 @@ class TourPacer:
           * or its W altitude is above `arm_above_m` (the same fact, stated absolutely);
           * or it is already within `arm_near_m` of the waypoint (the original `leg_start_m` rule, which
             covers a plan box that starts after the aircraft is already flying).
+
+        AND `arm_near_m` IS NOT ASKED OF A VERTICAL LEG.  MEASURED 2026-10-15 -- this is the third distinct
+        defect the take-off's climb leg produced (`RECT31`, `RECT32`, `RECT33-accept`), and the only one that
+        survived the arrival-rule fix:
+
+          * the climb leg's target is the PAD, so "already within `arm_near_m` (0.30 m) of the waypoint" is
+            true while the aircraft is still parked.  `RECT33-accept`'s own log arms it on the pad
+            (`LEG 1 ... flight clock ARMED`, `leg_start_w=[-0.0026 -0.002 0.1128]`);
+          * the clock then ran through the whole of pre-flight and take-off and the leg TIMED OUT 0.9 s after
+            the relay opened: the first class-84 packet reached the FCU at sim t 30.301 s (`wire.csv` row 1,
+            `p_w=(0,0,2.5)`), the target changed to waypoint 2 at 31.186 s, and the flight's own record says
+            `it is 1.817 m from the commanded waypoint 1 after 20.0 s` -- 2.50 - 1.817 = 0.683 m, the height
+            the aircraft had reached in those 0.9 s;
+          * the two remaining rules are facts about having LEFT THE PAD, which is what the clock waits for:
+            `arm_move_m` (0.50 m of motion since the plan box first saw it) and `arm_above_m` (0.50 m of
+            absolute W altitude, which covers a plan box that starts while the aircraft is already flying).
         """
         if p_w is None:
             return False
-        if float(np.linalg.norm(p_w[:2] - self.target_w[:2])) <= self.arm_near_m:
+        if not self.vertical_leg() and \
+                float(np.linalg.norm(p_w[:2] - self.target_w[:2])) <= self.arm_near_m:
             return True
         if float(p_w[2]) > self.arm_above_m:
             return True
@@ -333,10 +366,7 @@ class TourPacer:
         else:
             start_w = self.leg_start_w()
             tgt = np.asarray(self.target_w, dtype=float)
-            vertical_tol = self.arrive_m / 10.0
-            vertical_leg = (start_w is not None and tgt.shape[0] >= 3 and
-                            abs(float(tgt[0]) - float(start_w[0])) < vertical_tol and
-                            abs(float(tgt[1]) - float(start_w[1])) < vertical_tol)
+            vertical_leg = self.vertical_leg()
             # A CLIMB LEG'S GATE IS NOT A CORNER'S GATE.  `arrive_m` (0.06 m) is the number B3's corner
             # arrivals were scored against; on a CLIMB the quantity that is flown and measured is the
             # HEIGHT, and this stack's altitude datum carries a measured ~0.1 m term (the L->W calibration's

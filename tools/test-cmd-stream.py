@@ -40,6 +40,7 @@ import importlib.util
 import math
 import os
 import sys
+import types
 
 import numpy as np
 
@@ -167,6 +168,86 @@ def drive(corners, hold_s, rate, speed, calib, arrive_m=0.06, settle_speed=0.08,
         if pacer.done and t >= pacer.t_done + 0.5:
             break
     return samples, pacer, stream
+
+
+def drive_vertical(corners, hold_s, rate, speed, calib, on_pad_s=0.0, vertical_m=2.5,
+                   break_guard=False):
+    """The SAME tour with a VERTICAL FIRST TARGET in front of it -- the setpoint-driven take-off's climb leg.
+
+    The vehicle stands on the pad (W altitude 0) for `on_pad_s`, then moves TOWARD whatever the pacer is
+    asking for in 3-D at `speed` m/s.  What this case exists for is the ARMING rule, and the flight that
+    measured it is `RECT33-accept`: the climb leg's target IS the pad, so a rule phrased as "already within
+    `arm_near_m` of the waypoint" arms the leg while the aircraft is parked, burns the 20 s clock through
+    pre-flight, and times the leg out ~1 s after the relay opens on airborne.  `break_guard` restores that
+    pre-fix behaviour (it disables exactly the guard, in the producer's own terms) so the test can show it
+    catches it.
+    """
+    targets_w = np.vstack([np.array([[0.0, 0.0, float(vertical_m)]]), tour_targets(corners)])
+    pacer = TourPacer(targets_w, hold_s, 0.06, 0.08, 3.0, 20.0, 0.0,
+                      seg_len_w=lambda i: float(np.linalg.norm(targets_w[i][:2] -
+                                                               (targets_w[i - 1][:2] if i else
+                                                                targets_w[0][:2]))),
+                      leg_speed=speed)
+    if break_guard:
+        # THE PRE-FIX RULE, RESTORED VERBATIM: `arm_near_m` asked of every leg, the vertical one included.
+        # This is the mutation the control uses -- it is the producer's own old body, not a flag the test
+        # invented, and with it `RECT33-accept`'s outcome must come back: armed at t=0 on the pad, and the
+        # 20 s clock burning through pre-flight to a TIMEOUT just after the relay opens.
+        def _arm_prefix(self, p_w, now):
+            if p_w is None:
+                return False
+            if float(np.linalg.norm(p_w[:2] - self.target_w[:2])) <= self.arm_near_m:
+                return True
+            if float(p_w[2]) > self.arm_above_m:
+                return True
+            if self.p_first is not None and float(np.linalg.norm(p_w - self.p_first)) > self.arm_move_m:
+                return True
+            return False
+        pacer._arm = types.MethodType(_arm_prefix, pacer)
+    R_LW = calib.R_WL.T
+    targets_l = (R_LW @ (targets_w - calib.t_WL).T).T
+    stream = CmdStream(pacer, rate, targets_l, trajectory_id=1)
+    k = max(1, int(math.ceil(rate / 1000.0)))
+    micro = (1.0 / rate) / k
+    t, max_t, samples = 0.0, 400.0, []
+    logs = []
+    pacer.log = logs.append
+    pb = np.zeros(3)
+    i_last = 0
+    armings = []                      # (t, leg index) every time a leg's flight clock started
+    was_armed = False
+    while t < max_t:
+        if pacer.i_leg != i_last:
+            i_last = pacer.i_leg
+        if t >= on_pad_s and not pacer.done and not pacer.dwelling:
+            tgt = np.asarray(pacer.target_w, dtype=float)
+            dv = tgt - pb
+            dist = float(np.linalg.norm(dv))
+            step = speed * micro
+            pv = 0.0
+            if dist <= step:
+                pb = tgt.copy()
+            else:
+                pb = pb + dv / dist * step
+                pv = speed
+            pacer.step(pb, pv, t)
+        else:
+            pacer.step(pb.copy(), 0.0, t)
+        pacer.odom_n = int(t * 200) + 1
+        pacer.odom_wall = t
+        if pacer.armed and not was_armed:
+            armings.append((t, pacer.i_leg))
+        was_armed = pacer.armed
+        if stream.next_t is None:
+            stream.next_t = t
+        if stream.due(t):
+            s = stream.sample()
+            samples.append((t, s, pacer.i_leg, pacer.dwelling, pacer.done))
+            stream.advance(t)
+        t += micro
+        if pacer.done and t >= pacer.t_done + 0.5:
+            break
+    return samples, pacer, stream, logs, targets_w, armings
 
 
 def group_samples(samples):
@@ -322,6 +403,22 @@ def self_test(corners, args, calib):
             print("      %s" % p)
         if not hit:
             ok = False
+    # the vertical-leg guard, mutated back to the pre-fix rule: the climb leg's clock must then arm ON THE
+    # PAD and time the leg out, which is what `RECT33-accept` measured
+    print()
+    print("NEGATIVE CONTROL: the vertical leg allowed to arm on `arm_near_m` (the pre-fix rule)")
+    _s, pacer_b, _st, logs_b, _vt, arm_b = drive_vertical(corners, args.hold_s, args.rate, args.speed,
+                                                          calib, on_pad_s=25.0, break_guard=True)
+    timed_out = [s for s in logs_b if "TIMEOUT" in s]
+    armed_on_pad = bool(arm_b) and arm_b[0][0] < 25.0
+    print("   the mutated producer armed leg %d at t=%.3f s and produced %d timeout line(s)"
+          % ((arm_b[0][1] + 1) if arm_b else 0, arm_b[0][0] if arm_b else float("nan"), len(timed_out)))
+    print("   verdict: %s" % ("FAILS as required" if (timed_out and armed_on_pad)
+                              else "DID NOT FAIL -- the control is dead"))
+    if timed_out:
+        print("      %s" % timed_out[0][:160])
+    if not (timed_out and armed_on_pad):
+        ok = False
     return ok
 
 
@@ -400,6 +497,40 @@ def main() -> int:
     else:
         print("   ok: %d samples in the first 30 s, all commanding waypoint 1 (no leg clock ran, and no "
               "leg timeout fired, while the aircraft sat on the pad)" % len(early))
+
+    # ---- 10. a VERTICAL first target must not arm on the pad either --------------------------------
+    print()
+    print("=== a VERTICAL first target (the setpoint-driven take-off's climb leg), 25 s on the pad first")
+    _s, pacer_v, _st, logs_v, vt, arm_v = drive_vertical(corners, args.hold_s, args.rate, args.speed,
+                                                         cals[0], on_pad_s=25.0)
+    on_pad = [r for r in _s if r[0] < 25.0]
+    moved_v = sorted({r[2] for r in on_pad})
+    print("   %d waypoints commanded: %s (first is U +%.2f m straight up, then the %d corners)"
+          % (len(vt), ", ".join("(%.2f, %.2f, %.2f)" % tuple(q) for q in vt[:3]) + ", ...",
+             vt[0][2], len(vt) - 1))
+    print("   arming: %s; %d samples before take-off"
+          % ("; ".join("leg %d at t=%.3f s" % (i + 1, tt) for tt, i in arm_v) or "never",
+             len(on_pad)))
+    if moved_v != [0]:
+        problems.append("the tour ADVANCED past the VERTICAL leg while the vehicle was on the pad: "
+                        "waypoints %s commanded before take-off" % moved_v)
+    early = [(tt, i) for tt, i in arm_v if tt < 25.0]
+    if early:
+        problems.append("a VERTICAL leg's flight clock ARMED ON THE PAD at t=%.3f s (leg %d): its target IS "
+                        "the pad, so `arm_near_m` cannot be asked of it (RECT33-accept timed the leg out "
+                        "0.9 s after the relay opened, with the aircraft at 0.68 m of the commanded 2.50 m)"
+                        % (early[0][0], early[0][1] + 1))
+    if any("TIMEOUT" in s for s in logs_v):
+        problems.append("the VERTICAL leg timed out: %s"
+                        % [s for s in logs_v if "TIMEOUT" in s][0][:120])
+    if not any("ARRIVED at waypoint 1" in s for s in logs_v):
+        problems.append("the VERTICAL leg never arrived (the climb leg must arrive at the mission altitude)")
+    if not pacer_v.done:
+        problems.append("the tour did not complete behind the vertical leg (i_leg=%d of %d)"
+                        % (pacer_v.i_leg, len(vt)))
+    if not problems:
+        print("   ok: no leg armed before take-off (first at t=%.3f s), the climb ARRIVED, the tour ran"
+              % (arm_v[0][0] if arm_v else float("nan")))
 
     ok = not problems
     if args.self_test:
