@@ -549,3 +549,24 @@ conclusive; the arm needs more runs before `EGO_CLOUD_WINDOW` could be promoted 
 What it does establish is that the persistence lever round 20 named is the first one whose arm shows a
 consistent sign: **the configuration that stopped the map being blind is the configuration whose crossings
 clear.**
+
+=== TWO MORE WINDOW-8 SAMPLES, AND THE CORRECTION THEY FORCE ON ROW 94 ==================================
+Row 94 called window 8 "the first arm with 2 of 2 clean crossings".  Two more runs of the same configuration:
+
+    DIAG22-window8-arm3    truth min **-0.276 m**   2613 of 37242 inside the footprint   rc=0
+    DIAG23-window8-arm4    truth min  +0.089 m      2508 of 45012 inside the footprint   rc=0
+
+so the arm is **3 of 4**, not 2 of 2 -- and one of the four is as deep a penetration as anything the unpatched
+baseline produced.  The arms, complete:
+
+    arm        runs   clearances                                  cleared   mean
+    window 0     6    -0.279 -0.169 -0.071 -0.277 -0.129 -0.164   0 of 6    -0.180 m
+    window 3     3    +0.150 +0.056 -0.222                        2 of 3    -0.005 m
+    window 8     4    +0.058 +0.167 -0.276 +0.089                 3 of 4    +0.010 m
+
+**What survives**: the arm means rise with the window (-0.180 -> -0.005 -> +0.010 m) and the gap between 0 of 6
+and 3 of 4 is outside what six-and-four samples would produce by chance alone, so the persistence lever still
+looks like the right direction.  **What does not survive**: "consistent sign" -- one window-8 run penetrated
+deeper than every window-3 run, so a single crossing still says nothing about the configuration, exactly as the
+spread (sd ~0.14 m) predicted two rounds ago.  **And C2 remains unmet in all fifteen ego crossings**: the best
+footprint count is DIAG21's 1887 of 47406, against a row that asks for zero.
