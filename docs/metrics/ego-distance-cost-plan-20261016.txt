@@ -594,3 +594,23 @@ WHAT REMAINS FOR ITEM 3, in order:
      means the run judges nothing and must be discarded, not recorded as evidence either way;
   4. compare against the window-8 arm (+0.058 / +0.167 / -0.276 / +0.089 m; footprint 1887..4749) against the
      prediction recorded above; then revert both patches and rebuild, refuted or not.
+
+=== CORRECTION OF THE PREVIOUS SECTION: PATCH 2 WAS **NOT** APPLIED (round 66) ======================
+The note above says "both applied and built".  **That is false**, and my own script printed it: patch 1 applied and
+built (rc=0, verified by the marker counts in this round's check), then `apply-distance-field2.py` exited with
+**`ANCHOR FAILED in bspline_optimizer.h setParam: 0 occurrences`** -- and because the script did not stop on that
+failure, its second `colcon build` succeeded on unchanged sources and ITS return code was mistaken for patch 2's.
+
+The cause of the anchor failure is a mistake I introduced in round 63: the wiring for `setParam` was anchored on
+`node->get_parameter("optimization/dist0", dist0_)`, which lives in **`bspline_optimizer.cpp:28`** -- the .cpp --
+not in the header the script was told to search.  Fixed: that substitution now targets the .cpp, and the script's
+own anchor check will refuse again if it is wrong.
+
+**ACTUAL TREE STATE, verified by marker count in this round**: PATCH DISTANCE-FIELD/1 PRESENT and BUILT;
+PATCH DISTANCE-FIELD/2 ABSENT.  So item 3 is one step short of where the previous section claimed it was: patch 2
+must be applied and built (its script is now corrected), after which the sequence is unchanged -- park-verify, fly,
+READ THE `FCU-TEXT` LINES, compare, revert.
+
+And a lesson worth its own line, because it is new in kind: **a script that continues past a failed step and then
+reports the LAST step's success is a script that produces exactly the kind of false state this project has spent
+rounds learning to distrust** -- the failure was visible in its own output, and the record was written anyway.
