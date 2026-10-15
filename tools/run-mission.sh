@@ -161,6 +161,11 @@ echo "sortie lock : $LOCK ($TAG, pid $$, process group ${PGID_SELF:-?})"
 sleep 1
 
 echo "== revisions under test =="
+# THIS REPO'S OWN REVISION FIRST.  MEASURED 2026-10-15: a sortie's log named the ArduPilot revision, the
+# LIO's revision and every parameter file, but NOT the commit that produced the PLAN box and the BRIDGE --
+# so "which code flew" could only be reconstructed from the wall clock, and a fix that was in the tree but
+# not in the commit looked identical to one that was.  A dirty tree is stated here, not hidden.
+echo "   this repo : $(git -C "$REPO" rev-parse --short HEAD) $(git -C "$REPO" log -1 --format=%s | cut -c1-58)$(mt=$(git -C "$REPO" status --porcelain --untracked-files=no 2>/dev/null | wc -l); ut=$(git -C "$REPO" status --porcelain --untracked-files=all 2>/dev/null | grep -c '^??'); if [ "${mt:-0}" -gt 0 ]; then echo "  *** TREE DIRTY: $mt tracked path(s) modified ***"; else echo "  (tracked tree clean${ut:+, $ut untracked path(s)})"; fi)"
 echo "   ardupilot : $(git -C "$AP" describe --tags --always) $(git -C "$AP" rev-parse --short HEAD) (tap applied: $(git -C "$AP" --no-pager diff --stat | tail -1 | tr -s ' '))"
 echo "   super_lio : $(git -C /home/fanxin/lio_avoid/src/Super-LIO rev-parse --short HEAD)  liblio $(md5sum "$WS/install/super_lio/lib/liblio.so" | cut -c1-16)"
 echo "   config    : lio/config/livox_360.yaml + apm_lio_only,sitl_basics,${ALT_MODE}_posz,$MISSION_NAME,$EKF_NAME"
