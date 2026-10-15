@@ -630,3 +630,31 @@ TWO STEPS REMAIN, both one command:
      anything**: an EKF failsafe there means the run judges nothing about the cost term and must be DISCARDED
      (row 121's protocol).  Then compare against the window-8 arm (+0.058 / +0.167 / -0.276 / +0.089 m;
      footprint 1887..4749) against the prediction recorded at the top of this plan, and revert both patches.
+
+=== ITEM 3 STEP 4-5 (round 68): FIELD VERIFIED INSIDE THE BOX, FLIGHT REFUSED BY THE IDLE GATE ========
+Both patches applied and built (row 3617112, verified by marker).  The two remaining steps were run in one pass,
+and each produced something worth keeping.
+
+STEP 4 -- THE PARKED VERIFICATION printed three DIAG/3 lines:
+
+    distance=0.38  getInflateOccupancy=0    resolution=0.1
+    distance=0.88  getInflateOccupancy=-1   resolution=0.1
+    distance=0     getInflateOccupancy=-1   resolution=0.1
+
+  * **the first is the check passing**: the vehicle's cell is FREE by the query the planner trusts, and the field
+    reads 0.38 m to the nearest occupied cell -- consistent, and the same shape as the earlier single-sample pass;
+  * **the other two are OUTSIDE the map box** (`getInflateOccupancy` = -1), and they expose a fault in MY PROBE
+    rather than in the field: DIAG/3 indexes `md_.distance_buffer_[toAddress(id)]` directly, so outside the box it
+    prints whatever stale cell that index addresses.  `evaluateEDT` -- the query the optimiser will actually call
+    -- returns 1e3 for exactly this case (outside = FAR, never occupied).  So the D/3 line at `-1` must not be
+    read as "the field disagrees"; it must be read as "the probe does not implement the convention it is testing".
+    **The fix for the next round is one line**: the probe should call `evaluateEDT` and print ITS answer.
+  * the third line's `distance=0` with `-1` is the sharpest form of this: outside the box the raw index can land
+    on an occupied cell, and printing that as the field's verdict is exactly the species of silent
+    disagreement this project keeps finding.
+
+STEP 5 -- THE FLIGHT DID NOT RUN: `fly rc=3`, which is `diagonal-fly.sh`'s own refusal when the flight stack is
+not idle -- the same leftover-processes situation as round 51, where the parked check's teardown left something
+behind.  **The remedy is already written and used once**: `_stage/clear-and-fly29.sh` clears the leftovers with the
+gate's own pattern list and then flies.  So item 3 stands at: patches in and built, field verified inside the box,
+**one command from the crossing**.
