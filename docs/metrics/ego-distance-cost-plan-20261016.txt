@@ -430,3 +430,27 @@ supervisor's `:676` is the consumer, not the source.
 WHAT THIS ROUND LEAVES: no change to any file (the script's refusal is the record), a pointer to the right layer
 for item 4, and one more instance of the pattern this project has used to avoid half-applied work: **a patch
 script that refuses when its assumption is not confirmed by the file itself**.
+
+=== CORRECTION OF ROUND 58's POINTER: THE FCU'S TEXT IS NOT IN OUR BRIDGE AT ALL =====================
+Round 58 concluded that the when-it-happens trace belongs "one layer down, in the bridge".  That was right about
+the LAYER and wrong about the FILE.  A second refused patch (`_stage/bridge-text-trace.py`) searched
+`src/bridge/bridge_node.py` for every plausible name and found NOTHING:
+
+    grep -n 'STATUSTEXT'   -> (none)
+    grep -n 'statustext'   -> (none)
+    grep -n '253'          -> (none)
+    grep -n 'text'         -> (none)
+
+`bridge_node.py` never sees the FCU's text.  The supervisor's own docstring says why (line 17): it has
+
+    "its OWN endpoint -- heartbeat/position age, armed, mode, landed_state, statustext"
+
+so `self.bridge.state()` is the SUPERVISOR'S OWN MAVLink connection (its tcp:5761 endpoint, class 76, which this
+project has always described as "the supervisor's own channel"), not the class-84 bridge that owns the setpoint
+stream.  **The trace therefore belongs in the supervisor's own MAVLink client** -- wherever `self.bridge` is
+implemented inside `src/supervisor/` -- and that is where the next round should look.
+
+Two refused patches in a row, both leaving the tree untouched: the rule is doing what it was built for.  And the
+correction is the third time this project has mistaken one component for another (the published visualisation for
+the planner's buffer, `traj.csv` for `traj.csv.points.csv`, and now the class-84 bridge for the supervisor's own
+MAVLink link) -- each caught by asking the artefact itself rather than trusting the reasoning that pointed at it.
