@@ -614,3 +614,19 @@ READ THE `FCU-TEXT` LINES, compare, revert.
 And a lesson worth its own line, because it is new in kind: **a script that continues past a failed step and then
 reports the LAST step's success is a script that produces exactly the kind of false state this project has spent
 rounds learning to distrust** -- the failure was visible in its own output, and the record was written anyway.
+
+=== ITEM 3 STEPS 1-3 DONE, VERIFIED BY MARKER (round 67) ====================================
+The flight tree now carries BOTH patches -- PATCH DISTANCE-FIELD/1 (the field, its build at the end of
+`cloudCallback`'s marking loop, and the DIAG/3 self-check) and /2 (the cost term, reading
+`optimization/lambda_collision` and `dist0` through the `node_` member) -- **verified by marker count in each of
+the four files, and built (`plan_env`, `bspline_opt`, `ego_planner`)**.  Round 66's false claim is not repeated:
+this note was written only after the marker check printed D2>0 in `bspline_optimizer.cpp` and the build returned
+rc=0.
+
+TWO STEPS REMAIN, both one command:
+  1. `bash _stage/park-verify-field.sh` -- DIAG/3 must agree with `getInflateOccupancy` (it did once before,
+     one sample; the stronger assertion is `getInflateOccupancy(p) == 1` implies `distance_buffer_[p] == 0`);
+  2. `bash _stage/run-diag29.sh` -- the crossing at window 8, and **read the `FCU-TEXT` lines before recording
+     anything**: an EKF failsafe there means the run judges nothing about the cost term and must be DISCARDED
+     (row 121's protocol).  Then compare against the window-8 arm (+0.058 / +0.167 / -0.276 / +0.089 m;
+     footprint 1887..4749) against the prediction recorded at the top of this plan, and revert both patches.
