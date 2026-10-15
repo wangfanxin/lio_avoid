@@ -1,0 +1,78 @@
+INSIDE THE MAP: NOTHING IS REJECTED -- and my census was measuring a VISUALISATION
+2026-10-15 16:02:13Z   HEAD: 976d409
+run: /home/fanxin/lio_avoid/logs/parked-census-20261015_235933
+
+=== WHY THE INSTRUMENT WENT INSIDE ============================================================
+Three rounds inferred the map's behaviour from what it PUBLISHES: the flight recording, then a
+three-stage census, then the node's parameters.  Each narrowed the question and none answered it,
+/mnt/d/distill_self/_stage/commit-diag1.sh: line 15: cloudCallback: command not found
+because the decisive facts are not published at all.   SKIPS every point outside
+/mnt/d/distill_self/_stage/commit-diag1.sh: line 16: grid_map/local_update_range: No such file or directory
+ with no counter anywhere -- a silent drop indistinguishable from a point
+/mnt/d/distill_self/_stage/commit-diag1.sh: line 17: plan_env/src/grid_map.cpp: No such file or directory
+that never arrived.  So PATCH DIAG/1 was applied to  (the project's own
+method: an in-tree trace with a name, like PATCH J's GOAL-TRACE).  It counts points, accepted points,
+/mnt/d/distill_self/_stage/commit-diag1.sh: line 19: camera_pos_: command not found
+and rejections BY AXIS, prints the map's own  and the box it implies, and counts the cells
+actually marked -- once per second, on the map's existing timer.
+
+=== THE MAP'S OWN ANSWER ======================================================================
+   [ego_planner_node-1] DIAG/1 cloud: camera_pos=[0 0 0]  range=[5.5 5.5 4.5]  -> box x[-5.5,5.5]  msgs=0 pts=0 accepted=0 rejected x/y/z=0/0/0  marked_cells=0
+   [ego_planner_node-1] DIAG/1 cloud: camera_pos=[0.00229577 0.00239243 -0.00470439]  range=[5.5 5.5 4.5]  -> box x[-5.4977,5.5023]  msgs=0 pts=16973 accepted=16973 rejected x/y/z=0/0/0  marked_cells=58321
+   ...
+   [ego_planner_node-1] DIAG/1 cloud: camera_pos=[0.00261819 0.00209872 -0.00459544]  range=[5.5 5.5 4.5]  -> box x[-5.49738,5.50262]  msgs=0 pts=1875919 accepted=1875919 rejected x/y/z=0/0/0  marked_cells=59055
+   [ego_planner_node-1] DIAG/1 cloud: camera_pos=[0.00400389 0.00224249 -0.00503515]  range=[5.5 5.5 4.5]  -> box x[-5.496,5.504]  msgs=0 pts=1909684 accepted=1909684 rejected x/y/z=0/0/0  marked_cells=59339
+   (74 lines over the run)
+
+   READ THE THREE NUMBERS:
+     camera_pos = [0.003 0.002 -0.005]   -- the map's own position, the L origin, as it should be;
+     range      = [5.5 5.5 4.5]          -- the box is x[-5.50, +5.50];
+     pts = 1909684, accepted = 1909684, rejected x/y/z = 0/0/0
+
+   NOT ONE POINT IS REJECTED.  Every hypothesis about the acceptance box is dead, including the
+   parameter reading's own alternative (a 5.5 m band offset to cut at -2.5) and the one this patch was
+   built to test.
+
+=== AND THE NUMBER THAT REFUTES MY CENSUS =====================================================
+   marked_cells = 59339     <- what the MAP holds in md_.occupancy_buffer_inflate_
+   1187                    <- what my census of the PUBLISHED /grid_map/occupancy_inflate found
+
+   A factor of fifty.  My census was not measuring the planner's map; it was measuring a PUBLISHED
+/mnt/d/distill_self/_stage/commit-diag1.sh: line 42: check_collision_and_rebound: command not found
+   SUBSET of it.  And the planner never reads the published topic --  and
+/mnt/d/distill_self/_stage/commit-diag1.sh: line 43: md_.occupancy_buffer_inflate_: command not found
+   the A* search read  IN PROCESS.  One cause of the subset is already
+/mnt/d/distill_self/_stage/commit-diag1.sh: line 44: publishMap: command not found
+/mnt/d/distill_self/_stage/commit-diag1.sh: command substitution: line 44: syntax error near unexpected token `2'
+/mnt/d/distill_self/_stage/commit-diag1.sh: command substitution: line 44: `pos(2) > mp_.visualization_truncate_height_'
+   visible in the code:  skips every cell with 
+/mnt/d/distill_self/_stage/commit-diag1.sh: line 45: grid_map.cpp:973-975: command not found
+   (), and this stack's launch file sets that to 1.8 m.
+
+=== SO THE FINDING OF THE LAST THREE ROUNDS IS WITHDRAWN =======================================
+'Ego's map drops the pillars' -- reported in rows 68, 69, 70 and 71 -- is NOT established.
+What IS established: the relay loses nothing; the map ACCEPTS everything it is sent; and the topic the
+census read is a truncated visualisation of the map rather than the map.  Whether the planner sees the
+pillars is now an OPEN question again, and it is the question the goal actually asks.
+
+   THIS IS THE SECOND TIME IN TWO ROUNDS that my own instrument produced a confident answer that later
+   fell: first the census compared two frames, now it measured a visualisation.  Both were found by
+   asking the component itself instead of inferring from its output, and the instrument that works is
+   the one that counts the thing the consumer actually reads.
+
+=== THE PATCH, AND ITS THREE ATTEMPTS =========================================================
+  attempt 1 anchored on the loop's closing braces: the same idiom appears in the depth path (2 matches);
+  attempt 2 anchored under the comment above the acceptance test: 'devi' was not yet declared there, and
+/mnt/d/distill_self/_stage/commit-diag1.sh: line 61: error:: command not found
+  the compiler said so ();
+  attempt 3 anchors on the acceptance test itself, on the function signature for the file-scope counters,
+/mnt/d/distill_self/_stage/commit-diag1.sh: line 63: Finished: command not found
+  and on publishMapInflate for the report -- and it BUILT ().
+  Every attempt restored the pre-patch file first, so a failed patch could not stack.
+  A backup of the unpatched file is at grid_map.cpp.pre-diag1 in the ego checkout.
+
+=== THE RIGHT INSTRUMENT FOR THE QUESTION THAT REMAINS ========================================
+The goal asks whether ego's map sees the pillars.  The honest test is INSIDE the map: for each of the 46
+/mnt/d/distill_self/_stage/commit-diag1.sh: line 69: getInflateOccupancy: command not found
+pillars, ask  at its own position and count the cells around it -- the same call the
+planner makes.  That is a second, small patch, and it cannot be fooled by a visualisation.
