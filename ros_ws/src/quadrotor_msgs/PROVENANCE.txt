@@ -1,0 +1,75 @@
+quadrotor_msgs -- PROVENANCE AND PIN
+====================================
+
+Written 2026-10-16 by the ZERO-FLIGHT refactor round (steps S1-S4 of
+_stage/refactor-bridge-plan.md section 6).  Nothing was flown.
+
+SOURCE
+------
+  path : /home/fanxin/lio_avoid/src/ego-planner-swarm/src/uav_simulator/Utils/quadrotor_msgs
+  repo : the ego-planner-swarm checkout OUTSIDE our repository (the design document read it too)
+  HEAD : 23a8d5a  "Update Readme.md"
+  tree : clean except the previous integration's 3 modified files --
+             src/planner/plan_manage/include/ego_planner/ego_replan_fsm.h
+             src/planner/plan_manage/src/ego_replan_fsm.cpp
+             src/planner/plan_manage/src/planner_manager.cpp
+         NONE of them is a .msg, so the interface below is unmodified upstream content.
+
+WHY THIS IS VENDORED, NOT DEPENDED ON
+-------------------------------------
+The ego-planner-swarm line and the workspace that used to carry its packages ("planner_ws") are both
+being dropped.  The PLAN box's output -- quadrotor_msgs/msg/PositionCommand on /plan/cmd -- is the FROZEN
+plan/vehicle interface of the target architecture, so it has to outlive the planner that happens to
+implement it today.  This directory is that pin.  Two packages of the same name cannot coexist in one
+colcon workspace, so this copy and ego's must be the same package; the SHA-256 table is how "the same"
+is checked instead of asserted.
+
+HOW IT IS BUILT
+---------------
+  repo location      : ros_ws/src/quadrotor_msgs           (canonical, under version control)
+  workspace location : /home/fanxin/lio_avoid/lio_ws/src/quadrotor_msgs  (SYMLINK to the above)
+  build              : colcon build --packages-select quadrotor_msgs --symlink-install \
+                                    --base-paths /home/fanxin/lio_avoid/lio_ws/src
+  consumed by        : every existing script already, because tools/run-mission.sh:86 sources
+                       /home/fanxin/lio_avoid/lio_ws/install/setup.bash -- no edit to any launcher
+  the symlink is not a new mechanism: lio_ws/src/basic and lio_ws/src/super_lio were already symlinks
+  into /home/fanxin/lio_avoid/src/Super-LIO/src.
+
+SHA-256 OF EVERY VENDORED .msg  (the pin)
+-----------------------------------------
+278d60bbc162fff41581e654b789ce41582491b8b5d268ccc68ffe907c140c36  msg/AuxCommand.msg
+90269b419f2e4284c4f82c68a2055ddfe8bb5f5e32687016a9b502c0ebfd83e8  msg/Corrections.msg
+49a5c6206efeaf3ab272f26e8c66f87c7c82f5d4f6686c0e1a2590497892dd92  msg/Gains.msg
+d51108c8c57262628f636760af1e76977f2f83aa9feda3f55edfff3662b8e5db  msg/LQRTrajectory.msg
+a498cb961ba3fdafe680fcb60c0d251a5c6f72f3cde542f9139fa674ff7de2b2  msg/Odometry.msg
+076bb8cf559e5231d6d514b56e3e66a17d72d6a310ff70911f3e915c851afa5f  msg/OutputData.msg
+51799a5fe4b48a23f2e87f05c232251d438419c2a54d5dbb129b54412839b54c  msg/PPROutputData.msg
+e9708491f64f12ea63c0239a786fba25decdd729aab1edeb2f97b02e19b05bcc  msg/PolynomialTrajectory.msg
+9e0e570fa796d18ea4170c569491d1ba6a63daa78007d0d12c3b7b208c597944  msg/PositionCommand.msg
+cc9d9f4ff156709464ae226fa8a522c5da881c1485c22ff2335fa95ceb5d5410  msg/SO3Command.msg
+2c4e8fe4a179e26ee81794d09922a7345cf154c12f200b641d2ba642a862f509  msg/Serial.msg
+80003d12ed2ed929a1d4d73190306881a26cd8da6f6848ed32ae579f361588de  msg/StatusData.msg
+96cd7508ff52d7d8674e93686b7df3f617d481c1651b6defbb32bd0255be4dec  msg/TRPYCommand.msg
+
+RE-CHECK THE PIN
+----------------
+  cd /mnt/d/distill_self/lio_avoid/ros_ws/src/quadrotor_msgs && sha256sum msg/*.msg
+  # or, against the source checkout (both trees must still exist for this one):
+  bash /mnt/d/distill_self/_stage/_vendor-rest.sh
+
+WHAT WAS CHANGED RELATIVE TO EGO'S COPY
+---------------------------------------
+  msg/*.msg                      UNCHANGED, all 13, byte for byte (this is the pin)
+  CMakeLists.txt                 rewritten msg-only: rclcpp, Eigen3, decode_msgs, encode_msgs and the
+                                 BUILD_TESTING/ament_lint block removed; rosidl_generate_interfaces lists
+                                 the same 13 files with the same DEPENDENCIES minus rclcpp
+  package.xml                    rewritten for the msg-only build: no rclcpp, no Eigen3, no lint tests
+  include/, src/                 NOT COPIED -- ego's C++ (decode_msgs.cpp, encode_msgs.cpp and their
+                                 headers) serves the Serial/LQR/PPR side of its uav_simulator, which
+                                 nothing in this repository uses
+  README.md, PROVENANCE.txt      new, ours
+
+DELIBERATELY NOT FIXED
+----------------------
+PositionCommand.msg:15 defines `TRAJECTROY_STATUS_ABORT = 4` ("TRAJECTROY").  Upstream's typo is kept
+because the vendored package must generate the constant names ego's code compiles against.

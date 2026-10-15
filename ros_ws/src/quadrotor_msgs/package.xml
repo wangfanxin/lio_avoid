@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>quadrotor_msgs</name>
+  <version>0.0.0</version>
+  <description>
+    The frozen PLAN-box -> BRIDGE command interface, vendored: `PositionCommand` on `/plan/cmd`.
+    A msg-only copy of ego-planner-swarm's `quadrotor_msgs` (uav_simulator/Utils/quadrotor_msgs at
+    23a8d5a), pinned by SHA-256 in PROVENANCE.txt.  Read README.md: this package exists so that the
+    interface outlives any one planner, and it deliberately depends on nothing but the three standard
+    message packages.
+  </description>
+  <maintainer email="lio_avoid@example.com">lio_avoid</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rosidl_default_generators</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>std_msgs</depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

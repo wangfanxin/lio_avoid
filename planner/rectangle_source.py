@@ -40,6 +40,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from common import frames          # noqa: E402
+from planner import cmd_stream     # noqa: E402
 
 try:
     import yaml
@@ -131,6 +132,29 @@ def main() -> int:
                          "Without it this node publishes the path using the PREDICTED transform, and if "
                          "the FSM then converts L->F with a measured one, the commanded points are "
                          "offset by the difference between the two.")
+    # ---- THE COMMAND STREAM, THE PLAN BOX'S OUTPUT (refactor-bridge-plan.md section 3.3) -------------
+    # A SHADOW IN THIS ROUND: published beside the Path, subscribed by nobody, so the flown chain is
+    # unchanged (tools/test-cmd-stream.py proves that, it does not assert it).
+    ap.add_argument("--cmd-topic", default="/plan/cmd",
+                    help="the PLAN box's command stream, quadrotor_msgs/msg/PositionCommand.  Name and "
+                         "type are fixed by the target interface: it is what ego's own traj_server "
+                         "publishes (traj_server.cpp:244-250) and what the BRIDGE will consume.  NOTHING "
+                         "SUBSCRIBES to it yet -- it runs beside /planner/traj so the flown chain stays "
+                         "byte-for-byte what it was.")
+    ap.add_argument("--cmd-rate", type=float, default=100.0,
+                    help="the command stream's publishing rate, Hz.  ego's traj_server runs at 100 Hz "
+                         "(a 10 ms wall timer, traj_server.cpp:248-250); the WIRE rate stays 50 Hz, "
+                         "because message 84 at 50 Hz is the flown configuration and ARCHITECTURE.md "
+                         "251-258 explains why 50 is the firmware's own ceiling.  Publisher <= 100, "
+                         "consumed at 50: this switch is the publisher half only.")
+    ap.add_argument("--no-cmd-stream", action="store_true",
+                    help="publish ONLY the Path, exactly as before this switch existed.  The A/B the "
+                         "shadow claim is proved with: same seed, same calibration, byte-identical "
+                         "Path message sequence with and without the stream.")
+    ap.add_argument("--cmd-id", type=int, default=1,
+                    help="trajectory_id.  Its ID number starts from 1 (PositionCommand.msg:20), "
+                         "allowing a consumer to compare it with 0 -- which is how ego's own message "
+                         "documents 'no trajectory yet'.")
     args = ap.parse_args()
 
     corners, mission = load_square(args.world)
@@ -208,6 +232,22 @@ def main() -> int:
                      reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.TRANSIENT_LOCAL)
     pub = node.create_publisher(Path, args.topic, qos)
+    # THE COMMAND STREAM'S PUBLISHER.  Same QoS shape as the Path's: depth 1, TRANSIENT_LOCAL, so a
+    # consumer that joins late still finds the newest sample -- which is what the BRIDGE will do (it
+    # starts after the plan box in the F2 layout).  Its own rate, not the Path's: ego's timer is 10 ms.
+    cmd_pub = None
+    CmdMsg = None
+    if not args.no_cmd_stream:
+        try:
+            from quadrotor_msgs.msg import PositionCommand as CmdMsg
+            cmd_pub = node.create_publisher(CmdMsg, args.cmd_topic, qos)
+        except ImportError as exc:
+            # NOT a silent downgrade: the stream is the interface this refactor is moving to, so a
+            # missing message package has to be visible, and the Path keeps the mission alive meanwhile.
+            print("cmd stream DISABLED: cannot import quadrotor_msgs/msg/PositionCommand (%s)."
+                  "  Build the vendored package: see ros_ws/src/quadrotor_msgs/README.md" % exc,
+                  flush=True)
+            cmd_pub = None
 
     def make_path(pts):
         m = Path()
@@ -289,89 +329,86 @@ def main() -> int:
         return 0
 
     # ---- hold ON: one LEG per message, and the next leg is published only after an ARRIVAL -------------
+    #
+    # THE PACING MOVED INTO `planner/cmd_stream.py::TourPacer` AND NOTHING ELSE DID.  The decision -- when
+    # a leg's clock arms, when the vehicle has arrived, how long the dwell lasts, when the tour is over --
+    # is now ONE object, because the command stream has to read the same decision the Path is published
+    # from.  Two pacing rules is how the producer's gate and the consumer's gate came to be two different
+    # numbers in the first place (refactor-bridge-plan.md section 2(b) item 2).  The LOG LINES this class
+    # emits are unchanged, character for character, because those lines are the record of which leg armed
+    # when and a flight's log is evidence.
     n_leg = len(msgs)
-    i_leg, armed, t_armed, t_hold, done, t_done = 0, False, None, None, False, None
-    t_warn = time.monotonic()
-    tour_t0 = time.monotonic()
+    pacer = cmd_stream.TourPacer(corners, n_leg, hold_s, args.arrive_m, args.leg_start_m,
+                                 args.leg_timeout_s, time.monotonic(),
+                                 log=lambda s: print(s, flush=True), leg_len_w=leg_len_w,
+                                 odom_label=args.odom, empty_mark_s=args.empty_mark_s,
+                                 leg_speed=args.leg_speed)
+
+    # ---- THE COMMAND STREAM (the PLAN box's output; a SHADOW in this round) ---------------------------
+    #
+    # `stream.sample()` is a pure function of the PACER'S state, so the two outputs read one decision:
+    # the Path is `msgs[pacer.i_leg]`, and the command stream is the leg's end corner and the leg's yaw
+    # while flying, or the corner with velocity 0 while it dwells.  The rate is the stream's own
+    # (`CmdStream.due` / `.advance`), so the Path's 4 Hz republish and the stream's 100 Hz do not have to
+    # be the same number for the stream to be correctly clocked.
+    stream = None
+    if cmd_pub is not None:
+        stream = cmd_stream.CmdStream(pacer, args.cmd_rate, legs_l, trajectory_id=args.cmd_id,
+                                      log=lambda s: print(s, flush=True))
+        print("command stream: %s on %s at %.1f Hz, frame %s, %d legs -- the PLAN box's own output."
+              "  NOTHING SUBSCRIBES to it in this round: it runs BESIDE /planner/traj so the flown chain"
+              "  is byte-for-byte unchanged.  kx/kv are sent as ZERO (message 84 has no gain fields) and"
+              "  the dwell is content: position = the corner, velocity = 0."
+              % (CmdMsg.__name__, args.cmd_topic, args.cmd_rate, cmd_stream.FRAME_L, len(legs_l)),
+              flush=True)
+
+    def publish_cmd(now):
+        """One command sample, if the stream's own clock says it is due.  Silent when disabled."""
+        if stream is None:
+            return
+        if stream.next_t is None:
+            stream.next_t = now          # the FIRST sample is emitted at once; the clock starts there
+        if not stream.due(now):
+            return
+        s = stream.sample()
+        m = CmdMsg()
+        m.header.stamp = node.get_clock().now().to_msg()
+        m.header.frame_id = s.frame_id
+        m.position.x, m.position.y, m.position.z = (float(s.p[0]), float(s.p[1]), float(s.p[2]))
+        m.velocity.x, m.velocity.y, m.velocity.z = (float(s.v[0]), float(s.v[1]), float(s.v[2]))
+        m.acceleration.x, m.acceleration.y, m.acceleration.z = (float(s.a[0]), float(s.a[1]),
+                                                              float(s.a[2]))
+        m.yaw = s.yaw
+        m.yaw_dot = s.yaw_dot
+        m.kx = [float(v) for v in cmd_stream.KX]      # ZERO, and documented as ignored (see cmd_stream)
+        m.kv = [float(v) for v in cmd_stream.KV]
+        m.trajectory_id = s.trajectory_id
+        m.trajectory_flag = s.trajectory_flag
+        cmd_pub.publish(m)
+        stream.advance(now)
 
     while rclpy.ok():
         now = time.monotonic()
-        if done:
+        if pacer.done:
             # THE EMPTY PATH IS THE END OF THE TOUR, and it is published for --empty-mark-s so a consumer
             # that is still settling at the last corner cannot miss it.  After that the node stops
             # publishing and stays alive: the sample is LATched (TRANSIENT_LOCAL depth 1), so a consumer
             # that joins later still finds it, and the sortie's launcher owns this process.
-            if now - t_done < args.empty_mark_s:
+            #
+            # THE COMMAND STREAM'S VERSION OF THE SAME STATEMENT IS A FIELD, not an empty message:
+            # trajectory_flag = TRAJECTORY_STATUS_COMPLETED, published for the same --empty-mark-s.
+            if now - pacer.t_done < args.empty_mark_s:
                 publish(empty_msg)
             else:
                 rclpy.spin_once(node, timeout_sec=period)
+            publish_cmd(now)
             time.sleep(period)
             continue
-        start_w = corners[i_leg][:2]
-        end_w = corners[(i_leg + 1) % len(corners)][:2]
-        p_w = here_w()
-        if t_hold is None:
-            if not armed:
-                # THE LEG'S CLOCK ARMS WHEN THE VEHICLE IS AT THE LEG'S START.  It has to: leg 1's path
-                # begins at corner 1, which is 0.64 m from the pad, and the aircraft spends ~25 s of
-                # preflight, takeoff and hold before it flies there.  A clock armed at publish time
-                # would report a timeout on a mission that is going perfectly.
-                d_start = float("inf") if p_w is None else float(np.linalg.norm(p_w[:2] - start_w))
-                if d_start <= args.leg_start_m:
-                    armed, t_armed = True, now
-                    print("LEG %d (corner %d -> %d, %.3f m): the vehicle is %.3f m from the leg's start "
-                          "-- flight clock ARMED (arrival gate %.3f m, timeout %.1f s, predicted %.1f s "
-                          "at %.2f m/s)"
-                          % (i_leg, i_leg, (i_leg + 1) % len(corners), leg_len_w(i_leg), d_start,
-                             args.arrive_m, args.leg_timeout_s, leg_len_w(i_leg) / args.leg_speed,
-                             args.leg_speed), flush=True)
-                elif now - t_warn > 15.0:
-                    t_warn = now
-                    print("LEG %d has not started: the vehicle is %s from the leg's start corner %d "
-                          "(needs <= %.2f m); %d pose samples on %s%s"
-                          % (i_leg, "not known" if p_w is None else "%.3f m" % d_start, i_leg,
-                             args.leg_start_m, odom["n"], args.odom,
-                             "" if odom["n"] else "  <-- NOTHING ON THAT TOPIC: the arrival cannot be "
-                                                  "measured, and the FSM's own 25 s corner gate is what "
-                                                  "will end this"), flush=True)
-            else:
-                d = float("inf") if p_w is None else float(np.linalg.norm(p_w[:2] - end_w))
-                if d <= args.arrive_m:
-                    t_hold = now
-                    print("ARRIVED at corner %d: the vehicle is %.3f m from it (gate %.3f m) after "
-                          "%.1f s of flight; holding %.1f s, then the next leg is published"
-                          % ((i_leg + 1) % len(corners), d, args.arrive_m, now - t_armed, hold_s),
-                          flush=True)
-                elif now - t_armed > args.leg_timeout_s:
-                    print("LEG %d TIMEOUT: THE VEHICLE NEVER ARRIVED -- it is %s from the commanded "
-                          "corner %d after %.1f s of flight (gate %.3f m), %d pose samples on %s, the "
-                          "newest %.1f s old.  Advancing to the next leg so a missed arrival cannot "
-                          "hang the mission; the FSM's own corner gate will abort if it disagrees."
-                          % (i_leg, "not known" if p_w is None else "%.3f m" % d,
-                             (i_leg + 1) % len(corners), now - t_armed, args.arrive_m, odom["n"],
-                             args.odom, now - odom["wall"]), flush=True)
-                    if i_leg >= n_leg - 1:
-                        done, t_done = True, now
-                    else:
-                        i_leg += 1
-                        armed, t_armed, t_hold = False, None, None
-        elif now - t_hold >= hold_s:
-            # THE DWELL IS OVER.  It ran with the SAME leg still published, i.e. with the consumer's last
-            # corner unchanged: publishing the next leg earlier would end the dwell, because the consumer
-            # advances as soon as a new corner is in hand.
-            if i_leg >= n_leg - 1:
-                done, t_done = True, now
-                print("TOUR COMPLETE: leg %d held corner %d for %.1f s (total %.1f s of tour).  Publishing "
-                      "an EMPTY path for %.1f s -- the consumer ends the tour on that statement, not on a "
-                      "timeout."
-                      % (i_leg, (i_leg + 1) % len(corners), now - t_hold, now - tour_t0,
-                         args.empty_mark_s), flush=True)
-            else:
-                i_leg += 1
-                armed, t_armed, t_hold = False, None, None
-                print("LEG %d (corner %d -> %d, %.3f m) published after the %.1f s hold"
-                      % (i_leg, i_leg, (i_leg + 1) % len(corners), leg_len_w(i_leg), hold_s), flush=True)
-        publish(msgs[i_leg])
+        pacer.odom_n = odom["n"]
+        pacer.odom_wall = odom["wall"]
+        pacer.step(here_w(), now)
+        publish_cmd(now)
+        publish(msgs[pacer.i_leg])
         time.sleep(period)
     return 0
 

@@ -1,0 +1,5 @@
+# The vendored `quadrotor_msgs` interface is pinned BYTE-FOR-BYTE from ego-planner-swarm, and `msg/` is
+# kept as it is.  This matters here and not only in principle: a Windows-side editor rewrote the first
+# attempt at PositionCommand.msg from CRLF to LF and dropped a trailing space, so the "same" message
+# became a different file that still compiled.  Normalisation is therefore off for the interfaces only.
+*.msg -text
