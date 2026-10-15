@@ -146,6 +146,12 @@ class MavlinkBridge(Bridge):
             elif t == "SYS_STATUS":
                 self._state.battery_v = m.voltage_battery / 1000.0
             elif t == "STATUSTEXT":
+                # GOAL-TRACE/2 A FAILSAFE MUST LEAVE A TRACE WHEN IT HAPPENS.  DIAG29's whole cause
+                # (EKF Failsafe | EKF variance) survived as ONE teardown line at supervisor.py:676,
+                # and a grep of mine truncated even that (STATUS rows 119-120).  Knowledge-free on
+                # purpose: print the branch's own scope, so the text is captured whatever it is called.
+                print('FCU-TEXT %.2f %s' % (time.time(),
+                      {k: v for k, v in locals().items() if k not in ('self', 't')}), flush=True)
                 text = m.text if isinstance(m.text, str) else m.text.decode("utf-8", "replace")
                 self._state.messages.append((time.monotonic(), text))
                 self._state.messages = self._state.messages[-50:]

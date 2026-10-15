@@ -482,3 +482,18 @@ has now been applied four times on this one small task, and every application ei
 (round 58: not `supervisor.py`; 59: not `bridge_node.py`; 60: `MavlinkBridge` at supervisor.py:606) or refused
 cleanly with the tree untouched.  The trace's purpose is unchanged: DIAG29's cause was ONE line, printed only at
 teardown, and truncated by the very grep meant to read it.
+
+=== ITEM 1 DONE (round 62): THE TRACE EXISTS WHERE THE FCU'S TEXT ARRIVES =============================
+`src/bridge/mavlink_impl.py`, inside the `elif t == "STATUSTEXT":` branch of the supervisor's own MAVLink client
+(`class MavlinkBridge(Bridge)`, :60): one line, timestamped, printing the branch's own local scope so it captures
+the text whatever the variable is called.  It exists because of what item 1 was for: DIAG29's entire cause --
+`EKF Failsafe | EKF Failsafe Cleared | EKF variance | EKF Failsafe` -- survived as ONE teardown line at
+`supervisor.py:676`, and the grep meant to read it had truncated the line at 150 characters.  A failsafe that is
+only reported when the run ends cannot be correlated with anything that happened before it.
+
+The route here took four refusals and four corrections, each from asking the artefact rather than trusting the
+reasoning that pointed at it: `supervisor.py` has no STATUSTEXT site (round 58); `src/bridge/bridge_node.py` has
+no occurrence of "text" at all (round 59); `self.bridge = MavlinkBridge(...)` at `supervisor.py:606` named the
+class but not its file (round 60); and `class MavlinkBridge` lives in `mavlink_impl.py:60` with its dispatch
+branch at `:148` (round 61).  The line is a DIAGNOSTIC, not production code: the next round can name the field
+once it has seen what it prints.
