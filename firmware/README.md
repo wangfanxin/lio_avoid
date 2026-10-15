@@ -1,12 +1,12 @@
 # The SITL firmware this project flew
 
 ArduPilot **Copter SITL** built from upstream commit `dbe7921` with **one** local change: the truth tap
-(`patches/apm-0001-sitl-truth-tap.patch`).  Nothing else in the flight code is ours.
+(`src/patches/apm-0001-sitl-truth-tap.patch`).  Nothing else in the flight code is ours.
 
 | what | value |
 |---|---|
 | upstream | ArduPilot `dbe792162d06cab66c3475fd5556bf7a120f119e` (`dbe7921`, "Plane: version to 4.7.1") |
-| our change | `libraries/SITL/SIM_Aircraft.cpp`, +75 lines, as `patches/apm-0001-sitl-truth-tap.patch` |
+| our change | `libraries/SITL/SIM_Aircraft.cpp`, +75 lines, as `src/patches/apm-0001-sitl-truth-tap.patch` |
 | patch md5 | `b09ad7ea5ee23c57b13caae1cf22eb55` |
 | patch sha256 | `defec3e8f8da3efab03c576ffabba75274a75b8e859970de286496d6214ef09d` |
 | binary | `firmware/arducopter-sitl-dbe7921-tap` |
@@ -29,7 +29,7 @@ to spend the build time to *use* it.
 git clone https://github.com/ArduPilot/ardupilot.git
 cd ardupilot && git checkout dbe792162d06cab66c3475fd5556bf7a120f119e
 git submodule update --init --recursive
-/path/to/this/repo/tools/apm-apply-patch.sh .     # applies patches/, --check first
+/path/to/this/repo/tools/apm-apply-patch.sh .     # applies src/patches/, --check first
 ./waf configure --board sitl
 ./waf copter                                      # -> build/sitl/bin/arducopter
 ```
@@ -46,10 +46,10 @@ like upstream (one `getenv` at first use).  With it set, every physics step emit
 
     TAP <inst> <t_us> p_ned v_ned q(w,x,y,z body->NED) gyro FRD accel FRD
 
-which `sim/truth_rx.py` receives (1200 Hz measured) and fan-outs to the sensor simulator.  `tools/run-mission.sh`
+which `src/sim/truth_rx.py` receives (1200 Hz measured) and fan-outs to the sensor simulator.  `src/tools/run-mission.sh`
 starts it exactly as above, with `--serial0` for the BRIDGE and `--serial1` for the SUPERVISOR.
 
 ## Licence
 
 ArduPilot is GPLv3.  The corresponding source for this binary is the upstream commit above plus the patch in
-`patches/` (both public), which is what GPLv3 requires; this file is the written statement of that.
+`src/patches/` (both public), which is what GPLv3 requires; this file is the written statement of that.

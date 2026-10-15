@@ -6,7 +6,7 @@ the tests that pin them.  `ARCHITECTURE.md` says how the pieces fit, `STATUS.md`
 **The chain this file governs, in one line:**
 
 ```
-W  --[common/frames.py + the run's Calib]-->  L  --[the FSM's L->F]-->  F  --[the bridge]-->  NED/FRD on the wire
+W  --[src/common/frames.py + the run's Calib]-->  L  --[the FSM's L->F]-->  F  --[the bridge]-->  NED/FRD on the wire
 world ENU, origin = pad          LIO world, z up          FCU local (NED labels)      what ArduPilot reads
 ```
 
@@ -17,10 +17,10 @@ convention, one constant.
 
 | # | conversion | where it happens | pinned by |
 |---|---|---|---|
-| 1 | **W -> L** (the mission's geometry) and **L -> W** (what comes back) | W->L: `planner/rectangle_source.py` at publish time, with `--calib-file`; the same constant in `tools/world-info.py`/`tools/metrics.py` when a recording is read back.  L->W: the same file for the corner hold's arrival gate (`--odom`, 2026-10-15), `tools/record-traj.py` before it computes `clr_m`, and `tools/plan-vs-truth.py` / `tools/plot-run.py` when a recording's per-point `frame` column says L | the round trip printed in `traj.log` (worst 0.000000 mm); `tools/traj-clearance-audit.py` (a fresh recording: recorded column == independent recomputation to 0.000000 m; RECT6's old one: -0.2972 -> +0.6000 m); `docs/metrics/stepB-rectangle-20261013.txt` |
+| 1 | **W -> L** (the mission's geometry) and **L -> W** (what comes back) | W->L: `src/planner/rectangle_source.py` at publish time, with `--calib-file`; the same constant in `src/tools/world-info.py`/`src/tools/metrics.py` when a recording is read back.  L->W: the same file for the corner hold's arrival gate (`--odom`, 2026-10-15), `src/tools/record-traj.py` before it computes `clr_m`, and `src/tools/plan-vs-truth.py` / `src/tools/plot-run.py` when a recording's per-point `frame` column says L | the round trip printed in `traj.log` (worst 0.000000 mm); `src/tools/traj-clearance-audit.py` (a fresh recording: recorded column == independent recomputation to 0.000000 m; RECT6's old one: -0.2972 -> +0.6000 m); `docs/metrics/stepB-rectangle-20261013.txt` |
 | 2 | **L -> F** (the LIO's pose, and the path the FSM flies) | `fsm/mission_fsm.py`: `stream_external_nav()` for the FCU feed, `legs()` for the path.  The steady-state loop runs entirely in F | A1/A2 (LIO vs truth), A4 (FCU vs truth), and the measured `Calib.t_WL` |
-| 3 | **F -> NED / FLU -> FRD** (the wire) | `bridge/mavlink_impl.py` via `common/frames.py`; with `BRIDGE=mavros`, **mavros does it** and the implementation must NOT also flip | the S7 link test and, in flight, the FCU's own `XKF1` vs the truth (A4) |
-| 4 | **B <-> S** (the 45 deg mount) | `common/frames.py::R_body_sensor()`, applied by `sim/lidar_imu.py` to the ray directions and declared to the LIO as `lio.extrinsic.odom_robo` | the S4 surface split and the pillar fit (`tools/sim-pillar-gate.sh`), and T3's 45.000 deg |
+| 3 | **F -> NED / FLU -> FRD** (the wire) | `src/bridge/mavlink_impl.py` via `src/common/frames.py`; with `BRIDGE=mavros`, **mavros does it** and the implementation must NOT also flip | the S7 link test and, in flight, the FCU's own `XKF1` vs the truth (A4) |
+| 4 | **B <-> S** (the 45 deg mount) | `src/common/frames.py::R_body_sensor()`, applied by `src/sim/lidar_imu.py` to the ray directions and declared to the LIO as `lio.extrinsic.odom_robo` | the S4 surface split and the pillar fit (`src/tools/sim-pillar-gate.sh`), and T3's 45.000 deg |
 
 ## 0. HOW MANY FRAMES (the honest answer)
 
@@ -131,7 +131,7 @@ rotates.  **But it can be demoted:**
 | **W** | the mission file, the trajectory source at publish time, RViz | the world geometry lives here |
 | **L** | LIO output, `/planner/traj`, the FSM loop, the metrics | the map and the state live here |
 | **B** | `/odom`, `base_link`, the external-nav message | one rigid offset from S, one 180 deg roll from the FCU's body |
-| **S** | only `sim/lidar_imu` (publishes here) and the LIO (consumes here) | an implementation detail of the sensor + LIO pair |
+| **S** | only `src/sim/lidar_imu` (publishes here) and the LIO (consumes here) | an implementation detail of the sensor + LIO pair |
 
 So the chain reads: **sim generates in S -> the LIO consumes S and publishes B (in L) -> the mission speaks
 W once, at publish time, and F everywhere else.**  Only two files in the project ever name S, and one
@@ -158,7 +158,7 @@ pitch must be ~0, never ~45 deg**, and the two are measured side by side (`body 
 
 ## 2. What is already MEASURED (do not re-litigate)
 
-* **F5's azimuth convention.** `sim/raycast.py` uses `point.x = radial_xy * cos(h)`,
+* **F5's azimuth convention.** `src/sim/raycast.py` uses `point.x = radial_xy * cos(h)`,
   `point.y = radial_xy * sin(h)` -- azimuth measured from +x toward +y, counter-clockwise seen from above --
   and the real `scan_mode/mid360.csv` agrees with it (MEASURED here: reading that column as elevation puts
   the fan in the wrong half of the sky; the file's own numbers are elevation -7.16..+52.16 deg after
@@ -198,7 +198,7 @@ pitch must be ~0, never ~45 deg**, and the two are measured side by side (`body 
   carries no frame field; `ODOMETRY` does, and demands FRD labels for NED numbers.  Signs must be pinned by
   a *move test*, not by re-derivation.
 * **T4 — the truth tap declares its frame.** It does: `TAP <inst> <t_us> p_ned v_ned q(w,x,y,z body->NED)
-  gyro FRD accel FRD`, SITL-native, and every conversion on our side is in `common/frames.py`.
+  gyro FRD accel FRD`, SITL-native, and every conversion on our side is in `src/common/frames.py`.
 * **T5 — RViz needs a TF tree, not a convention.** The cloud is in S, the odometry is in L, the pillars are
   in W; RViz needs the S->L edge (from the odometry) and the static W->L edge (from `Calib`).
 * **T6 — a frame error can survive a small number.** A1/A2 (LIO vs truth) are computed with a fitted
@@ -214,7 +214,7 @@ pitch must be ~0, never ~45 deg**, and the two are measured side by side (`body 
   `traj.csv.cmd.csv` (every `/plan/cmd` message, in L) and `wire.csv` (every class-84 sample, L input, W
   output, NED z, mask); `phase.csv` is the supervisor's own timeline, not a command stream.
 * **T8 — the intended-versus-commanded tool refuses to print a metre-scale number when the convention
-  shifts.**  `tools/command-vs-intended.py` compares what the plan asked for with what the world file
+  shifts.**  `src/tools/command-vs-intended.py` compares what the plan asked for with what the world file
   commands, corner by corner, and it DETECTS the phase-row convention above: with a climb leg in the tour,
   the phase rows' `cmd_*` shift by one leg, and the naive comparison reports a metre-scale "error" that is
   a row-index mismatch rather than a frame error.  It refuses that reading and says so, because the two
@@ -237,12 +237,12 @@ it at all.  Three classes are needed, because each pins something the others are
 | # | test | class | uniquely pins | status 2026-10-15 |
 |---|---|---|---|---|
 | T1 | +East, +North, +Up moves, 0.5 m each, heading fixed | translation | the 6 position signs; axis swaps | **covered in flight**: the square is flown in four directions and B3 arrives at each commanded corner within 100 mm (4 of 4 on the accepted sorties) |
-| T2 | parked at 3 spawn headings: 0, +90, -90 deg | rotation | FRD<->FLU 180 deg roll, quaternion direction, yaw sign, and that the LIO's yaw *tracks* | **DONE**: `tools/run-convention-tests.sh`, heading error **0.000 deg** at 0/90/270, body level in W (roll/pitch 0.000 deg); the live mutation (`flip-enu`) fails with 90.000 deg / roll +180.000 deg |
+| T2 | parked at 3 spawn headings: 0, +90, -90 deg | rotation | FRD<->FLU 180 deg roll, quaternion direction, yaw sign, and that the LIO's yaw *tracks* | **DONE**: `src/tools/run-convention-tests.sh`, heading error **0.000 deg** at 0/90/270, body level in W (roll/pitch 0.000 deg); the live mutation (`flip-enu`) fails with 90.000 deg / roll +180.000 deg |
 | T3 | parked, tilted | rotation | the mount's sign and angle; gravity direction in the sensor frame | **DONE, parked half**: specific force in S = **45.000 deg** from the housing's +z, body pitch 0.000 deg.  The tilted half (a commanded attitude) is not flown; the mount is gated instead by the S4 surface split |
 | T3b | parked, level: read the FCU's reported pitch | rotation | **that we feed the FCU the BODY attitude, not the SENSOR's** | **DONE in flight**: A4 18.6-21.1 mm horizontal against the truth over 10 flights; a 45 deg attitude error would be metres |
 | T4 | crab move: heading 0 deg, translate +North | decoupled | velocity frame (`ODOMETRY`'s body-FRD velocity vs a NED velocity) | **covered in flight**: A1/A4 with `EK3_SRC1_VELXY = 6` -- the EKF's velocity source is our stream, and a wrong channel or sign runs away in seconds |
 | T5 | same translation at two headings | rotation + translation | the lever arm t = (0.05, 0, 0.10) | **deferred**; the mount angle itself is gated by the S4 surface split, and the lever arm appears in `Calib.t_WL` (measured `[-0.0008, -0.0041, +0.1156]` m, i.e. the ~0.12 m origin offset) |
-| T6 | in flight: reconstructed pillar bearings from the LIO's map vs the world file | shape | the mount angle *as the LIO sees it* | **half done**: `tools/sim-pillar-gate.sh` fits the pillars from the simulated sensor against the world file (p95 surface residual 0.0000 m, 37 of 37 pillars within 30 mm); the LIO's own map is not fitted back |
+| T6 | in flight: reconstructed pillar bearings from the LIO's map vs the world file | shape | the mount angle *as the LIO sees it* | **half done**: `src/tools/sim-pillar-gate.sh` fits the pillars from the simulated sensor against the world file (p95 surface residual 0.0000 m, 37 of 37 pillars within 30 mm); the LIO's own map is not fitted back |
 
 **Every test must also be run with an intentionally wrong conversion, and must fail.**  A test that passes
 with the sign flipped has no power.  The mutation cases are written next to each test when it is built, and
@@ -266,7 +266,7 @@ crosses frames at all.**
 
 ### 5.1 The rule
 
-* `common/frames.py` is the **only** file in the project that contains a frame conversion.  Pure
+* `src/common/frames.py` is the **only** file in the project that contains a frame conversion.  Pure
   functions, no ROS, no MAVLink, unit-tested, and each one has a mutation case.
 * The **bridge implementations do no frame maths** -- with one honest exception: MAVROS performs the
   ENU->NED half itself inside its setpoint plugins, so `mavros_impl` hands MAVROS ENU-labelled numbers and
@@ -278,7 +278,7 @@ crosses frames at all.**
 ### 5.2 The places that call it
 
 ```
-common/frames.py
+src/common/frames.py
   w_to_l(p_w, calib)  /  l_to_w(p_l, calib)          # rotation + translation, the run's measured Calib
   l_to_f(p_l, calib)  /  f_to_l(p_f, calib)          # the FSM's steady-state conversion
   enu_ned(p)          /  ned_enu(p)                  # label flip only: (x, y, -z)
@@ -286,11 +286,11 @@ common/frames.py
   R_body_sensor()                                    # the 45 deg mount
   class Calib: R_WL, t_WL, yaw_deg(), summary()
       Calib.predicted(spawn_heading_deg=0.0, world_axes="body")   # <- the construction
-      <measured every flight by tools/lio-vs-truth.py --write-calib>
+      <measured every flight by src/tools/lio-vs-truth.py --write-calib>
 ```
 
-1. **The trajectory source, at publish time** (`planner/rectangle_source.py`): the world file's square is
-   read through `tools/world-info.py` and converted `W -> L` with the **same** `--calib-file` the FSM uses,
+1. **The trajectory source, at publish time** (`src/planner/rectangle_source.py`): the world file's square is
+   read through `src/tools/world-info.py` and converted `W -> L` with the **same** `--calib-file` the FSM uses,
    and the `W -> L -> W` round trip is printed into `traj.log` (measured worst **0.000000 mm**), so a frame
    error is visible before take-off.
 2. **The FSM at flight time** (`fsm/mission_fsm.py`): the published path arrives in L and is converted
@@ -316,7 +316,7 @@ common/frames.py
    | bridge | who converts ENU->NED / FLU->FRD | evidence |
    |---|---|---|
    | MAVROS | **mavros does it** -- `vision_pose_estimate.cpp:133-139` calls `transform_frame_enu_ned(position)`, `transform_orientation_baselink_aircraft(q)`; `odom.cpp:295-296` stamps `MAV_FRAME::LOCAL_FRD` / `MAV_FRAME::BODY_FRD` (which ArduPilot *requires*) | read from the mavros `ros2` branch, 2026-10-13 |
-   | our pymavlink | **we do it**, in `common/frames.py`, and the bridge transports the result | by construction; this is the flown path |
+   | our pymavlink | **we do it**, in `src/common/frames.py`, and the bridge transports the result | by construction; this is the flown path |
 
    Sending already-converted numbers to MAVROS (or converting again after it) flips z and cancels the roll
    -- a silent 180-degree-class error.  Hence: one conversion, one owner.
@@ -325,17 +325,17 @@ common/frames.py
 
 **One rule, two appliers -- stated because the constant must be the same one.**  `frames.py` owns the
 conversions and the constants, but the affine step itself (`p_L = R_WL.T @ (p_W - t_WL)` and its inverse)
-is applied by `planner/rectangle_source.py` (the path) and by `fsm/mission_fsm.py` (L -> F), and read back
-by `tools/metrics.py` when a recording is judged.  MEASURED 2026-10-13 (`STATUS.md` row 44): when two of
+is applied by `src/planner/rectangle_source.py` (the path) and by `fsm/mission_fsm.py` (L -> F), and read back
+by `src/tools/metrics.py` when a recording is judged.  MEASURED 2026-10-13 (`STATUS.md` row 44): when two of
 them used *different* calibrations -- the PREDICTED one and the MEASURED one, 56.3 mm apart in `t` -- every
 commanded corner sat 51 mm South of the intended one and the aircraft flew faithfully to the wrong place.
-Both now take the same `--calib-file`, and `tools/run-mission.sh` treats a missing file as a hard error
+Both now take the same `--calib-file`, and `src/tools/run-mission.sh` treats a missing file as a hard error
 rather than falling back to the prediction.
 
 ### 5.3 The calibration, and its self-check
 
 `Calib` has three numbers (yaw, translation, origin) and is obtained **by measurement**, not by
-assumption: a calibration flight is flown on `--nav-source truth`, and `tools/lio-vs-truth.py` fits the
+assumption: a calibration flight is flown on `--nav-source truth`, and `src/tools/lio-vs-truth.py` fits the
 rigid transform between the LIO's recording and the truth's.  Then, separately, we **predict** the same
 transform from the construction argument of §0.3 and compare: measured `R_WL` yaw **+90.050 deg** against
 the predicted **+90.000 deg**, and a translation whose residual rms is printed.

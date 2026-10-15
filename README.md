@@ -16,12 +16,12 @@ and yaw all come from the LIO.
     the SAME world file the                        /lio/cloud_world  (registered scan)
     mission is scored in)                                 │
                                                           ▼
-   planner/rectangle_source.py  ── /plan/cmd ──►  bridge/bridge_node.py  ── MAVLink 84 @50 Hz, mask pos
+   src/planner/rectangle_source.py  ── /plan/cmd ──►  src/bridge/bridge_node.py  ── MAVLink 84 @50 Hz, mask pos
    (PLAN: waypoints, arrival gate,                       │                  MAVLink 331 @48 Hz (odometry)
     settle, dwell, leg timeout;                          │                  serial0 = tcp:5760
     one target at a time, velocity = 0)                  ▼
                                                     ArduPilot Copter SITL  ──► the aircraft
-   supervisor/supervisor.py ── class 76 only ────────────▲                    (truth tap on UDP, 1200 Hz)
+   src/supervisor/supervisor.py ── class 76 only ────────────▲                    (truth tap on UDP, 1200 Hz)
    (arm, take-off, the go, geofence on TRUTH,        serial1 = tcp:5761
     nav floor, plan-silence abort, LAND)
 ```
@@ -41,7 +41,7 @@ and yaw all come from the LIO.
 
 ```bash
 git switch --detach mission-a-rect46     # the frozen Mission A release (promoted-EKF configuration)
-python3 tools/frozen-check.py            # 53 of 53 frozen artifacts unchanged
+python3 src/tools/frozen-check.py            # 53 of 53 frozen artifacts unchanged
 git switch main
 ```
 
@@ -61,7 +61,7 @@ on purpose — the reproducible unit is the pin plus the patch, both in this rep
 
 | piece | where | pinned as |
 |---|---|---|
-| ArduPilot checkout | `<runtime>/src/ardupilot` | `dbe7921` + `patches/apm-0001-sitl-truth-tap.patch` |
+| ArduPilot checkout | `<runtime>/src/ardupilot` | `dbe7921` + `src/patches/apm-0001-sitl-truth-tap.patch` |
 | Super-LIO | `<runtime>/src/Super-LIO` (+ its `lio_ws` build) | `f89f48d`, `liblio.so` md5 `e4b82a73cbfb70a7a538514f74936b09` |
 | LIO → world calibration | `_stage/calib.json` | md5 `399390f7b08905bd3cf1be5164505fb4` (yaw +90.049771°, t = [-0.00080 -0.00409 +0.11557] m) |
 | flight recordings | `<runtime>/logs/missionA-<tag>/` | one directory per sortie: `tap.csv`, `lio.csv`, `setpoints.csv`, `wire.csv`, `traj.csv.cmd.csv`, `flight.BIN`, the process logs and `metrics.txt` |
@@ -73,14 +73,14 @@ ALT_MODE=lio NAV_SOURCE=lio WORLD="$PWD/worlds/pillars.yaml" \
 MISSION_PARM="$PWD/params/phase_a_mission_fast.parm" \
 EKF_PARM="$PWD/params/ekf_trust_lio_measured.parm" \
 GEOFENCE_M=6.60 TAKEOFF_COMMAND_M=0.2 VERTICAL_FIRST=1 VERTICAL_HOLD_S=3.0 \
-    bash tools/run-mission.sh <TAG>
+    bash src/tools/run-mission.sh <TAG>
 ```
 
 One flight at a time: the launcher refuses to start while the stack is alive. `SHAPING_M=0.30` turns on the
 approach-shaping experiment (off by default); `EXTRA_PARM=<file.parm>` appends one parameter file last in
 `--defaults` for a one-variable experiment without touching a frozen file. Offline checks that need no
-simulator: `tools/frozen-check.py`, `tools/docs-budget.py`, `tools/test-cmd-stream.py`,
-`tools/test-stall-gate.py`, `tools/test-supervisor-authority.py`.
+simulator: `src/tools/frozen-check.py`, `src/tools/docs-budget.py`, `src/tools/test-cmd-stream.py`,
+`src/tools/test-stall-gate.py`, `src/tools/test-supervisor-authority.py`.
 
 ## The result, honestly
 

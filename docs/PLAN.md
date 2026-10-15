@@ -4,7 +4,7 @@ Living document 1 of 4 (budget in §7).  `ARCHITECTURE.md` says how the pieces f
 frame everything is in, `STATUS.md` says where we are.
 
 **THE PROJECT HAS ONE MISSION.**  On 2026-10-15 the owner dropped the ego-planner line (mission B).  Mission
-A — the rectangle, flown by `planner/rectangle_source.py` + `fsm/mission_fsm.py`, with **no planner
+A — the rectangle, flown by `src/planner/rectangle_source.py` + `fsm/mission_fsm.py`, with **no planner
 process in the loop** — is the working pipeline, and it is what every number in these documents is about.
 What mission B taught us is kept in `STATUS.md`, in one section at the end.
 
@@ -17,7 +17,7 @@ seen by the FCU, *and* the aircraft never comes inside the footprint contract of
 Every result reports **how many of how many** flights completed and diverged.
 
 The owner's later requirement, which Mission A now carries as well: **hover at every corner**
-(`RECT_HOLD_S=5`).  **DEMONSTRATED 2026-10-15** on `logs/missionA-RECT7-hold5`: `tools/dwell-audit.py`
+(`RECT_HOLD_S=5`).  **DEMONSTRATED 2026-10-15** on `logs/missionA-RECT7-hold5`: `src/tools/dwell-audit.py`
 prints **4 of 4 corners hovered >= 5.0 s**, and 4 of 4 again with the stricter airborne-only measurement
 (`STATUS.md` row 43).  **RE-DEMONSTRATED 2026-10-16 on the refactored architecture** (`STATUS.md` row 52),
 where the dwell is no longer a convention between two processes but content of ONE command stream: the PLAN
@@ -40,15 +40,15 @@ box commands `position = the corner, velocity = 0` for `--hold-s`, after the veh
 | 10 | **GPU ray casting parked**, CPU only | the GPU port failed its own correctness check (2.98 m disagreement); CPU does 20 000 rays in 9.8 ms |
 | 11 | **Rectangle first** (`/plan/cmd`, `quadrotor_msgs/PositionCommand`, frame L, §4.1) | user's call: prove the whole chain on the square before adding a planner.  **Closed 2026-10-15**: a planner was built behind that interface and flown, then DROPPED by the owner; the interface itself is what made the drop a deletion instead of a rewrite (not one line of the FSM changed).  **AMENDED 2026-10-16 (F1)**: the interface became the COMMAND STREAM the design had specified (`_stage/refactor-bridge-plan.md` §3.3) -- a `nav_msgs/Path` says where to go but not what to command, so it needs an executor on the other side, and that executor is the box a whole-replacement swaps out.  The Path and the FSM's corner walk are DELETED (`STATUS.md` row 52) |
 | 12 | **Setpoints and telemetry at 50 Hz** (`SR1_POSITION = 50`, `SR1_EXTRA1 = 50`; vision 50 Hz) | 50 Hz is the firmware's own declared ceiling for the stream-rate parameters, and the bridge verifies the achieved rates with its own counters (`ARCHITECTURE.md` §6) |
-| 13 | **The truth tap speaks SITL-native NED/FRD** | user's call on my recommendation (2026-10-13): the wire format is the simulator's own, and every conversion then lives in one place (`common/frames.py`) |
+| 13 | **The truth tap speaks SITL-native NED/FRD** | user's call on my recommendation (2026-10-13): the wire format is the simulator's own, and every conversion then lives in one place (`src/common/frames.py`) |
 | 14 | **The vehicle spawns facing North** | user's call (2026-10-13), `FRAMES.md` §2: the FCU local NED is the textbook `(N, E, -U)` permutation with no yaw anywhere, and L = W rotated -90 deg.  The spawn condition is **asserted from the truth tap before every take-off**, never assumed |
 | 15 | **Mission A flies with `EK3_SRC1_POSZ = 1` / `VELZ = 0` first; the LIO's z follows immediately after** | user's call (2026-10-13): "先 a 后 b，最后一定得是 b 通过的".  **Both are now flown**: `params/phase_a_posz_baro.parm` is step (a), `params/phase_a_posz_lio.parm` — `POSZ = VELZ = POSXY = YAW = 6` — is step (b), and every flight in `docs/metrics/stepB-rectangle-20261013.txt` is step (b) |
-| 16 | **The frozen mission-A set** (49 files, `frozen/mission_a.manifest`) | user's instruction *"mission A之前的任务和rviz的地图都保存好，冻结，不搞了"*.  The five worlds it was flown in, its parameter sets, `rviz/mission_a.rviz`, its figures and the metric dumps that carry its numbers are byte-frozen; `tools/frozen-check.py` recomputes every SHA-256 and must print `49 of 49 files unchanged` before every commit |
-| 17 | **The clearance contract is 0.20 m** | user's decision 2026-10-14 (*"我希望这个值是0.2m"*), down from 0.35 m.  Measured by `tools/metrics.py` C2 on the tap's truth, against the world file's analytic cylinders |
+| 16 | **The frozen mission-A set** (49 files, `frozen/mission_a.manifest`) | user's instruction *"mission A之前的任务和rviz的地图都保存好，冻结，不搞了"*.  The five worlds it was flown in, its parameter sets, `rviz/mission_a.rviz`, its figures and the metric dumps that carry its numbers are byte-frozen; `src/tools/frozen-check.py` recomputes every SHA-256 and must print `49 of 49 files unchanged` before every commit |
+| 17 | **The clearance contract is 0.20 m** | user's decision 2026-10-14 (*"我希望这个值是0.2m"*), down from 0.35 m.  Measured by `src/tools/metrics.py` C2 on the tap's truth, against the world file's analytic cylinders |
 
 ## 3. Acceptance numbers
 
-All measured by `tools/metrics.py` from one run's recordings (`tap.csv`, `lio.csv`, `phase.csv`, the FCU's
+All measured by `src/tools/metrics.py` from one run's recordings (`tap.csv`, `lio.csv`, `phase.csv`, the FCU's
 BIN), offline and after the flight.  Every line prints its denominator.
 
 | line | target | how measured |
@@ -63,7 +63,7 @@ BIN), offline and after the flight.  Every line prints its denominator.
 | B4 landing | LAND + disarm, no failsafe | the phase log + the BIN's modes and statustext |
 | C1 final point | reported, not gated | distance from the last commanded point when the mission ends |
 | **C2 obstacle clearance** | **0 samples inside the 0.20 m footprint** | every truth sample above 0.30 m against the world file's 46 cylinders |
-| rates | launched / took off / completed / diverged, for every line | `tools/run-mission-batch.sh` + `tools/batch-summary.py` |
+| rates | launched / took off / completed / diverged, for every line | `src/tools/run-mission-batch.sh` + `src/tools/batch-summary.py` |
 
 Prior evidence that these are achievable: with GPS as the source the accepted configuration flew 10 of 11
 flights to completion, 0 diverged, A1 4.4-5.9 mm, A2 31-37 mm (a 2.5 deg frame tilt; 1.7-2.2 mm once one
@@ -75,17 +75,17 @@ step (b): **A1 10 of 10 (4.650-4.900 mm), A2 10 of 10 (4.560-4.890), A3 10 of 10
 ## 4. The pipeline
 
 ```
-worlds/pillars.yaml ──► sim/lidar_imu.py ──► /livox/lidar + /livox/imu ──► Super-LIO
+worlds/pillars.yaml ──► src/sim/lidar_imu.py ──► /livox/lidar + /livox/imu ──► Super-LIO
       (one geometry                            (10 Hz, 20 000 pts)         (200 Hz, L)
-       source: tools/                                │                         │
+       source: src/tools/                                │                         │
        world-info.py)                                │                         ▼
                                                      │              /lio/robo/odom (pose, 200 Hz, L)
                                                      │              /lio/odom      (velocity, 10 Hz, L)
                                                      │                         │
-   SITL ── truth tap ──► sim/truth_rx.py ──► /sim/truth/odom (W)               │
+   SITL ── truth tap ──► src/sim/truth_rx.py ──► /sim/truth/odom (W)               │
     ▲        (1200 Hz, NED/FRD)                  │                             │
     │                                            │                             ▼
-    │                                     (geofence gate only)   planner/rectangle_source.py
+    │                                     (geofence gate only)   src/planner/rectangle_source.py
     │                                                              THE PLAN **AND ITS EXECUTION**:
     │                                                              the square's five waypoints in L,
     │                                                              its OWN arrival gate + settle +
@@ -93,10 +93,10 @@ worlds/pillars.yaml ──► sim/lidar_imu.py ──► /livox/lidar + /livox/i
     │                                                                           │
     │                                                              /plan/cmd (L, 100 Hz, its own timer)
     │                                                                           │
-    │                                                              bridge/bridge_node.py (relay, 50 Hz)
+    │                                                              src/bridge/bridge_node.py (relay, 50 Hz)
     │                                                                           │
     └──── MAVLink 84 / 76 / 102 / 331 ◄──────────── fsm/mission_fsm.py ─────────┘
-                     bridge/mavlink_impl.py          (preflight, takeoff, hold, the `leg` phases
+                     src/bridge/mavlink_impl.py          (preflight, takeoff, hold, the `leg` phases
                                                       read off the stream, geofence, LAND, abort)
 ```
 
@@ -126,10 +126,10 @@ the Path, the FSM's corner walk and `--follow path` are deleted with it.
 | fields used | position, velocity, acceleration, yaw, yaw_dot, `trajectory_id`, `trajectory_flag` |
 | the leg | `trajectory_id` **increments once per waypoint**, and that is what the consumer turns into the `leg1..leg5` phases the metrics window with (risk R1) |
 | the dwell | **content**: position = the corner, velocity = 0, for `--hold-s`, and the clock starts when the vehicle has ARRIVED AND SETTLED at the corner |
-| the end of the tour | `trajectory_flag = TRAJECTORY_STATUS_COMPLETED`, and the stream **keeps publishing** the hover afterwards — so "finished" and "stopped talking" are different facts and the consumer can tell them apart (`bridge/bridge_node.py::CmdRelay.stalled_reason` names the second) |
-| producer | `planner/rectangle_source.py` + `planner/cmd_stream.py` — the square from `worlds/pillars.yaml`, with the corner hold (`RECT_HOLD_S`, **5.0 by harness default**) |
-| producer's obligations | take the geometry from the world file through `tools/world-info.py`, convert W -> L with the **same** `--calib-file` the bridge uses, and keep the plan inside the arena |
-| consumer's obligations | `bridge/bridge_node.py` relays it to message 84 at 50 Hz through the ONE entry point (`bridge.send_cmd(cmd_l, calib)`); `fsm/mission_fsm.py` derives the phase log from it, keeps the truth-fed geofence, and keeps a NAMED abort for silence |
+| the end of the tour | `trajectory_flag = TRAJECTORY_STATUS_COMPLETED`, and the stream **keeps publishing** the hover afterwards — so "finished" and "stopped talking" are different facts and the consumer can tell them apart (`src/bridge/bridge_node.py::CmdRelay.stalled_reason` names the second) |
+| producer | `src/planner/rectangle_source.py` + `src/planner/cmd_stream.py` — the square from `worlds/pillars.yaml`, with the corner hold (`RECT_HOLD_S`, **5.0 by harness default**) |
+| producer's obligations | take the geometry from the world file through `src/tools/world-info.py`, convert W -> L with the **same** `--calib-file` the bridge uses, and keep the plan inside the arena |
+| consumer's obligations | `src/bridge/bridge_node.py` relays it to message 84 at 50 Hz through the ONE entry point (`bridge.send_cmd(cmd_l, calib)`); `fsm/mission_fsm.py` derives the phase log from it, keeps the truth-fed geofence, and keeps a NAMED abort for silence |
 
 **The corner hold's shape on this interface.**  The plan box commands **one waypoint at a time** out of the
 tour `[c1, c2, c3, c4, c1]` (the first waypoint is the ENTRY: the aircraft starts on the pad, and the tour's
@@ -138,7 +138,7 @@ corner walk produced).  A leg's flight clock arms when the vehicle has left the 
 `--leg-start-m` of the leg's start; the arrival is declared when the vehicle is inside `--arrive-m` **and**
 slower than `--settle-speed`, with `--settle-s` as the bound; `--leg-timeout-s` bounds the wait and names its
 reason.  Every one of those decisions is made from `/lio/robo/odom` — the plan box's own odometry — and
-`tools/dwell-audit.py` judges the result from the truth tap, never from either log.
+`src/tools/dwell-audit.py` judges the result from the truth tap, never from either log.
 
 **What the interface deliberately does not carry**: a republish rate a slow planner can meet, a
 WITHHOLD-with-a-reason for an expired plan, the re-projection of a plan onto the vehicle, the station
@@ -156,19 +156,19 @@ adapter that translated ego's output into a Path is exactly what this change del
 1. (done) inventory, keep-list, delete the old trees, fresh skeleton
 2. (done) analytic ray casting + world generator + real MID-360 pattern + the 0.5 m scan check
 3. (done) **the SITL truth tap**, Copter-4.7.1 built, tap verified on the wire
-4. (done) `sim/lidar_imu` -> cloud + IMU -> RViz shows cloud and pillars
-5. (done) **`common/frames.py` + `Calib`** and the convention tests
+4. (done) `src/sim/lidar_imu` -> cloud + IMU -> RViz shows cloud and pillars
+5. (done) **`src/common/frames.py` + `Calib`** and the convention tests
 6. (done) the LIO: clean upstream built, fed by the simulated sensor, verified against the tap
-7. (done) **MISSION A — the rectangle.**  `planner/rectangle_source` publishes the interface of §4.1;
-   `bridge/` + `fsm/` consume it.  10 of 10 flights, the counted table of §3
+7. (done) **MISSION A — the rectangle.**  `src/planner/rectangle_source` publishes the interface of §4.1;
+   `src/bridge/` + `fsm/` consume it.  10 of 10 flights, the counted table of §3
 8. (done, then DROPPED BY THE OWNER) ego-planner, mission B.  Built, integrated, flown, dropped
    2026-10-15; the lessons are one section of `STATUS.md`
 9. (done) **the ego-planner line removed from the tree** and the documentation merged back onto the
    pipeline that exists — 44 files deleted, `fsm/mission_fsm.py` 1759 -> 1014 lines,
-   `tools/run-mission.sh` 416 -> 266
+   `src/tools/run-mission.sh` 416 -> 266
 10. (done 2026-10-15) **hover at every corner, measured** — `RECT_HOLD_S=5`.  The producer advances ON
     ARRIVAL and the FSM accepts a leg mid-mission (§4.1); `logs/missionA-RECT7-hold5` gives **4 of 4 corners
-    hovered >= 5.0 s** from `tools/dwell-audit.py` (c1 18.15 / c2 7.67 / c3 7.19 / c4 7.58 s), 4 of 4 again
+    hovered >= 5.0 s** from `src/tools/dwell-audit.py` (c1 18.15 / c2 7.67 / c3 7.19 / c4 7.58 s), 4 of 4 again
     airborne-only, **5 of 5 B2 legs** and C2 0.562 m with 0 of 56696 samples inside the 0.20 m footprint.
     The four sorties that reported "1 of 4" are 0 of 4 under the airborne measure — that "1" was the
     aircraft parked on the ground at c1 after landing.  One sortie is not a rate: `STATUS.md` §"Next"
@@ -185,7 +185,7 @@ adapter that translated ego's output into a Path is exactly what this change del
 7. Pin and print revisions: ArduPilot tag, LIO commit, liblio.so md5, world seed.
 8. **Measurements are taken from the recording, never from the producer's own log.**  MEASURED: the
    corner-hold producer logged three 5 s holds while the aircraft spent them somewhere else entirely, which
-   is why `tools/dwell-audit.py` exists and why it reads `tap.csv`.
+   is why `src/tools/dwell-audit.py` exists and why it reads `tap.csv`.
 
 ## 7. Documentation budget (a hard rule from the user, 2026-10-13)
 
@@ -201,7 +201,7 @@ owns it, and if a fifth file is ever created, another must be merged away in the
 executable, and it is run before every commit:
 
 ```
-cd /mnt/d/distill_self/lio_avoid && python3 tools/docs-budget.py
+cd /mnt/d/distill_self/lio_avoid && python3 src/tools/docs-budget.py
 ```
 
 Figures, CSVs and the metrics dumps under `docs/` are evidence, not documents, and are not counted.
