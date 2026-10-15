@@ -1,0 +1,86 @@
+DID EGO'S MAP CONTAIN THE PILLARS?  An instrumented diagonal crossing, and the limits of the answer.
+2026-10-15 15:35:53Z   HEAD: 5ab43c7
+
+=== WHY THIS RUN EXISTS =======================================================================
+DIAG2 and DIAG3 both flew worlds/diagonal.yaml with PLANNER=ego and both were caught by C2 crossing a
+46-pillar field: DIAG2 -0.279 m / 13.9% of samples inside the 0.20 m footprint, DIAG3 -0.169 m / 9.1%,
+this run -0.071 m / 4.7%.  All three FAIL, and the size of the failure VARIES run to run (ego's
+replans depend on the map, and the map depends on what the sensor saw).  Meanwhile ego's FSM entered
+EMERGENCY_STOP six times in DIAG2 -- it saw something, intermittently.  Two explanations fit:
+   (A) the map was EMPTY where the pillars are (the input never contained them)
+   (B) the map had them and the planner went through anyway
+So this run recorded the map's only input (/ego/cloud, our relay's output) and the map itself
+(/drone_0_grid/grid_map/occupancy_inflate), and compared both against the world file.
+
+=== THE MEASUREMENT ===========================================================================
+      the world: 46 pillars, r=0.30, z 0.0..4.2 m
+   
+      /ego/cloud (the relay) 25791 points | pillars with a return: 14 of 46 | median returns per pillar 0 | pillars with NONE: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+      ego occupancy_inflate  50262 points | pillars with a return: 23 of 46 | median returns per pillar 4 | pillars with NONE: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+   
+      === THE VERDICT ===
+         pillars the RELAY never delivered  : 32 of 46
+         pillars EGO'S MAP never marked     : 23 of 46
+         had a return but NO map cell (a defect between them): 0
+         had neither (never had a chance)                    : 23
+         -> (A) THE MAP WAS EMPTY WHERE THE PILLARS ARE -- the input never contained them.
+   
+         the pillars NEAREST THE FLOWN LINE, pillar by pillar (input -> map):
+            pillar (-3.50 -3.50) r0.30: truth came within 0.23 m | relay returns    0 | map cells *** NONE ***
+            pillar (-1.50 -1.50) r0.30: truth came within 0.50 m | relay returns    0 | map cells *** NONE ***
+            pillar (-2.50 -2.50) r0.30: truth came within 0.57 m | relay returns    0 | map cells *** NONE ***
+            pillar (-3.50 -1.50) r0.30: truth came within 0.73 m | relay returns    0 | map cells *** NONE ***
+            pillar (-4.50 -4.50) r0.30: truth came within 0.73 m | relay returns    0 | map cells *** NONE ***
+            pillar (-2.50 -0.50) r0.30: truth came within 0.76 m | relay returns    0 | map cells *** NONE ***
+            pillar (-4.50 -2.50) r0.30: truth came within 0.81 m | relay returns    0 | map cells *** NONE ***
+            pillar (-1.50 +0.50) r0.30: truth came within 1.30 m | relay returns    0 | map cells *** NONE ***
+            pillar (+0.50 -1.50) r0.30: truth came within 1.51 m | relay returns   10 | map cells yes
+            pillar (-0.50 +1.50) r0.30: truth came within 1.58 m | relay returns    0 | map cells yes
+
+=== THE ROWS, this run ========================================================================
+   A1 route horizontal rms      6.14 mm   (target <= 20)
+   A2 route vertical rms        3.77 mm   (target <= 50, mean removed)
+   C2 obstacle clearance over the whole flight (46 pillars from diagonal.yaml): minimum pillar-surface distance -0.071 m;  2257 of 47578 samples inside the 0.20 m footprint  [FAIL]
+   C1 final point: the aircraft stopped 0.003 m from the last commanded point (-1.028, -0.930)  [PASS]
+   A1/A2/B1 FAIL: B1   (A1 6.14 mm <= 20, A2 3.77 mm <= 50, B1 E 3.023 <= 2.10, N 3.011 <= 1.30, aborted False)
+
+=== WHAT THIS ESTABLISHES, AND WHAT IT DOES NOT ===============================================
+ESTABLISHED, and it is a clean negative about OUR OWN pipeline:
+   * 'had a return but NO map cell = 0'.  EVERY point the recorder saw on /ego/cloud is represented
+     in ego's occupancy.  The relay -> map path is FAITHFUL; there is no defect between them, so the
+     failure is not in how we feed ego.
+   * The pillar the aircraft passed 0.23 m from has NO map cells, and the three pillars within 0.6 m
+     of the flown line have none either.
+/mnt/d/distill_self/_stage/make-map-audit-evidence.sh: line 36: camera_pos: command not found
+   * ego's map is STICKY: outside  nothing is ever cleared
+     (plan_env/grid_map.cpp:826-827, :234), so a pillar marked even once stays marked for the rest of
+     the sortie.  Its absence from a map recorded over the whole crossing is therefore evidence that
+     it was never marked -- an INFERENCE from stickiness, not a direct observation of the map's state.
+
+NOT ESTABLISHED, and this is the honest limit of the run:
+   * '32 of 46 pillars never delivered' is NOT trustworthy.  The recorder subscribes BEST_EFFORT with
+     depth 5 (tools/record-cloud.py:42) and unpacks every point in Python, so it captured 25792 points
+     where the relay published millions (its own log: ~1.5M points kept over the flight).  The count
+     of pillars 'never delivered' is therefore contaminated by the RECORDER's message loss, and the
+     same applies, in the same direction, to 'ego's map never marked 23 of 46'.
+   * So (A) vs (B) is NOT settled by this run.  What is settled is the weaker, still useful statement
+     above: the pillars on the flown line have no map cells, and nothing between the relay and the map
+     loses anything.
+
+=== AND ONE BUG OF MY OWN, FOUND BY THE FIRST ATTEMPT =========================================
+The first instrumented attempt (DIAG3) recorded 0 bytes with no header, which looks exactly like 'the
+topic was empty'.  It was not: the harness exports ROS_LOCALHOST_ONLY but NOT ROS_DOMAIN_ID
+(tools/run-mission.sh:257), so it runs on the DEFAULT domain, while the instrumentation script
+exported ROS_DOMAIN_ID=42 AFTER launching the harness -- putting the recorders on a DIFFERENT ROS graph
+from every node they were meant to watch.  The CSVs were 0 bytes because the recorders were killed
+with SIGTERM before Python flushed (the header is written immediately, so a clean exit leaves one
+line).  Both are fixed in _stage/diagonal-instrumented-fly.sh: the domain is set once, before the
+harness, and the recorders are given --seconds so they exit by themselves and flush.
+   THE CLASS OF BUG IS THE SAME ONE THIS ROUND KEEPS MEETING: an unverified assumption about the
+   ENVIRONMENT (a clock domain, a ROS domain) that makes a working component look like an empty one.
+
+=== THE NEXT MEASUREMENT ======================================================================
+Make the map measurement load-proof: either a recorder with a deep RELIABLE queue that downsamples
+INSIDE the callback (instead of unboxing every point in Python), or -- better -- ask ego's map for its
+state directly rather than sampling its published cloud.  Until that exists, 'the input lacked the
+pillars' is a plausible reading of a lossy sample, not a measurement.
