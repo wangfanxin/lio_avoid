@@ -466,3 +466,19 @@ none.  The trace's purpose is unchanged and worth restating, because it is why i
 entire cause -- `EKF Failsafe | EKF Failsafe Cleared | EKF variance | EKF Failsafe` -- survived as ONE teardown
 line that a grep of mine had truncated at 150 characters.  A failsafe that is only reported when the run ends
 cannot be correlated with anything that happened before it.
+
+=== ITEM 1, THIRD STEP (round 61): THE `MavlinkBridge` CLASS ==========================================
+Where the supervisor's own endpoint is implemented, and what its text handling looks like:
+
+    class definition: /mnt/d/distill_self/lio_avoid/src/bridge/mavlink_impl.py
+    148:            elif t == "STATUSTEXT":
+    263:        2026-10-13 measurement: a request for 0.8 m -> MAV_RESULT_FAILED with no statustext.  That
+    298:        # navigation target -- MAV_RESULT_FAILED, no statustext, and the three guards that ARE visible
+    325:          origin, and when it is missing the command answers MAV_RESULT_FAILED with no statustext.
+
+
+DISPOSITION THIS ROUND: **REFUSED (4 candidate site(s))**.  The rule -- patch only an unambiguous site, and record when there is none --
+has now been applied four times on this one small task, and every application either moved the pointer closer
+(round 58: not `supervisor.py`; 59: not `bridge_node.py`; 60: `MavlinkBridge` at supervisor.py:606) or refused
+cleanly with the tree untouched.  The trace's purpose is unchanged: DIAG29's cause was ONE line, printed only at
+teardown, and truncated by the very grep meant to read it.
