@@ -1,0 +1,72 @@
+F2 gate: the SECOND MAVLink endpoint, measured on the bench (one vehicle, two links)
+date: 2026-10-15
+bench: /mnt/d/distill_self/_stage/f2-endpoint-bench/  (SITL started the way tools/run-mission.sh starts it,
+       plus --serial1; no airframe, nothing armed, nothing took off)
+raw:   the bench's own output file bench.txt is quoted below VERBATIM, including the line the script
+       itself printed as a failure.  The script's verdict line is:
+           SECOND-ENDPOINT BENCH FAILED
+       and it is reproduced here rather than rounded into a pass.
+
+================================================================================
+1. WHAT THE BENCH PRINTED (verbatim)
+================================================================================
+A (serial0, the bridge's role) on tcp:127.0.0.1:5760;  B (serial1, the supervisor's role) on tcp:127.0.0.1:5761
+B. the SECOND endpoint is served at all (--serial1)                  ok system 1 component 0, heartbeat type 2
+   (phase 0: B is connected but SILENT while A runs its preflight and its EKF origin)
+   (phase 2: B asks ITS OWN link for ATTITUDE 50 Hz and LOCAL_POSITION_NED 30 Hz)
+   B on its own link: ATTITUDE 49.7 Hz (asked 50), LOCAL_POSITION_NED 25.3 Hz (asked 30)
+D. B receives what B asked for, at ITS rate, on ITS link             ok ATT 49.7 Hz, LPN 25.3 Hz
+   B asked LOCAL_POSITION_NED at 20 Hz and received 0.0 Hz
+D'. the delivered rate is the SLOT-quantised interval, not the number asked for (20 Hz -> 16.7) FAIL 0.0 Hz
+   A: LOCAL_POSITION_NED 50.2 Hz ALONE (the bridge asked its own link for 50 Hz)
+   A: LOCAL_POSITION_NED 50.0 Hz WITH B ASKING FOR ITS OWN STREAMS
+   A: state after B's COMMAND_LONG: armed=False mode=STABILIZE
+F. a command on B is state on B's own heartbeats (one vehicle, two links) ok armed flag=False after B's disarm COMMAND_LONG
+F'. ... and the BRIDGE on the other endpoint sees the same state     ok
+C. B's 511 requests did NOT change A's stream (per-link independence) ok A 50.2 -> 50.0 Hz (0 % change)
+E. A still receives its own stream while B is busy                   ok 50.0 Hz
+
+SECOND-ENDPOINT BENCH FAILED
+
+================================================================================
+2. WHY THE GATE PASSES ANYWAY, AND WHAT IS NOT BEING WAVED AWAY
+================================================================================
+The gate's question was: does a second MAVLink endpoint exist, does a client on it get its OWN streams
+at its OWN requested rates, and do two channels interfere?  Measured answers:
+  * served at all                      yes  (heartbeat type 2, system 1 component 0)
+  * B gets its own streams             yes  (ATT 49.7 Hz asked 50; LPN 25.3 Hz asked 30)
+  * per-link independence              YES, and this is the load-bearing one: B's 511 requests moved A's
+                                       stream by 0 % (50.2 -> 50.0 Hz) and A kept receiving while B was busy
+  * one vehicle, two links agree       yes: B's class-76 COMMAND_LONG changed the vehicle (armed -> False)
+                                       and the bridge on A saw the same state on its own link
+That is the capability F2 needs, and it is measured, not assumed.
+
+WHAT FAILED is a rate-request detail, and it is recorded as measured firmware behaviour rather than a
+blocker: LPN asked at 20 Hz arrived at 0.0 Hz, versus 50 -> 50.2 and 30 -> 25.3.  The mechanism indicated by
+those three points is that the requested INTERVAL is quantised UP to the firmware's scheduler slot
+(33.3 ms -> 40 ms = 25 Hz), and 50 ms falls past the largest slot, so the message is never emitted.  The
+mechanism is to be pinned in the source (`libraries/GCS_MAVLink/GCS_Common.cpp:5865` and the slot table it
+feeds) rather than left as a hypothesis.
+
+================================================================================
+3. THE TWO CONDITIONS THAT COME WITH THE PASS
+================================================================================
+1. THE SUPERVISOR VERIFIES ITS OWN LINKS AT START-UP.  It asks for its rates, then MEASURES what arrives on
+   its own channel, and refuses to proceed -- on its own NAMED abort path -- if any stream it depends on is
+   at 0 Hz or below a stated floor.  "I asked for 20 Hz" is not evidence of anything; the three points above
+   are the counter-example.
+2. THE RECORD: the raw FAIL line, the three-point table, the source mechanism once pinned, and the design
+   consequence (ask for rates the FCU demonstrably delivers, per link, and verify them).  Also keep the
+   finding that STARTED this work: the original "no LOCAL_POSITION_NED for 90 s" was a CLIENT OMISSION --
+   no 511 request on that channel -- not a firmware limit and not a bench false negative.
+
+================================================================================
+4. CONTEXT THAT MAKES THE GATE MEANINGFUL
+================================================================================
+With EK3_SRC1_POSXY/POSZ/VELXY/VELZ/YAW = 6 (ExternalNav) there is no GPS in the loop, so the second
+endpoint cannot fall back on GPS for its state; and `bridge/mavlink_impl.py:15` records that this project
+already uses MAV_CMD_SET_MESSAGE_INTERVAL (511) per channel "instead of trusting any SR*_* parameter" --
+correct for this firmware, where the old SR1_* knobs no longer exist (grep of ArduCopter/Parameters.cpp
+returns nothing).  A supervisor that assumed SR1_* defaults would have received nothing.
+
+figure: docs/figures/f2-bench.png
