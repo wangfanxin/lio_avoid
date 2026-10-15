@@ -50,6 +50,17 @@ def main() -> int:
     ap.add_argument("--world", default=os.path.join(ROOT, "worlds", "pillars.yaml"))
     ap.add_argument("--radius", type=float, default=0.15, help="what counts as 'at the corner', m")
     ap.add_argument("--min-s", type=float, default=5.0, help="the dwell the mission asked for, s")
+    ap.add_argument("--airborne-m", type=float, default=0.0,
+                    help="count only samples above this height (m) -- it changes the JUDGED quantity, not "
+                         "just an extra column.  DEFAULT 0 = off, which is the measurement every earlier "
+                         "sortie was judged by.  It matters because the aircraft LANDS on the last corner "
+                         "(C1 is 0.003-0.031 m from the final commanded point), so the default run counts "
+                         "the time it spends parked on the ground there as well.  MEASURED RECT7-hold5: c1 "
+                         "reads 18.15 s by default, 10.01 s above 0.50 m and 6.34 s above 1.50 m (the "
+                         "airborne figure still includes the first part of the landing descent), while the "
+                         "three flown corners read 7.19-7.67 s either way.  MEASURED RECT1/RECT2/RECT3/"
+                         "RECT6 with it on: 0 of 4 -- the c1 'dwell' of 10.4-10.7 s those sorties reported "
+                         "was the aircraft sitting on the ground after landing.")
     args = ap.parse_args()
 
     tap = args.run if args.run.endswith(".csv") else os.path.join(args.run, "tap.csv")
@@ -60,8 +71,12 @@ def main() -> int:
     t = (t_us - t_us[0]) * 1e-6
     # the tap is NED-ish (pn = north, pe = east); the mission's square is authored in ENU (E, N)
     en = np.column_stack([pe, pn])
-    print("### %s   (%d samples, %.1f s, radius %.2f m, asked %.1f s per corner)"
-          % (os.path.basename(os.path.dirname(tap)), len(t), t[-1], args.radius, args.min_s))
+    up = -pd
+    air = up > args.airborne_m
+    print("### %s   (%d samples, %.1f s, radius %.2f m, asked %.1f s per corner%s)"
+          % (os.path.basename(os.path.dirname(tap)), len(t), t[-1], args.radius, args.min_s,
+             "" if args.airborne_m <= 0.0 else ", AIRBORNE only: above %.2f m, %d of %d samples"
+             % (args.airborne_m, int(air.sum()), len(air))))
     corners = corners_from_world(args.world)
     ok_n = 0
     for name, c in corners.items():
@@ -69,12 +84,21 @@ def main() -> int:
         i_min = int(np.argmin(dist))
         dwell = longest_run(dist <= args.radius, t)
         visited = bool(dist[i_min] <= args.radius)
+        extra = ""
+        if args.airborne_m > 0.0:
+            # THE JUDGED QUANTITY BECOMES THE AIRBORNE ONE: the point of the switch is that ground time at
+            # the last corner is not a hover, so it must not be able to satisfy the requirement either.
+            d_air = longest_run((dist <= args.radius) & air, t)
+            extra = " | AIRBORNE %.2f m: %5.2f s" % (args.airborne_m, d_air)
+            dwell = d_air
         ok = dwell >= args.min_s
         ok_n += 1 if ok else 0
-        print("   %s (%+.2f,%+.2f): closest %.3f m at t=%5.1f s | longest dwell within %.2f m: %5.2f s  %s%s"
+        print("   %s (%+.2f,%+.2f): closest %.3f m at t=%5.1f s | longest dwell within %.2f m: %5.2f s  %s%s%s"
               % (name, c[0], c[1], dist[i_min], t[i_min], args.radius, dwell,
-                 "HOLD-OK" if ok else "NO-HOLD", "" if visited else "  (never visited)"))
-    print("   CORNERS HOVERED >= %.1f s: %d of %d" % (args.min_s, ok_n, len(corners)))
+                 "HOLD-OK" if ok else "NO-HOLD", "" if visited else "  (never visited)", extra))
+    print("   CORNERS HOVERED >= %.1f s: %d of %d%s" % (args.min_s, ok_n, len(corners),
+                                                        "" if args.airborne_m <= 0.0 else
+                                                        "  (AIRBORNE only, above %.2f m)" % args.airborne_m))
     return 0
 
 
