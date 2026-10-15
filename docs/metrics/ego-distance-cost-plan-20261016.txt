@@ -577,3 +577,20 @@ next occurrence is timestamped when it happens rather than reconstructed from a 
 CONSEQUENCE FOR THE REMAINING WORK: attempt item 3, and if a flight ends without a clean crossing, read the
 `FCU-TEXT` lines first -- if an EKF failsafe is there, the run judges nothing about the cost term and should be
 discarded rather than recorded as evidence either way.
+
+=== ITEM 3, STEPS 1-2 DONE (round 66): BOTH PATCHES APPLIED AND BUILT ======================
+**THE FLIGHT TREE'S STATE HAS CHANGED AGAIN AND THIS NOTE SUPERSEDES ROW 115**: it now carries PATCH
+DISTANCE-FIELD/1 (the field, the build at the end of `cloudCallback`'s marking loop, and the DIAG/3 self-check)
+and /2 (the cost term, now reading `optimization/lambda_collision` and `dist0` through the `node_` member added
+for it) -- both BUILT, neither flown.  Row 115 said the tree carried only the instruments; that is no longer
+true as of this commit.
+
+WHAT REMAINS FOR ITEM 3, in order:
+  1. `bash _stage/park-verify-field.sh` -- DIAG/3 must show the field agreeing with `getInflateOccupancy`
+     (it did once, before the patches were first reverted; one sample, and the stronger assertion is in this
+     plan: `getInflateOccupancy(p) == 1` must imply `distance_buffer_[p] == 0`);
+  2. `bash _stage/run-diag29.sh` -- the crossing at window 8;
+  3. READ THE `FCU-TEXT` LINES BEFORE RECORDING ANYTHING (the trace added at row 62): an EKF failsafe there
+     means the run judges nothing and must be discarded, not recorded as evidence either way;
+  4. compare against the window-8 arm (+0.058 / +0.167 / -0.276 / +0.089 m; footprint 1887..4749) against the
+     prediction recorded above; then revert both patches and rebuild, refuted or not.
