@@ -176,8 +176,13 @@ def main() -> int:
     print("   pillars with a map cell on them: %d of %d" % (int((hits > 0).sum()), len(P)))
     print("   pillars with NONE: %s" % np.where(hits == 0)[0].tolist())
     print("   nearest map cell to each of the 8 pillars the vehicle passed closest to is reported by the caller")
-    np.save("/tmp/map_census_hits.npy", hits)
-    np.save("/tmp/map_census_xy.npy", O)
+    # PER-TOPIC FILES.  "The last census to finish owns /tmp/map_census_xy.npy" is not a fact about the map --
+    # MEASURED: that file held 3265 cells spanning x,y in [-5, +5] with no cut at -2.5, which is the LIO's
+    # union, not the map's 1187.  An analysis built on it would have described the wrong component.
+    slug = args.topic.strip("/").replace("/", "_")
+    np.save("/tmp/map_census_hits_%s.npy" % slug, hits)
+    np.save("/tmp/map_census_xy_%s.npy" % slug, O)
+    print("   the union is saved to /tmp/map_census_xy_%s.npy (%d cells)" % (slug, len(O)))
     node.destroy_node()
     rclpy.shutdown()
     print("MAP CENSUS DONE: %d of %d pillars were in ego's map" % (int((hits > 0).sum()), len(P)))

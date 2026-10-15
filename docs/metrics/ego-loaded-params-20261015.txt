@@ -1,0 +1,66 @@
+WHAT THE EGO NODE ACTUALLY LOADED -- and the hypothesis it eliminates
+2026-10-15 15:54:21Z   HEAD: 0a5b636
+
+=== WHY THIS WAS THE NEXT STEP ================================================================
+The corrected census left a hard cut at L_x = -2.5 in what ego's map keeps, and exactly one candidate
+in the map's own code makes a hard cut in one axis: grid_map.cpp:851-855 accepts a cloud point only
+when it lies within grid_map/local_update_range OF THE VEHICLE, per axis.  A cut at -2.5 with the
+vehicle parked at the L origin needs EITHER a band of half-width 2.5 (no offset) OR a band of 5.5
+offset by camera_pos_.x = +3.0.  Only the node can say which.
+
+=== THE NODE'S ANSWER (asked of the running node, not read from the launch file) ===============
+      grid_map/local_update_range_x        Double value is: 5.5
+      grid_map/local_update_range_y        Double value is: 5.5
+      grid_map/local_update_range_z        Double value is: 4.5
+      grid_map/map_size_x                  Double value is: 16.0
+      grid_map/map_size_y                  Double value is: 16.0
+      grid_map/map_size_z                  Double value is: 5.0
+      grid_map/resolution                  Double value is: 0.1
+      grid_map/obstacles_inflation         Double value is: 0.099
+      grid_map/local_map_margin            Integer value is: 10
+      grid_map/ground_height               Double value is: -0.02
+      grid_map/virtual_ceil_height         Double value is: 3.0
+      grid_map/pose_type                   Integer value is: 0
+      grid_map/use_depth_filter            Boolean value is: False
+      grid_map/frame_id                    String value is: lio_world
+
+   local_update_range_x = 5.5  ->  the acceptance band around a vehicle at the L origin is
+                                   x in [-5.5, +5.5].
+   THE MEASURED CUT IS AT -2.5.
+
+=== SO THE LEADING HYPOTHESIS IS ELIMINATED ===================================================
+   The band's own edge is NOT the cut.  For a 5.5 m band to cut at -2.5, the map's own position would
+   have to be camera_pos_.x = +3.0 -- and there is no evidence of that: the map reads grid_map/odom,
+   which this run confirms has exactly ONE subscriber (the node), and the topic it is remapped to,
+   /lio/robo/odom, is the stream the acceptance table measures against truth at 3-6 mm (A1).
+   A 3-metre error in it would be impossible to miss.
+   AND the parameter is not misconfigured: 5.5 is what the launch file sets.  So this round removes a
+   candidate rather than adding one, which is worth as much -- it was the only mechanism in that file
+   that could cut in a single axis.
+
+=== THE WIRING, ALSO CONFIRMED LIVE ===========================================================
+      /ego/cloud               subscribers: Type: sensor_msgs/msg/PointCloud2 Publisher count: 0 Subscription count: 1 
+      /lio/robo/odom           subscribers: Type: nav_msgs/msg/Odometry Publisher count: 0 Subscription count: 1 
+      /lio/odom                subscribers: Type: nav_msgs/msg/Odometry Publisher count: 0 Subscription count: 1 
+   
+   each of the three inputs has exactly one subscriber: the planner node.  No stale publisher, no
+   second consumer, no doubled remap.
+
+=== AND TWO OF MY OWN ASSUMPTIONS WERE WRONG, both caught here =================================
+  1. _stage/where-clipped.py assumed /tmp/map_census_xy.npy held the MAP's union.  It held the LIO's:
+     3265 cells spanning x,y in [-5, +5], which is the arena a sensor sees, against the map's 1187.
+     The distribution it printed is smooth in BOTH axes and has NO cut at -2.5 -- so it describes the
+     LIO, and any conclusion drawn from it about the map would have been about the wrong component.
+     FIXED: the census now writes PER-TOPIC files (/tmp/map_census_xy_<topic>.npy), so the union it
+     reports on is the union it measured.
+  2. The sign in the earlier arithmetic: a cut at -2.5 with a 5.5 m band puts the camera at +3.0, not
+     -3.0.  The script printed the wrong sign; the conclusion above uses the right one.
+
+=== WHAT IS ESTABLISHED, AND WHAT IS NEXT =====================================================
+ESTABLISHED: the map's parameters are what the launch file says; the band is 5.5 m and is NOT the cut;
+  the three inputs are wired exactly as intended; and the census's own union is now attributable to a
+  named topic.
+NEXT: the map's OWN union shape.  Run the parked census again with the per-topic files and print the x
+  histogram of /drone_0_grid/grid_map/occupancy_inflate alone.  A hard edge there names the box that
+  produces it; a smooth one means the loss is per-point rather than per-region, which is a different
+  search entirely.  That is one 90 s parked run and no flight.
