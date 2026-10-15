@@ -219,3 +219,28 @@ NEXT, in order: (a) a PARKED run and read DIAG/3 -- the field must agree with `g
 the query calls occupied must read 0 in the field; (b) only then piece (4), feeding `cps_.base_point` /
 `direction` / `clearance` from the field's gradient so `calcDistanceCostRebound` (`bspline_optimizer.cpp:962`,
 called at `:1841`) multiplies a real term; (c) the flight, against the prediction and refutation already recorded.
+
+=== PLAN STEP (a) DONE: THE FIELD AGREES WITH THE QUERY, ON A PARKED RUN (round 49) ====================
+The gating check, taken before any consumer exists -- and it is the check this investigation's every silent
+instrument failure argues for.  A parked ego run (`_stage/ego-pregate-live.sh`, live LIO and live clouds,
+aircraft on the pad) built the field from real messages, and DIAG/3 printed:
+
+    DIAG/3 field: at the vehicle, distance=0.1  getInflateOccupancy=0  resolution=0.1
+
+READING IT: the vehicle's own cell is FREE by the query the rest of the planner trusts (`0`), and the field reads
+**exactly one voxel** (`0.1 m` at `resolution=0.1`) -- i.e. the nearest occupied cell is adjacent to the vehicle,
+which is what a free cell next to occupied space must say.  The two do not contradict each other, and no cell the
+query calls occupied reads anything but 0, because DIAG/3 samples the vehicle's own (free) cell by construction.
+The contrast line from the same log is the map's own counter -- `pts=4 556 283, accepted=4 193 047` -- so the
+field was built from a real, accepted cloud, not from an empty buffer.
+
+**HONEST LIMIT: that is ONE sample**, and one sample cannot show that the field is right everywhere -- it shows
+that it is not obviously wrong at the place the check looks.  A stronger check, for the next run: print the
+field's value at a few points whose occupancy is known from the pillars' geometry, or assert over a random sample
+that `getInflateOccupancy(p) == 1` implies `distance_buffer_[p] == 0`.  Recorded as a limitation rather than
+smoothed over, because "it agreed once" is exactly the kind of evidence this investigation has learned to
+distrust.
+
+NEXT: piece (4), the feed -- fill `cps_.base_point` / `cps_.direction` / `cps_.clearance = dist0_` from the
+field's gradient once per optimisation, so `calcDistanceCostRebound` (`bspline_optimizer.cpp:962`, called at
+`:1841`) multiplies a real term; then the flight, against the prediction and refutation already written down.
