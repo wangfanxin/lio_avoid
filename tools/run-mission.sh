@@ -199,16 +199,9 @@ REC_PID=$!
 python3 "$REPO/tools/record-cloud.py" --topic /lio/cloud_world --csv "$OUT/cloud.csv" \
     --decimate 40 --scans 3 > "$OUT/reccloud.log" 2>&1 &
 RECC_PID=$!
-# THE PLAN, recorded next to the truth.  Without it "the gate cannot see the truth" is an argument, not a
-# measurement: MEASURED 2026-10-14 the truth spent 55.9 % of a 12-stop flight inside the 0.20 m contract
-# while every published path had been verified clear, and there was no record of those paths to compare
-# against.  tools/record-traj.py writes every Path message plus its own minimum clearance.
-python3 "$REPO/tools/record-traj.py" --topic /planner/traj --csv "$OUT/traj.csv" \
-    --world "$WORLD" > "$OUT/rectraj.log" 2>&1 &
-RECT_PID=$!
-sleep 3
-
-echo "== flying =="
+# WHICH NAVIGATION SOURCE, AND THEREFORE WHICH CALIBRATION -- decided HERE, before the recorders start,
+# because tools/record-traj.py needs the same L->W calibration the FSM and the producer use (it writes
+# every geometric column in W; without it clr_m is nan and says so).
 NAV_SOURCE="${NAV_SOURCE:-lio}"
 CALIB_ARG=""
 TRAJ_CALIB_ARG=""
@@ -223,6 +216,18 @@ if [ "$NAV_SOURCE" = "lio" ]; then
     # with the predicted one here and the measured one there, every commanded corner moved 51 mm in N
     TRAJ_CALIB_ARG="--calib-file $CALIB"
 fi
+# THE PLAN, recorded next to the truth.  Without it "the gate cannot see the truth" is an argument, not a
+# measurement: MEASURED 2026-10-14 the truth spent 55.9 % of a 12-stop flight inside the 0.20 m contract
+# while every published path had been verified clear, and there was no record of those paths to compare
+# against.  tools/record-traj.py writes every Path message plus its own minimum clearance -- and since
+# 2026-10-15 it takes the SAME --calib-file as the FSM and the producer, because the path arrives in L and
+# the world file is in W: without it `clr_m` read -0.2972 m for a plan that is +0.6000 m clear.
+python3 "$REPO/tools/record-traj.py" --topic /planner/traj --csv "$OUT/traj.csv" \
+    --world "$WORLD" $TRAJ_CALIB_ARG > "$OUT/rectraj.log" 2>&1 &
+RECT_PID=$!
+sleep 3
+
+echo "== flying =="
 # THE TRAJECTORY SOURCE.  `planner/rectangle_source.py` publishes the mission's corners on
 # /planner/traj -- the same interface an external planner used to publish on -- and the FSM does not know
 # or care who produces it.  It is the only source there is: the ego-planner line was dropped on

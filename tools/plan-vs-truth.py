@@ -99,9 +99,27 @@ def main() -> int:
     t_tap_s = t_tap.astype(np.int64) * 1e-6
     # the plan is in L; the tap is in W.  Convert the PLAN to W with the FSM's own calibration -- comparing
     # in two frames would be comparing nothing.
+    #
+    # SINCE 2026-10-15 `tools/record-traj.py` writes the points ALREADY IN W (it applies the same
+    # calibration before it computes `clr_m`), and it says so in a per-row `frame` column.  This reader
+    # honours that column instead of assuming: converting an already-converted point would move every plan
+    # by the calibration again (the same class of error the fix removed), and ignoring the column on an old
+    # recording would compare two frames.  Absent column = the old file = L, which is what those recordings
+    # are.
     t_msg = P["t_us"].astype(np.int64)
     lm = np.vstack([P["e"], P["n"], P["u"]])
-    pw = (calib.R_WL @ lm).T + calib.t_WL
+    if "frame" in P.dtype.names:
+        frames_seen = {str(f) for f in np.atleast_1d(P["frame"])}
+        frame = sorted(frames_seen)[0] if len(frames_seen) == 1 else "MIXED(%s)" % ",".join(sorted(frames_seen))
+    else:
+        frame = "L"
+    if frame == "W":
+        pw = lm.T
+        print("the recording's points are in W (its own `frame` column); no conversion applied")
+    else:
+        pw = (calib.R_WL @ lm).T + calib.t_WL
+        print("the recording's points are in %s; converted to W with %s"
+              % (frame if frame in ("L",) else "L (no frame column: pre-2026-10-15 file)", args.calib))
     uniq = np.unique(t_msg)
     seg = {int(tm): pw[t_msg == tm] for tm in uniq}
     t_msg_s = uniq * 1e-6                              # ONE time per message, not per point (P is per point)
@@ -166,8 +184,16 @@ def main() -> int:
           % (np.median(lat[air]), np.percentile(lat[air], 95), lat[air].max()))
     print("  vertical |truth - plan|   median %.3f m, p95 %.3f m, max %.3f m"
           % (np.median(ver[air]), np.percentile(ver[air], 95), ver[air].max()))
-    print("  the PLAN's own clearance: worst published %.3f m over %d messages (contract 0.20)"
-          % (hdr["clr_m"].min(), len(hdr)))
+    # THE COLUMN AND THE SAME NUMBER RECOMPUTED HERE, side by side.  Two paths to one number, and they can
+    # only disagree when the recording predates the 2026-10-15 frame fix in tools/record-traj.py: `clr_m`
+    # was then computed on the L-frame path against the W-frame world, and MEASURED on RECT6 it read
+    # -0.2972 m for a plan that is +0.6000 m clear.  The recomputation is printed next to it rather than
+    # trusted, so an old file cannot go on quoting a 0.9 m error.  (The recomputed figure is the plan's
+    # clearance AT THE SAMPLES THE VEHICLE VISITED, which is the comparable quantity; the plan's own
+    # minimum over all its points is what tools/traj-clearance-audit.py reports.)
+    print("  the PLAN's own clearance: column clr_m worst %.3f m; RECOMPUTED from the recorded points at "
+          "the truth's own samples %.3f m over %d messages (contract 0.20)"
+          % (hdr["clr_m"].min(), float(np.min(clr_pl[air])) if len(air) else float("nan"), len(hdr)))
     print("  the TRUTH's clearance   : min %.3f m; %.1f %% of airborne samples below 0.20 m, "
           "%.2f %% inside a pillar"
           % (clr_true[air].min(), 100.0 * (clr_true[air] < 0.20).mean(),

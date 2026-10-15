@@ -102,6 +102,10 @@ def main() -> int:
                 print("   (no calibration: %s -- plans would be drawn in L, so they are NOT drawn)"
                       % _exc)
                 plans = []
+            # SINCE 2026-10-15 `tools/record-traj.py` writes the points in W and records that per row, so a
+            # fresh recording needs no calibration to be drawn and must NOT be converted again; a file
+            # without the column is an old one and its points are in L.
+            pframe = str(np.atleast_1d(pp["frame"])[0]) if "frame" in pp.dtype.names else "L"
             for t0 in np.unique(ph["t0_us"]):
                 sel = ph["t_us"][ph["t0_us"] == t0]
                 tm = int(sel[-1] if len(sel) else t0)          # the freshest message of this plan
@@ -109,10 +113,15 @@ def main() -> int:
                 if not len(rows):
                     continue
                 q = np.column_stack([rows["e"], rows["n"], rows["u"]]).astype(float)
-                if calib is not None:
+                if pframe == "W":
+                    pass
+                elif calib is not None:
                     q = (calib.R_WL @ q.T).T + calib.t_WL
+                else:
+                    continue
                 plans.append((float(t0) * 1e-6, q))
-            print("   plans: %d Path messages, %d distinct plans drawn" % (len(ph), len(plans)))
+            print("   plans: %d Path messages, %d distinct plans drawn (points in %s)"
+                  % (len(ph), len(plans), pframe))
         except Exception as exc:
             print("   could not read the plan recording: %s" % exc)
 
