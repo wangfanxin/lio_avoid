@@ -12,3 +12,7 @@ logs/
 *.pcd
 # the LIO pattern is 17 MB of vendor data; it is fetched by tools/ or by hand (see STATUS.md)
 sim/mid360_pattern.csv
+# SITL's terrain cache (S36E149.DAT), written into the PROCESS's working directory -- so a sortie launched
+# from the repo root leaves one here.  Runtime byproduct, never evidence: the mission's own terrain data is
+# in worlds/, and each sortie keeps its own copy under logs/missionA-<tag>/terrain/.
+terrain/
