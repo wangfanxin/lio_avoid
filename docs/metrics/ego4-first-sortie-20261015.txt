@@ -1,0 +1,72 @@
+THE FIRST COMPLETE ego SORTIE ON THIS STACK -- PLANNER=ego, assembled, flown, and landed.
+2026-10-15 15:21:26Z   HEAD: f192666
+
+WHAT IT TOOK.  Three defects, each found only by flying the assembly and each fixed with the
+measurement that found it.  In the order they were hit:
+  1. the CLOCK DOMAIN  (EGO1): ego's start_time is epoch seconds, the adapter sampled on
+     time.monotonic(), bspline_derivs clamped every sample to the trajectory's START, and the
+     vehicle was commanded to where it already was for 400 s.  Fixed by converting at receipt, and
+     now REFUSED loudly if a spline's time base is implausible.
+  2. the GOAL HANDSHAKE  (EGO2): ego returns to WAIT_TARGET when it decides a plan has stalled and
+     then waits for a NEW goal; a once-per-waypoint goal deadlocks with it (378 WAIT_TARGET lines
+     against 22 EXEC_TRAJ).  Fixed by re-sending at 1 Hz -- which is what the historical
+     planner/ego_adapter.py did, so this was a regression, not an invention.
+  3. the ARRIVAL FLOOR  (EGO3): planner_manager.cpp:55 REFUSES to plan when the replan's start is
+     within 0.2 m of its local target ('i.e. the last metre of every arrival'); the line fired
+     148780 times while the vehicle sat 0.12 m from the waypoint and the contract asked for
+     0.060 m.  EGO_ARRIVE_M=0.30 m is the planner's own floor passed explicitly.
+
+=== THE SORTIE (EGO4-accept-arrival-floor) =========================================================================
+--- the plan box's own log ---
+   ego_source: ARRIVED at waypoint 1 (0.292 m), dwelling 5.0 s
+   ego_source: next waypoint 2 of 5
+   ego_source: goal 2 of 5 -> [ 0.402 -2.501  1.884] (L)   (re-sent every 1.0 s until it is reached)
+   ego_source: ARRIVED at waypoint 2 (0.299 m), dwelling 5.0 s
+   ego_source: next waypoint 3 of 5
+   ego_source: goal 3 of 5 -> [ 1.602 -2.502  1.884] (L)   (re-sent every 1.0 s until it is reached)
+   ego_source: ARRIVED at waypoint 3 (0.293 m), dwelling 5.0 s
+   ego_source: next waypoint 4 of 5
+   ego_source: goal 4 of 5 -> [ 1.604 -0.502  1.884] (L)   (re-sent every 1.0 s until it is reached)
+   ego_source: ARRIVED at waypoint 4 (0.293 m), dwelling 5.0 s
+   ego_source: next waypoint 5 of 5
+   ego_source: goal 5 of 5 -> [ 0.404 -0.501  1.884] (L)   (re-sent every 1.0 s until it is reached)
+   ego_source: ARRIVED at waypoint 5 (0.297 m), dwelling 5.0 s
+   ego_source: TOUR COMPLETE -- the stream now carries trajectory_flag = COMPLETED and KEEPS TALKING (it does not stop asking for more)
+
+--- THE CONTRACT ON /plan/cmd ---
+   rows 8454   distinct trajectory_id in order ['1', '2', '3', '4', '5']   frames ['lio_world']
+   flags {'1': 7743, '3': 711}   last 10 ['3', '3', '3', '3', '3', '3', '3', '3', '3', '3']   sustained COMPLETED: True
+
+--- THE ROWS (the acceptance table, on an ego planner) ---
+   A1 route horizontal rms      3.71 mm   (target <= 20)
+   A2 route vertical rms        1.56 mm   (target <= 50, mean removed)
+   A4 FCU estimate vs truth after take-off (638 of 719 samples, vertical alignment residual 106.5 mm):
+      horizontal rms     6.58 mm  (<= 50, mean removed) at the best-fit lag +54 ms; zero lag would be    13.03 mm
+      vs the LIO pose it was fed (same fit A1 uses): horizontal rms    12.26 mm, vertical rms    24.30 mm   (LIO vs truth is A1 above)
+      A4-v the FCU's own EKF (XKF1 V)   horizontal rms   18.19 mm/s over 639 samples at the position row's lag; its OWN best-fit lag is -10 ms (17.64 mm/s); vertical 27.75 mm/s
+      A4-v the velocity it was FED (VISV) horizontal rms   52.01 mm/s over 3000 samples at the position row's lag; its OWN best-fit lag is -124 ms (17.85 mm/s); vertical 64.83 mm/s
+   B1 truth box extents over the route (47.3 s): E 2.040 m  N 1.254 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner arrival)  [PASS]
+   B2 straightness per leg (truth vs the line through that leg's own endpoints):
+   C2 obstacle clearance over the whole flight (46 pillars from pillars.yaml): minimum pillar-surface distance 0.561 m;  0 of 73970 samples inside the 0.20 m footprint  [PASS]
+   C1 final point: the aircraft stopped 0.005 m from the last commanded point (0.475, 0.547)  [PASS]
+   A1/A2/B1 PASS   (A1 3.71 mm <= 20, A2 1.56 mm <= 50, B1 E 2.040 <= 2.10, N 1.254 <= 1.30, aborted False)
+      c3 (+2.50,+1.60): closest 0.011 m at t= 68.8 s | longest dwell within 0.15 m:  5.10 s  HOLD-OK | AIRBORNE 0.50 m:  5.10 s
+      c4 (+0.50,+1.60): closest 0.012 m at t= 81.6 s | longest dwell within 0.15 m:  5.33 s  HOLD-OK | AIRBORNE 0.50 m:  5.33 s
+      CORNERS HOVERED >= 5.0 s: 4 of 4  (AIRBORNE only, above 0.50 m)
+
+--- NO ABORT, NO TIMEOUT, NO FAILSAFE ---
+   /home/fanxin/lio_avoid/logs/missionA-EGO4-accept-arrival-floor/supervisor.log:supervisor: the take-off's own guard -- abort if the TRUTH passes 3.50 m (mission altitude 2.50 + climb guard 1.00); nothing else bounds the flight before the trigger
+   (the only hits above are the supervisor's own informational gate lines, which name the gates)
+
+=== WHAT THIS IS, AND WHAT IT IS NOT =========================================================
+IS: the first time this stack ran a full mission with a planner that is not ours -- 5 waypoints,
+trajectory_id 1..5 once per waypoint, a sustained COMPLETED that kept talking, both gates untouched,
+normal landing, C2 0 of 73970 inside the 0.20 m footprint, dwell 4 of 4.
+IS NOT: obstacle AVOIDANCE.  This tour is the 2.0 x 1.2 m rectangle, whose legs clear the pillars by
+0.561 m -- so ego had nothing to avoid and its cost terms never had to bend the path.  The obstacle
+test is the DIAGONAL, and it is the next sortie.
+
+AND ONE ROW IS GENUINELY INTERESTING: B1 PASSES here (E 2.040 / N 1.254 against 2.10 / 1.30) where
+the rectangle has failed on every promoted-config sortie (E 2.092-2.170).  Ego's continuously
+replanned spline through the SAME four corners excites the position loop 52-130 mm less than the
+rectangle's stop-and-go profile does.  Recorded as a datum with a cause worth testing, not as a claim.
