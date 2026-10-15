@@ -1,0 +1,98 @@
+EGO ON THIS STACK, PARKED: does it receive our cloud and our odometry, and does it plan?
+2026-10-15 14:16:31Z   HEAD at the time: 66fed82 (this round not yet committed)
+
+WHAT THIS IS.  Every piece of the ego swap is written and checked offline -- the launch file (67
+parameters, 0 undeclared), the adapter, the evaluator (9 of 9 injected defects caught), the cloud
+relay -- and NONE of it had ever been fed a live cloud or a live odometry message.  This settles that
+with the vehicle PARKED: SITL, the simulated MID-360, the LIO, the cloud relay and ego_planner_node.
+NO arming, NO supervisor, NO bridge, NO /plan/cmd.  The script is _stage/ego-pregate-live.sh.
+
+=== ATTEMPT 1 (22:11:08) FAILED, AND THE FAILURE IS THE FINDING ============================
+The relay saw no cloud and ego stayed in INIT printing 'no odom.'  Neither the wiring nor the QoS was
+at fault: the SENSOR SIMULATOR had died at start-up --
+
+   Traceback (most recent call last):
+     File "/mnt/d/distill_self/lio_avoid/src/sim/lidar_imu.py", line 701, in <module>
+       raise SystemExit(main())
+     File "/mnt/d/distill_self/lio_avoid/src/sim/lidar_imu.py", line 392, in main
+
+   ... i.e. sim/lidar_imu.py's DEFAULT --world pointed at <repo>/src/worlds/pillars.yaml, a directory
+   that has not existed since the code moved under src/.  run-mission.sh passes --world explicitly,
+   which is why a whole round of FLIGHTS worked while the default was dead; tools/sitl-lio.sh does not
+   pass it, and neither did this pregate.  planner/rectangle_source.py had the identical default.
+   FIXED in both, and src/tools/test-layout.py now refuses the shape anywhere under src/.
+
+=== ATTEMPT 2 (22:14:05) PASSED ==============================================================
+--- 1. DOES EGO SEE OUR ODOMETRY?  ('no odom.' is how the FSM says it does not) ---
+   attempt 1: 66
+   attempt 2: 1
+   attempt 1's last state lines:
+      [ego_planner_node-1] [FSM]: state: INIT
+      [ego_planner_node-1] [FSM]: state: INIT
+   attempt 2's last state lines:
+      [ego_planner_node-1] [FSM]: state: EXEC_TRAJ
+      [ego_planner_node-1] [FSM]: from EXEC_TRAJ to REPLAN_TRAJ
+      [ego_planner_node-1] [FSM]: from REPLAN_TRAJ to EXEC_TRAJ
+
+--- 2. DOES THE RELAY CARRY THE CLOUD?  (its own counters, every 5 s) ---
+   [INFO] [1792073664.382222057] [cloud_relay]: 16 scan(s): 311352 -> 136125 points (43.7% kept), 0 cropped away, frame 'world', odometry yes
+   [INFO] [1792073669.387267688] [cloud_relay]: 32 scan(s): 622710 -> 271911 points (43.7% kept), 0 cropped away, frame 'world', odometry yes
+   [INFO] [1792073674.377073419] [cloud_relay]: 48 scan(s): 934027 -> 407616 points (43.6% kept), 0 cropped away, frame 'world', odometry yes
+   [INFO] [1792073679.382118041] [cloud_relay]: 65 scan(s): 1264852 -> 551713 points (43.6% kept), 0 cropped away, frame 'world', odometry yes
+   [INFO] [1792073684.383976424] [cloud_relay]: 83 scan(s): 1615055 -> 704124 points (43.6% kept), 0 cropped away, frame 'world', odometry yes
+   [INFO] [1792073689.383042494] [cloud_relay]: 100 scan(s): 1945868 -> 847564 points (43.6% kept), 0 cropped away, frame 'world', odometry yes
+
+--- 3. A GOAL IN L, AND THE B-SPLINE IT PRODUCED ---
+   the goal was (1.0, 0.0, 2.0) in L, published on /move_base_simple/goal; the message below is what
+   ego answered on planning/bspline, captured whole in /home/fanxin/lio_avoid/logs/ego-pregate-20261015_221504/bspline.yaml:
+      drone_id: 0
+      order: 3
+      traj_id: 14
+      start_time:
+        sec: 1792073750
+        nanosec: 395130356
+      knots:
+      - -0.6000000000000001
+      - -0.4000000000000001
+      - -0.20000000000000004
+      - 0.0
+      - 0.20000000000000004
+      - 0.4000000000000001
+      - 0.6000000000000001
+      - 0.8000000000000002
+      - 1.0000000000000002
+      - 1.2000000000000002
+      - 1.4000000000000001
+      - 1.6
+      - 1.8
+      ...
+   and the FSM, once the goal arrived:
+      [ego_planner_node-1] [FSM]: from EXEC_TRAJ to REPLAN_TRAJ
+      [ego_planner_node-1] [FSM]: from REPLAN_TRAJ to EXEC_TRAJ
+      [ego_planner_node-1] [FSM]: state: EXEC_TRAJ
+      [ego_planner_node-1] [FSM]: from EXEC_TRAJ to REPLAN_TRAJ
+      [ego_planner_node-1] [FSM]: from REPLAN_TRAJ to EXEC_TRAJ
+      [ego_planner_node-1] [FSM]: state: EXEC_TRAJ
+
+   REBUILT WITH OUR OWN EVALUATOR (planner/bspline.py, the one the adapter flies):
+      order=3  control points=11  knots=15  duration=1.600 s  traj_id=14
+      knots[0] = -0.600  (ego's negative-start convention: -order*interval)
+         t=0.00  p=[0.053 0.001 0.096]  |v|=0.002 m/s
+         t=0.80  p=[0.257 0.001 0.56 ]  |v|=1.527 m/s
+         t=1.60  p=[ 1.    -0.     2.027]  |v|=2.335 m/s
+
+=== WHAT THIS PROVES, AND WHAT IT DOES NOT =================================================
+PROVES: ego_planner_node, started from src/planner/ego_on_lio.launch.py, receives our cloud through
+the relay and our odometry through the two-remap wiring (odom_world <- /lio/odom for the twist,
+grid_map/odom <- /lio/robo/odom for the pose), leaves INIT, and PLANS -- answering a goal in L with a
+traj_utils/Bspline on planning/bspline, whose knots use ego's own negative-start convention and which
+our evaluator rebuilds without modification.
+DOES NOT PROVE: the ADAPTER end to end (ego_source.py sampling that spline and publishing /plan/cmd
+under a running supervisor), and of course NOTHING about flight.  The parked pregate answers 'does ego
+see us and plan'; it does not answer 'does the contract hold while the aircraft moves'.
+
+=== THE FIGURES ============================================================================
+   docs/figures/traj-xy-EGO-pregate-bspline.png
+      sha256 29e8e0a28caddbdd03b36ed5e6597e5444670a2f5d7df703831a64834e41b03d
+   docs/figures/traj-xy-RECT48-ego-cloud-box.png
+      sha256 9a337638329f06e7b8f94531e63306cebf51ecd251ae1a3d50c7b48dcd8087d6

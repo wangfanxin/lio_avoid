@@ -138,7 +138,16 @@ def main() -> int:
     OLD = [r'sys\.path\.insert\(0, "/mnt/d/distill_self/lio_avoid"\)',
            r'\$REPO/(params|worlds|docs|frozen|rviz)',
            r'os\.path\.join\(ROOT, "(worlds|docs|frozen|params|rviz)"',
-           r'"os\.path\.join\(HERE, "\.\."\)']
+           r'"os\.path\.join\(HERE, "\.\."\)',
+           # THE RUNTIME PATH, WHICH IS THE ONE THIS GATE MISSED FOR A WHOLE ROUND.  Reaching a PROJECT
+           # directory from a CODE root by joining ".." was the pre-move idiom, and two files kept it:
+           # `sim/lidar_imu.py` and `planner/rectangle_source.py` both defaulted `--world` to
+           # `<repo>/src/worlds/pillars.yaml`.  Every FLIGHT was unaffected (`run-mission.sh` passes
+           # `--world` explicitly), so nothing failed until a tool that does NOT pass it ran the sensor
+           # simulator and died on `FileNotFoundError` -- twice, in `sitl-lio.sh` and in this round's ego
+           # pregate.  A default path is a runtime path: grep it like one.
+           r'join\([A-Za-z_][A-Za-z_0-9]*,\s*"\.\.",\s*"(worlds|params|docs|frozen|rviz)"',
+           r'"\.\./\.\./(worlds|params|docs|frozen|rviz)"']
     tracked = subprocess.run(["git", "-C", PROJ, "ls-files", "src"], capture_output=True, text=True)
     files = [f for f in tracked.stdout.split("\n")
              if f.endswith((".py", ".sh")) and not any(v in f for v in VENDORED) and f != SELF_REL]

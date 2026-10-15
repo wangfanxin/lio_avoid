@@ -38,6 +38,16 @@ import time
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+#: THE CODE ROOT IS `src/`; THE WORLD IS NOT IN IT.  `HERE` is `<repo>/src/sim`, so the project root is TWO
+#: levels up.  The default used to step one level up from the code root and then into `worlds/`, which was
+#: right before the code moved under `src/` and has pointed at `<repo>/src/worlds/` ever since -- a directory
+#: that does not exist.  (The shape is not written out here on purpose: `tools/test-layout.py` refuses it
+#: ANYWHERE under `src/`, comments included, so that a re-introduction cannot hide behind prose.)  It went
+#: unnoticed because `tools/run-mission.sh` passes `--world` explicitly (`:431`), so every FLIGHT worked
+#: while the default was dead; `tools/sitl-lio.sh` does not pass it, and neither did this round's ego
+#: pregate, and BOTH start the sensor simulator and then die on `FileNotFoundError` (MEASURED 2026-10-15 in
+#: `logs/ego-pregate-20261015_221108/lidar_imu.log`, which is how it was found).
+PROJ = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, os.path.join(HERE, ".."))
 from common import frames                     # noqa: E402
 from sim import raycast                       # noqa: E402
@@ -340,7 +350,7 @@ class RosOut:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=14561, help="the tap fan-out port")
-    ap.add_argument("--world", default=os.path.join(HERE, "..", "worlds", "pillars.yaml"))
+    ap.add_argument("--world", default=os.path.join(PROJ, "worlds", "pillars.yaml"))
     ap.add_argument("--pattern", default=None,
                     help="the real MID-360 pattern csv; by default it is looked up (see "
                          "raycast.default_pattern_path) and the node REFUSES to run without it")

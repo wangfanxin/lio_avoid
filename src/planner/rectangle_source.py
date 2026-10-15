@@ -111,8 +111,16 @@ def tour_targets(corners):
 
 def main() -> int:
     here = os.path.dirname(os.path.abspath(__file__))
+    #: THE WORLD IS IN THE PROJECT ROOT, NOT IN `src/`.  The default used to climb one level out of the code
+    #: root and then into `worlds/`, which was right before the code moved under `src/` and pointed at
+    #: `<repo>/src/worlds/` afterwards -- a directory that does not exist.  Masked in flight
+    #: (`tools/run-mission.sh` always passes `--world`) and dead the moment the plan box is run by hand,
+    #: which `PLANNER=<path.py>` invites.  The same shape broke `sim/lidar_imu.py` and this round's ego
+    #: pregate, which is how it was found; `src/tools/test-layout.py` now refuses the shape anywhere under
+    #: `src/`, comments included.
+    proj = os.path.abspath(os.path.join(here, "..", ".."))
     ap = argparse.ArgumentParser()
-    ap.add_argument("--world", default=os.path.join(here, "..", "worlds", "pillars.yaml"))
+    ap.add_argument("--world", default=os.path.join(proj, "worlds", "pillars.yaml"))
     ap.add_argument("--z", type=float, default=None, help="override the mission altitude, m")
     ap.add_argument("--vertical-first-m", type=float, default=None,
                     help="PREPEND a single-point leg straight up from the pad to this altitude (m above the "

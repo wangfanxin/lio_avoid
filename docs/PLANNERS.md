@@ -172,6 +172,36 @@ Three more things a swapper must know, all read from this tree:
   (`plan_manage/launch/advanced_param.launch.py:148`).  A clearance claim must come from OUR world file and
   OUR C2 row, never from ego's map.
 
+FOUR TRAPS RATHER THAN FACTS, each read in that tree and each able to waste a sortie.  The full audits are
+`_stage/ego-audit-launch-and-packaging.md`, `_stage/ego-traj-representation.md` and
+`_stage/ego-audit-bspline-opt-and-path-searching.md`:
+
+1. **THE OPTIMISER'S PARAMETERS DO NOT HAVE SAFE DEFAULTS.**  All nine are declared in one `setParam`
+   (`bspline_opt/src/bspline_optimizer.cpp:8-34`), called ONCE with no parameter callback, and the four
+   weights plus `dist0` default to **−1.0** (`:11-19`).  With no YAML that is not "untuned": `lambda_smooth
+   = −1` makes the optimiser **MAXIMISE jerk**, and `dist0 = −1` makes the obstacle-distance cost a **silent
+   no-op** (the `dist_err < 0` branch, `:982-988`).  This is why the launch file in §4.2 sets all of them
+   explicitly and why `src/tools/install-ego-launch.py` checks every name against the node's declared list —
+   a file that stays silent about them does not inherit a sane default, it inherits a broken objective.
+2. **THE MAP'S EDGE AND A*'s POOL ARE DIFFERENT WALLS, AND THE SECOND ONE IS NEARER.**  Outside the map box
+   a query reads OCCUPIED (`grid_map.h:357-366`), and unknown cells INSIDE it read FREE — but `dyn_a_star`'s
+   pool is not the map: it is centred on the MIDPOINT OF EACH QUERY with a fixed ±`pool/2` extent
+   (`path_searching/src/dyn_a_star.cpp:17,128`), 100³ cells at the caller's hard-coded 0.1 m step
+   (`bspline_optimizer.cpp:581`), i.e. about **±5 m per axis from the midpoint**.  Two query points more
+   than ~10 m apart on any axis therefore put an endpoint OUTSIDE the pool, and the escape loops that would
+   fix it are unbounded (`dyn_a_star.cpp:101-113`) — which is what the Mission B log line
+   `Ran out of pool, index=88 100 25, POOL_SIZE=100 100 100` is: index `y == POOL_SIZE_(1)`, ~5 m off the
+   midpoint.  **Our arena is 12 × 12 m, so this is not hypothetical for a long diagonal leg.**
+3. **THE HEADER COMMENTS INVERT THE DATA LAYOUT.**  `bspline_optimizer.h:16-17` and `uniform_bspline.h:18-20`
+   say the control points are "Nx3, each row is a point"; the code treats them as **3×N column-major** (column
+   j is point j).  A port written from the comments gets a transposed trajectory — which evaluates, and is
+   wrong.
+4. **THE FEASIBILITY LIMITS ARE SOFT, AND THE ONLY HARD CHECK IS ELSEWHERE.**  `max_vel`/`max_acc` enter as
+   quadratic penalties (`bspline_optimizer.cpp:1240,1271`); nothing is clamped or projected there.  The
+   hard-ish enforcement is `checkFeasibility`/refine with a 5 % tolerance
+   (`uniform_bspline.cpp:144,166`).  So "the planner respected our limits" is a claim about the
+   FEASIBILITY CHECK, not about the optimiser, and the FCU remains the only thing that bounds the flight.
+
 WHAT ITS MAP DEMANDS OF US — the wiring, read in this tree, and the one item that will silently ruin a
 sortie if it is missed:
 
@@ -239,16 +269,26 @@ a claim about one adapter.
   does is asserted offline — but **"ego flies Mission A" is NOT demonstrated.**
 * Mission B's own record stands as it was written (`docs/metrics/ego-*.txt`, `phaseB-*.txt`): the anchoring
   defect, the clock defect, the map pool exhaustion.  Nothing in this file supersedes those measurements.
-* **The launch file is installed and the node starts from it; that is the whole of what is proven about it.**
-  Nothing has fed it a cloud or an odometry message, it has been given no goal, and it has produced no
-  B-spline on this stack.  The two things that stood between here and a sortie are now WRITTEN and neither is
-  a launch parameter — **`src/planner/cloud_relay.py`** decimates `/lio/cloud_world` onto the 0.10 m lattice
-  the map stores anyway and publishes it RELIABLE, and **`PLANNER=ego` now starts the second process** the
-  sortie needs (`EGO_STACK=1`: `ros2 launch ego_planner ego_on_lio.launch.py` plus the relay, stopped first
-  in the teardown) — but **neither has been run against a live LIO, and no cloud has ever reached ego's map
-  from this stack.**  The relay's arithmetic is asserted offline (`--selftest`: one point per cell,
-  idempotent, ego's box on all three axes) and its achieved ratio is printed at runtime, because the ratio on
-  the real scan is not something a synthetic cloud can stand in for.
+* **The launch file HAS now been fed live data and HAS produced a B-spline — and it still has never flown.**
+  MEASURED 2026-10-15 in `logs/ego-pregate-20261015_221405` (a PARKED stack: SITL, the simulated MID-360, the
+  LIO, the relay and `ego_planner_node`; no arming, no supervisor, no bridge, no `/plan/cmd`): the relay
+  carried **100 scans, 1 945 868 → 847 564 points (43.6 % kept), 0 cropped**, the FSM left `INIT` for
+  `WAIT_TARGET` and its `no odom.` line count fell from **11 to 1** — so both remaps in §4.2 deliver — and a
+  goal in L on `/move_base_simple/goal` produced a real `planning/bspline` message (`order: 3`, `traj_id:
+  14`, knots starting at −0.6 s, i.e. ego's own negative-start convention) with the FSM cycling
+  `EXEC_TRAJ ↔ REPLAN_TRAJ`.  `src/tools/test-planner-knob.py`'s dry run covers the harness's side of this
+  and `tests/…`/`docs/metrics/ego-pregate-20261015.txt` the rest.  What is still NOT demonstrated: the
+  ADAPTER end to end (`ego_source.py` sampling that spline and publishing `/plan/cmd` under a running
+  supervisor) and, of course, flight.  The parked pregate answers "does ego see our cloud and our odometry,
+  and does it plan"; it does not answer "does the contract hold while the aircraft moves".
+* **And the pregate found a defect that had nothing to do with ego.**  `sim/lidar_imu.py` and
+  `planner/rectangle_source.py` both defaulted `--world` to a path built by climbing one level out of the
+  CODE root — correct before the code moved under `src/`, and `<repo>/src/worlds/…` afterwards, which does
+  not exist.  Every FLIGHT was unaffected (`run-mission.sh` passes `--world` explicitly), so it survived a
+  whole round and only surfaced when a tool that relies on the default ran the sensor simulator:
+  `sitl-lio.sh` and this pregate, both of which died on `FileNotFoundError` while the LIO came up on an empty
+  feed.  Fixed, and `src/tools/test-layout.py` now refuses that shape ANYWHERE under `src/`, comments
+  included.
 * The acceptance rows (A1–A4, B1–B3, C1, C2) are defined against a commanded rectangle and a leg phase log.
   A planner that does not fly a rectangle can be swapped in, but those rows then measure something else —
   which is why a swap must state which rows still apply.
