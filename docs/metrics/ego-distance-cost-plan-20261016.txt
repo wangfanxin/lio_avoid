@@ -71,3 +71,58 @@ before it.
 
 Read with: `docs/STATUS.md` rows 85 (the distribution), 104 (the localisation), 108 (every lever flown) and
 `docs/metrics/ego-margin-budget-20261016.txt`.
+
+=== PLAN STEP 2, SCOPED (round 40): WHERE THE FIELD WOULD BE REBUILT ======================
+Generated from the greps of `grid_map.cpp` rather than written in advance.  The map's per-message path and
+every line that touches the buffer the collision check reads:
+
+the functions that walk `occupancy_buffer_` (line : statement):
+    118:  md_.occupancy_buffer_ = vector<double>(buffer_size, mp_.clamp_min_log_ - mp_.unknown_flag_);
+    119:  md_.occupancy_buffer_inflate_ = vector<char>(buffer_size, 0);
+    234:        md_.occupancy_buffer_inflate_[toAddress(x, y, z)] = 0;
+    529:    if (log_odds_update >= 0 && md_.occupancy_buffer_[idx_ctns] >= mp_.clamp_max_log_)
+    533:    else if (log_odds_update <= 0 && md_.occupancy_buffer_[idx_ctns] <= mp_.clamp_min_log_)
+    535:      md_.occupancy_buffer_[idx_ctns] = mp_.clamp_min_log_;
+    543:      md_.occupancy_buffer_[idx_ctns] = mp_.clamp_min_log_;
+    546:    md_.occupancy_buffer_[idx_ctns] =
+    547:        std::min(std::max(md_.occupancy_buffer_[idx_ctns] + log_odds_update, mp_.clamp_min_log_),
+    607:        md_.occupancy_buffer_[idx] = mp_.clamp_min_log_ - mp_.unknown_flag_;
+    613:        md_.occupancy_buffer_[idx] = mp_.clamp_min_log_ - mp_.unknown_flag_;
+    624:        md_.occupancy_buffer_[idx] = mp_.clamp_min_log_ - mp_.unknown_flag_;
+    630:        md_.occupancy_buffer_[idx] = mp_.clamp_min_log_ - mp_.unknown_flag_;
+    641:        md_.occupancy_buffer_[idx] = mp_.clamp_min_log_ - mp_.unknown_flag_;
+    647:        md_.occupancy_buffer_[idx] = mp_.clamp_min_log_ - mp_.unknown_flag_;
+    664:        md_.occupancy_buffer_inflate_[toAddress(x, y, z)] = 0;
+    673:        if (md_.occupancy_buffer_[toAddress(x, y, z)] > mp_.min_occupancy_log_)
+    686:            md_.occupancy_buffer_inflate_[idx_inf] = 1;
+    698:        md_.occupancy_buffer_inflate_[toAddress(x, y, ceil_id)] = 1;
+    910:            md_.occupancy_buffer_inflate_[idx_inf] = 1;
+    938:        md_.occupancy_buffer_inflate_[toAddress(x, y, ceil_id)] = 1;
+    966:        if (md_.occupancy_buffer_[toAddress(x, y, z)] < mp_.min_occupancy_log_)
+    1001:      for (size_t k = 0; k < md_.occupancy_buffer_inflate_.size(); ++k)
+    1002:        if (md_.occupancy_buffer_inflate_[k] == 1)
+    1012:      // PATCH DIAG/2: THE MAP SLICE.  md_.occupancy_buffer_inflate_ -- the array A* and
+    1065:        if (md_.occupancy_buffer_inflate_[toAddress(x, y, z)] == 0)
+
+the per-message entry points:
+    169:      "grid_map/cloud", 10, std::bind(&GridMap::cloudCallback, this, std::placeholders::_1));
+    208:void GridMap::resetBuffer()
+    213:  resetBuffer(min_pos, max_pos);
+    219:void GridMap::resetBuffer(Eigen::Vector3d min_pos, Eigen::Vector3d max_pos)
+    578:void GridMap::clearAndInflateLocalMap()
+    705:  publishMapInflate(true);
+    706:  publishMap();
+    740:    clearAndInflateLocalMap();
+    815:void GridMap::cloudCallback(const sensor_msgs::msg::PointCloud2::ConstPtr &img)
+    835:  this->resetBuffer(md_.camera_pos_ - mp_.local_update_range_,
+    943:void GridMap::publishMap()
+    990:void GridMap::publishMapInflate(bool all_info)
+    1088:  // RCLCPP_INFO(rclcpp::get_logger("publishMapInflate"), "pub map");
+
+A distance field belongs on the same cycle as the reset+mark pair, so the hook is the end of the
+per-message path -- after the marking loop finishes and BEFORE any consumer reads the buffer.  The
+exact line is whichever of the above is the marking loop's closing brace in `cloudCallback`; the
+implementer should confirm it in the file rather than trusting this line, and the property to keep is
+unchanged: the field must be built from `occupancy_buffer_inflate_` (what the collision check and A*
+read), not from the raw buffer, or the optimiser and the check will disagree silently.
+
