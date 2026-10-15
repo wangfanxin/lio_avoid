@@ -1,0 +1,107 @@
+THE EKF A/B: THE VELOCITY NOISE AND THE TIGHT POSITION NOISE, ONE VARIABLE PER SORTIE
+=========================================================================================
+Written 2026-10-16 by the round that closed items 3 and 4 of the Mission A brief.  Every number is read
+from the sortie's own `metrics.txt` (or, where stated, recomputed by the current tool from that sortie's own
+logs); the parameter in force is read back from the FCU's own PARM records by `tools/bin-params.py`, never
+from what we passed on the command line.  Figure `docs/figures/ekf-ab.png`.
+
+
+1. THE INSTRUMENT THIS NEEDED FIRST
+-----------------------------------
+A4 was a POSITION row.  The velocity reaches the EKF on a different channel with different statistics, so
+the only honest way to judge a velocity-noise change was to measure it.  `tools/metrics.py` now reads the
+FCU's own log twice -- **XKF1 VN/VE/VD** (the estimate) and **VISV VX/VY/VZ** (the stream the EKF was fed,
+documented North-East-Down in `AP_VisualOdom/LogStructure.h:69-79`) -- and prints both against the truth on
+the clock A4's position fit already established, plus each stream's own best-fit lag, because the two lags
+differ by ~110 ms and that difference is a delay a gate would otherwise score as an error.
+
+THE VELOCITY STREAM, measured (`docs/metrics/velocity-stair-20261016.txt`): 46.96-47.11 Hz carrying
+**10.01 Hz of real information**, 79 % of samples HELD (median hold 5 samples = 112.5 ms), steps at p90
+125.7-138.8 and max 271.6-282.2 mm/s.  A4-v then measures its error against the truth: **68.8-83.8 mm/s rms
+as consumed**, and **23.8-25.8 mm/s at its own lag of -104..-130 ms**.  `VISO_VEL_M_NSE` in force was
+**0.0300** (read back from the FCU).
+
+
+2. THE ARMS (one flight each except the control, which is five)
+---------------------------------------------------------------
+  sortie                    VISO_VEL_M_NSE  VISO_POS_M_NSE   A4 pos (mm)   A4-v (mm/s)   A4-v vert
+  CONTROL (5 sorties)            0.0300          0.0300       17.03-22.08   31.75-38.28   30.87-46.27
+    RECT34/RECT35/RECT36/RECT37/RECT39
+    + the same-session control RECT40-ab-control          0.0300/0.0300   18.24      28.65       45.23
+  RECT41-ab-vnse                 0.0690          0.0300       13.92         20.73       30.09
+  RECT42-ab-tight                0.0300          0.0100       13.11         36.62       42.74
+  RECT43-ab-both                 0.0690          0.0100        7.68         21.54       35.51
+  PROMOTED, three more sorties   0.0690          0.0100        8.04 / 8.04 / 8.04   21.42 / 21.06 / 21.49
+    RECT44/RECT45/RECT46-accept-promoted
+
+  The A4-v column for RECT34/35/36/37/39 is the CURRENT tool's recomputation of those runs' own logs (their
+  `metrics.txt` files predate the row); every other A4-v number is the line the flight itself wrote.
+
+  WHAT EACH ARM DOES, judged against the five-sortie control band:
+   * **0.069 m/s lowers the VELOCITY error far outside the band**: 20.73 against 31.75-38.28 mm/s (-40 %),
+     and it lowers the POSITION error too (13.92 against 17.03-22.08 mm).
+   * **tight POS** (`VISO_POS_M_NSE 0.010`) lowers position to 13.11 mm, outside the band on the low side,
+     and leaves the velocity inside it (36.62) -- correct, because that file does not touch the velocity.
+   * **BOTH** give **7.68 mm** position (a 2.5x improvement) and **21.54 mm/s** velocity, and three further
+     sorties on the promoted file reproduce it to the last digit of the printed row: **8.04 / 8.04 / 8.04 mm
+     and 21.42 / 21.06 / 21.49 mm/s**.
+   * NOTHING ELSE MOVED in any arm: A1 3.23-3.37 mm, A2 1.80-1.91 mm, B1 E 2.110-2.130 / N 1.245-1.329,
+     C2 0 samples inside 0.20 m in every sortie (minimum pillar-surface 0.555-0.570 m), B4 land+disarm,
+     dwell 4 of 4 both ways -- and the tight configuration's OWN falsifier holds: `Ign` is **0 of 2819-2960
+     VISP and 0 of 2819-2960 VISV** records in all four arms, so the tighter noise is not throwing good
+     measurements away (`params/ekf_trust_lio_tight.parm` states that as its acceptance test).
+
+
+3. THE TWO DECISIONS THE BRIEF ASKED FOR
+----------------------------------------
+**(3) THE VELOCITY STAIRCASE IS TREATED BY SETTING THE PARAMETER HONESTLY, WITH THE MEASUREMENT.**  The
+value is **0.069 m/s**, the lower end of the as-consumed error of the stream the FCU is actually fed, and the
+effect is measured on the FCU's own velocity estimate: 31.75-38.28 -> 20.73-21.49 mm/s.  The alternative
+reading (0.024 m/s, the same stream's error once its own ~110 ms of staleness is removed) was NOT chosen,
+because that reading assumes the EKF compensates the delay; the as-consumed number is the conservative one,
+and the flight that distinguishes them is the A arm flown here.  What the parameter still cannot express is
+the CORRELATION -- five identical samples presented as five independent measurements -- and the note in
+`velocity-stair-20261016.txt` says so.
+
+**(4) THE TIGHT EKF CONFIGURATION IS PROMOTED, AS THE COMBINATION.**  `params/ekf_trust_lio_measured.parm`
+is a byte-for-byte copy of `params/ekf_trust_lio_tight.parm` except for `VISO_VEL_M_NSE 0.03 -> 0.069`
+(diff of the effective lines: one line), because the A/B shows the two changes are complementary and only
+the pair reaches 7.68-8.04 mm.  **THE FROZEN SET WAS REVISED AS A DELIBERATE ACT**: the new file was added
+with `tools/frozen-check.py --update params/ekf_trust_lio_measured.parm`, which prints what it stamped, and
+`params/ekf_trust_lio.parm` and `params/ekf_trust_lio_tight.parm` are BYTE-FOR-BYTE UNCHANGED -- every
+accepted row that names them still names the file it flew.  The locked acceptance baseline (RECT23/24/26)
+was flown on `ekf_trust_lio.parm` and KEEPS that provenance; the promoted file's own three sorties are on
+the record beside it.
+
+
+4. THE HONEST POOLED RATIO, WITH THE ONE MISS IN IT
+---------------------------------------------------
+`tools/acceptance-table.py` over **every** nominal sortie of the F1/F2 stack (18 of them: RECT23, 24, 26,
+31, 32, 33, 34, 35, 36, 37, 39, 40, 41, 42, 43, 44, 45, 46):
+
+    POOLED: 17 of 18 sorties with 4 of 4 corners hovered >= 5.0 s (strict, airborne > 0.5 m);
+            71 of 72 corner visits >= 5.0 s
+
+THE ONE MISS IS `RECT36-ratio`, and it is stated rather than pooled away: **c2 held 4.14 s** (the other
+three corners 6.35 / 8.07 / 8.91 s).  It was NOT in the F3 batch's pool either -- that run's metrics step
+died (the launcher was edited while bash was reading it, section 5 below) and the table listed it as
+incomplete -- so the batch's "9 of 9" was true of the nine sorties it judged and silent about this one.
+`STATUS` row 57 said "dwell 4 of 4 both ways" for the four profile sorties; THAT CLAIM WAS WRONG for
+RECT36 and row 59 corrects it.
+
+THE PROMOTED CONFIGURATION'S OWN POOL, four sorties (RECT43 + the three promoted acceptance sorties):
+**4 of 4 sorties with 4 of 4 corners, 16 of 16 corner visits**, A4 7.68-8.04 mm, A1 3.27-3.37, A2 1.80-1.86,
+B2 6 of 6 legs, C2 0 of 60121-60709, B4 land+disarm.
+
+
+5. WHAT THIS ROUND DOES NOT CLAIM
+---------------------------------
+  * A4-v is a NEW row with no history: 0.069 m/s rests on ONE arm plus three reproducing sorties, judged
+    against a five-sortie control band -- not on a long record.
+  * B1 still FAILS (E 2.110-2.130 against 2.10) on every arm, including the promoted one; the promotion
+    moves the ESTIMATE, not the flight, and the ring that makes B1's box is untouched by it.
+  * The staircase itself is NOT fixed: the stream still carries 10.01 Hz of information at 47 Hz.  Only the
+    parameter that describes it changed.
+  * `RECT36-ratio`'s dwell miss is not explained in this file beyond the number; it is the same shape as
+    RECT11's (row 49: one arrival split in two by the ring) and the trace tool that names the split is
+    `tools/corner-dwell-trace.py <run> <corner>`.

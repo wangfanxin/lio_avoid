@@ -1,0 +1,86 @@
+# THE PROMOTED CONFIGURATION (2026-10-16): the tight position noise AND the measured velocity noise.
+#
+# WHY: measured, one variable per sortie, against FIVE control sorties on `params/ekf_trust_lio.parm`
+# (`tools/metrics.py`'s A4 row for position and its new A4-v row for velocity; evidence
+# `docs/metrics/ekf-ab-20261016.txt`):
+#
+#            arm                        A4 position (mm)        A4-v velocity (mm/s)
+#   control, 5 sorties (RECT34/35/36/37/39)   17.03 - 22.08        31.75 - 38.28
+#   VISO_VEL_M_NSE 0.069 (RECT41)             13.92                20.73
+#   tight position noise (RECT42)             13.11                36.62  (inside the control band)
+#   BOTH, this file (RECT43)                   7.68                21.54
+#
+# The velocity change is the honest one: the stream the EKF is fed carries 10.01 Hz of information at ~47 Hz
+# with 79 % of its samples HELD (hold median 112.5 ms) and steps at p90 126-139 mm/s, and its error against
+# the truth is 68.8-83.5 mm/s rms AS CONSUMED (23.8-25.8 mm/s once its own ~110 ms of staleness is removed).
+# 0.069 m/s is the lower end of the as-consumed measurement, which is the conservative reading.
+#
+# A1/A2/B1, the dwell and C2 are unchanged in every arm: this configuration moves the ESTIMATE, not the
+# flight.
+#
+# THIS FILE IS A COPY OF `params/ekf_trust_lio_tight.parm` with VISO_VEL_M_NSE changed; nothing else.
+
+# Trust the LIO MORE: one variable changed, and its two couplings handled explicitly.
+#
+# WHY THIS FILE EXISTS.  `params/ekf_trust_lio.parm` is FROZEN (frozen/mission_a.manifest:56,
+# sha 4f3d4ff0...) because every accepted A/B/C row in docs/metrics/ was flown with it.  This file is a
+# COPY of it with ONE physical change, selected per-run with `EKF_PARM=`, so both configurations stay on
+# the record and the frozen set stays byte-for-byte intact.
+#
+# THE MEASUREMENT THAT MOTIVATES IT (2026-10-16).  The FCU's own estimate (XKF1 in the flight log) sits
+# 16.2-21.2 mm RMS from the truth tap horizontally and 29.0-44.6 mm vertically, while the LIO it is fed is
+# 3.38-4.57 mm from the same truth (A1) -- a factor of 4-5.  It is NOT lag: best-fit lag is +2..+20 ms and
+# the residual barely moves at zero lag (e.g. RECT7 17.93 -> 17.92 mm).  It is the noise the filter is TOLD.
+#
+# WHICH PARAMETER ACTUALLY CARRIES THAT NOISE (read from the source, not assumed):
+#   * `EK3_POSNE_M_NSE` is `_gpsHorizPosNoise` (libraries/AP_NavEKF3/AP_NavEKF3.cpp:184) and
+#     `EK3_VELNE_M_NSE`/`EK3_ALT_M_NSE` are the GPS velocity and BARO altitude noises.  With
+#     `EK3_SRC1_POSXY/POSZ/VELXY/VELZ/YAW = 6` (ExternalNav) no GPS is fused, so those three are INERT here.
+#   * `VISO_TYPE 1` selects the MAVLink vision backend, and
+#     `libraries/AP_VisualOdom/AP_VisualOdom_MAV.cpp:42` does
+#     `posErr = constrain_float(posErr, _frontend.get_pos_noise(), 100.0f)` -- i.e. **VISO_POS_M_NSE is a
+#     FLOOR** for the position noise.  Our ODOMETRY sends zero covariances
+#     (`bridge/mavlink_impl.py:442-449`, `[0.0]*21, [0.0]*21`), so the message declares no error and the
+#     floor is what the EKF uses.  The flight log proves it: `PErr` is a constant 30.00 mm = the old 0.03,
+#     `VErr` a constant 30.00 mm/s = VISO_VEL_M_NSE (direct, :79), `AErr` a constant 20.00 mrad = the old
+#     0.02.  Code and log agree, so this is not an inference.
+#
+# THE ONE CHANGE: VISO_POS_M_NSE 0.03 -> 0.01 (30 mm -> 10 mm).  The measured error is 3.4-4.6 mm, so
+# 10 mm is still 2x-3x conservative -- deliberately: this is the first step, not the limit.
+#
+# ITS TWO COUPLINGS, BOTH HANDLED (the frozen file documents what happens when they are not:
+# "with 3.0 the tolerance was 90 mm and a normal trajectory-following manoeuvre tripped it -- 3 of 5
+# Mission B flights ended in LAND mode", EKF failsafe, not the estimator, was the problem):
+#   1. FS_EKF_THRESH is compared against the innovation consistency TEST RATIO
+#      (`AP_AHRS::get_variances` -> `NavEKF3::getVariances`, "return the innovation consistency test
+#      ratios", libraries/AP_NavEKF3/AP_NavEKF3.cpp:1532), which scales as 1/assumed-noise.  Shrinking the
+#      position noise 3x inflates the ratio 3x, so the threshold moves 3x with it (10.0 -> 30.0) and the
+#      ABSOLUTE tolerance stays where the frozen file put it (~300 mm: 0.300 / 0.01 = 30).
+#   2. `EK3_POS_I_GATE` is "the percentage number of standard deviations ... applied to the position
+#      measurement innovation consistency check" (AP_NavEKF3.cpp:186-192, 500 = 5.00 SD), so it too is in
+#      units of the assumed noise: 5 SD x 30 mm was 150 mm absolute, 5 SD x 10 mm would be 50 mm -- 3x
+#      TIGHTER in metres, which is how good measurements start getting rejected.  It is therefore raised
+#      by the same 3x (500 -> 1500) so the gate stays at 150 mm absolute.  The acceptance check for this
+#      is `Ign` in the VISP/VISV log records, which was 0 of 2632 on the reference flight: if it becomes
+#      non-zero, the tighter configuration is throwing good measurements away and has FAILED.
+#
+# CHANGED IN THIS FILE: VISO_VEL_M_NSE 0.030 -> 0.069, and this is the ONE difference from
+# `params/ekf_trust_lio_tight.parm`.  The tight file left it alone on purpose so that its own
+# result stayed attributable; the measurement it was waiting for now exists and is in this file's
+# header.  Still unchanged from the tight file: VISO_YAW_M_NSE (EKF3 floors the yaw error at
+# 5 deg = 87 mrad anyway, AP_NavEKF3_Measurements.cpp:1129) and the EK3_* noise entries, which are
+# inert here (no GPS is fused: EK3_SRC1_* = 6, ExternalNav).
+EK3_POSNE_M_NSE 0.03
+EK3_VELNE_M_NSE 0.03
+EK3_VELD_M_NSE 0.05
+EK3_ALT_M_NSE 0.10
+EK3_YAW_M_NSE 0.02
+VISO_POS_M_NSE 0.01
+VISO_VEL_M_NSE 0.069          # MEASURED (was 0.030): see the header
+VISO_YAW_M_NSE 0.02
+EK3_ACC_P_NSE 0.10
+EK3_GYRO_P_NSE 0.003
+EK3_ABIAS_P_NSE 0.002
+EK3_GBIAS_P_NSE 0.0002
+EK3_POS_I_GATE 1500
+FS_EKF_THRESH 30.0
