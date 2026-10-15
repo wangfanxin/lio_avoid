@@ -476,3 +476,25 @@ and a stale patch or a stale build would silently misrepresent every future meas
 
 So the configuration every future sortie starts from is the one the record documents, and the one experimental
 code change is out of the tree and preserved as `_stage/apply-clearance1.py`.
+
+=== WHERE THE PLAN'S WORST POINT ACTUALLY LIES: IN BLIND SPACE, NOT IN MAPPED SPACE (corrects rows 85-86) ==
+Offline, from data already on disk (`_stage/plan-worst-in-map.py`): take each run's WORST published plan point
+(from `traj.csv.points.csv`, the plan in W), convert it to L, find the DIAG/2 slice whose camera is nearest, and
+ask the map's own buffer what it says about that cell.
+
+    run                          plan min     the map AT that point     nearest marked cell
+    DIAG8-map-slice (window 0)    -0.285 m    FREE                     0.90 m away
+    DIAG15-fitness4               -0.285 m    FREE                     0.10 m away
+    DIAG17-fitness4-repro         -0.286 m    FREE                     0.83 m away
+    DIAG14-onecell-groundfix      -0.284 m    FREE                     0.18 m away
+    DIAG9-window3                 +0.061 m    **OCCUPIED**             --
+
+**In four of five runs the plan's worst point lies in space the map never marked**, a tenth of a metre to nearly a
+metre from the nearest cell it did mark; in only one (DIAG9) did the plan pass through space its own map called
+occupied.  So the -0.28 m excursions that rows 85-86 treated as "the optimiser drawing through obstacles" are
+mostly **the single-scan shell again** -- the map was blind where the plan went, which is the very fault the relay
+window was built for.  That does not withdraw what the window measured (it does improve what the map holds) nor
+the observation that this variant has no obstacle-distance cost (which explains the 1st-percentile HUGGING), but
+it does correct the attribution: **the penetrations are predominantly a map-coverage fault, and the next lever is
+more persistence rather than a different optimiser.**  It also explains why the window's own three runs still
+penetrate: 3 s of union is not enough to have seen the surface the vehicle is about to pass through.
