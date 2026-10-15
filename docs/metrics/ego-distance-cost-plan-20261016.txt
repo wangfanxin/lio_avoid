@@ -391,3 +391,21 @@ SO, CORRECTED:
 This is the twelfth self-correction of the investigation, and it is the species I have learned to look for: a
 conclusion drawn from a metric without reading the run that produced it.  The metric was computed correctly; the
 RUN was not what the metric's name says.
+
+=== THE FLYAWAY, LOOKED FOR IN THE RUN'S OWN WORDS (round 56) ==========================================
+DIAG29's SITL log holds only startup parameter loading (43 lines, all "Loaded defaults from ..."), so the FCU's
+flight events are not there.  The remaining place an ArduPilot failsafe would name itself is the supervisor's own
+final line -- which earlier greps truncated at 150 characters:
+
+    [ 103.06] final: armed=True mode=LAND alt AMSL 584.1 m; 0 setpoints, 0 external-nav messages (the SUPERVISOR sent none of them: class 84 is the bridge's)
+    [  12.58] bridge/mavlink: takeoff 0.20 m above the pad sent VERBATIM as packet.z; the FCU datum (alt_amsl - alt_rel) is 584.1 m and is NOT added (adding it was the defect: the executor ADDS packet.z to its own up-estimate, takeoff.cpp:51-57)
+    [  17.27] the go goes out NOW (--trigger-on-airborne): the plan's setpoints, not the FCU's take-off target, bound the climb
+    [  58.06] ABORT: the FCU left the mission mode (LAND)
+    [ 103.06] the FCU's last words: EKF Failsafe | EKF Failsafe Cleared | EKF variance | EKF Failsafe
+    [  19.34] bridge/relay: ENABLED (the supervisor's /plan/trigger) -- the command stream reaches message 84 from now on
+    [  60.12] bridge/relay: DISABLED after 2040 setpoints (the FCU left GUIDED (LAND): the plan is off the wire) -- nothing of the plan reaches the FCU
+
+Recorded verbatim rather than paraphrased, because the next step (if this line is pursued) is to decide whether
+the mode change came from a failsafe this project can name or from something the harness itself did.  What is
+already established and unchanged: the aircraft reached 508 m and 245 m out, the FCU was in LAND with the bridge
+reporting `armed=1`, and the plan box was still publishing under a single trajectory id (row 117).
