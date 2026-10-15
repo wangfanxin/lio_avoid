@@ -454,3 +454,15 @@ Two refused patches in a row, both leaving the tree untouched: the rule is doing
 correction is the third time this project has mistaken one component for another (the published visualisation for
 the planner's buffer, `traj.csv` for `traj.csv.points.csv`, and now the class-84 bridge for the supervisor's own
 MAVLink link) -- each caught by asking the artefact itself rather than trusting the reasoning that pointed at it.
+
+=== ITEM 1 AT THE CORRECTED LOCATION (round 60): WHAT THE SUPERVISOR PACKAGE ACTUALLY CONTAINS =========
+Following row 120's correction -- the FCU's text never reaches `src/bridge/bridge_node.py` -- the search moved to
+`src/supervisor/`, where the supervisor's own MAVLink endpoint lives:
+
+    17:  * its OWN endpoint   -- heartbeat/position age, armed, mode, landed_state, statustext.
+
+Whatever this shows, the rule stands: patch only an unambiguous site, and record the candidates when there is
+none.  The trace's purpose is unchanged and worth restating, because it is why item 1 exists at all: DIAG29's
+entire cause -- `EKF Failsafe | EKF Failsafe Cleared | EKF variance | EKF Failsafe` -- survived as ONE teardown
+line that a grep of mine had truncated at 150 characters.  A failsafe that is only reported when the run ends
+cannot be correlated with anything that happened before it.
