@@ -789,3 +789,18 @@ evidence the goal actually asks for.
     blind/outside: 2 of 6     occupied: 4 of 6
 
 The aircraft's closest approaches land in space its own map DID mark in 4 of 6 runs -- so with the map no longer blind, the residual C2 failures are the planner's and the controller's: the map holds the obstacle and the trajectory goes through it anyway.  That would move the conclusion one step further downstream than round 21 did, and it is the strongest statement yet that the next lever is not the map.
+
+=== PLAN OR TRACKING?  The truth's closest approach against the nearest published plan point ======
+
+    run                     arm         truth min    plan min there    plan-truth gap (m)
+    ------------------------------------------------------------------------------------
+    DIAG20-window8          window 8       +0.058    +0.040   0.018
+    DIAG21-window8-repro    window 8       +0.167    +0.126   0.044
+    DIAG22-window8-arm3     window 8       -0.276    -0.028   0.249
+    DIAG23-window8-arm4     window 8       +0.089    +0.089   0.003
+
+    the plan was ALSO inside the footprint there: 4 of 4
+    the plan was FINE and the aircraft was not:    0 of 4
+
+PLANNER DRAWS IT THERE
+(only pairs whose nearest plan point is within 1 m of the truth's position are counted, so a replan that moved the path elsewhere is not misread as a tracking error)
