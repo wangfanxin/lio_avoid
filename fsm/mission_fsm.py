@@ -149,6 +149,14 @@ class Mission:
         if self.args.bridge == "mavlink":
             from bridge.mavlink_impl import MavlinkBridge
             return MavlinkBridge(url=self.args.mav, log=self.log)
+        # FINDING (2026-10-16, verified at HEAD eba1033): `bridge/mavros_impl.py` DOES NOT EXIST, so this
+        # branch raises ModuleNotFoundError at the first call while `bridge/base.py:2`, `docs/PLAN.md:34`
+        # (decision 4) and `docs/ARCHITECTURE.md:225` ("mavros_impl exists and is unflown") all say it
+        # does.  NOT REPAIRED HERE: this file is being edited by another unit in this round, and writing
+        # the missing implementation is explicitly out of scope for the boundary refactor
+        # (refactor-bridge-plan.md section 8 item 11).  The doc half is recorded in
+        # `_stage/refactor-S2-findings.txt`; the code half is this comment, which is the honest form of
+        # "the switch has one setting" until the retraction round.
         from bridge.mavros_impl import MavrosBridge
         return MavrosBridge(log=self.log)
 
@@ -968,9 +976,15 @@ class Mission:
             except Exception as e:                      # pragma: no cover
                 self.log("could not command LAND after the abort: %s" % e)
         st = self.bridge.state()
+        # THE TRANSPORT'S OWN TALLY, through the declared interface: until 2026-10-16 this line read
+        # `self.bridge._sent_positions` / `._sent_nav`, i.e. the mission depended on a private attribute
+        # of the ONLY implementation, which a second implementation would silently break.  Same numbers:
+        # `counters()` returns exactly those two fields (`mavlink_impl.py:416-417`).  No `hasattr` guard
+        # on purpose -- a bridge that does not declare it must fail `tools/test-bridge-contract.py`
+        # BEFORE the sortie, not degrade to a zero in a log line.
+        _ctr = self.bridge.counters()
         self.log("final: armed=%s mode=%s alt AMSL %.1f m; %d setpoints, %d external-nav messages"
-                 % (st.armed, st.mode, st.alt_amsl_m, self.bridge._sent_positions,
-                    self.bridge._sent_nav))
+                 % (st.armed, st.mode, st.alt_amsl_m, _ctr["positions"], _ctr["external_nav"]))
         self.log("the FCU's last words: %s" % _texts(st))
         self.log_fh.close()
         if self.sp_log is not None:
