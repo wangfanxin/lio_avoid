@@ -426,6 +426,29 @@ def main() -> int:
     # The window is now from the arrival at corner 1 (the phase log's leg2 entry) to the end of the
     # last leg, which is the route the acceptance talks about.
     # t_sim_all / leg_idx are computed above, where A3 needed the route window; B1/B2/B3 use the same pair.
+    #
+    # THE WINDOW, THE BOUND AND THE FAIL, ADJUDICATED 2026-10-15 (tools/b1-window-probe.py).  Every clean
+    # sortie printed "E 2.139-2.155 m" against a 2.10 bound, and the standing hypothesis was that the window
+    # begins at the PAD, so the pad->corner-1 entry leg is inside the box and the 154 mm is the pad's own
+    # lateral offset.  Both halves are refuted by the run's own tap:
+    #   * THE PAD IS NOT IN THE WINDOW.  The entry leg is the FSM's leg1 phase, i.e. the phase BEFORE the
+    #     window opens: RECT7 leg1 = the truth E 0.001..0.455, N -0.010..0.371 for 2.3 s, and the window
+    #     opens at the leg2 entry, which is where the aircraft arrives at corner 1.  Had the entry leg been
+    #     inside, the E extent would be 2.577-0.585 m of ROUTE + the pad's 0.456 m of E, i.e. ~2.58 m, not
+    #     2.154 -- and the pad IS the origin, so its own E offset is 0.
+    #   * THE EXTENTS ARE NOT A WINDOW ARTEFACT EITHER.  Restricting the same window to the corner visits
+    #     (within 0.15 m of a commanded corner) reads E 2.194 m -- LARGER, not smaller -- on RECT6, RECT7,
+    #     RECT9 and RECT10; restricting it to everything after the first entry into the commanded box reads
+    #     E 2.154 / N 1.277 (RECT7).  So the corners themselves are outside the 2.10 bound, and B1 stays
+    #     FAIL.  What the extents are is the ARRIVAL RING of the position loop: at the fast arm's speed
+    #     (params/phase_a_mission_fast.parm, WP_SPD 2.0) the aircraft crosses a corner at 1.70 m/s and then
+    #     oscillates with a ~4 s period, E -83/+71 mm, before settling within a few mm of the command; the
+    #     5 s dwell holds the ring's envelope, so the box is command + the ring.  The same world and square
+    #     flown with the SLOW arm (params/phase_a_mission.parm, WP_SPD 0.25) report E 2.024-2.060 / N
+    #     1.247-1.291 m, PASS 10 of 10 (logs/missionA-stepB10-*), which is where the FAIL comes from.
+    # NO BOUND CHANGED, and the gated quantity is still the whole route; the corner-visit extent and the
+    # excursion are printed beside it as REPORTED so the row says what it measures.
+    m_corner = np.zeros(0, dtype=int)
     if traj_mode:
         # B1/B2/B3 are defined against a commanded rectangle and a leg phase log; a followed trajectory
         # has neither.  Skipped EXPLICITLY (this used to raise IndexError and truncate the evidence file
@@ -438,6 +461,12 @@ def main() -> int:
         p_route = p_tap[m_route] if len(m_route) else pw
         ex = float(p_route[:, 0].max() - p_route[:, 0].min())
         ny = float(p_route[:, 1].max() - p_route[:, 1].min())
+        # the corner visits inside the same window: "is the box the route, or the corners?" -- both are
+        # printed, and the one the verdict uses is the whole route, as it always was.
+        if corners:
+            d_corner = np.min(np.stack([np.linalg.norm(p_tap[:, :2] - np.asarray(c[:2], float), axis=1)
+                                        for c in corners]), axis=0)
+            m_corner = np.flatnonzero((t_tap >= route_t0) & (t_tap <= route_t1) & (d_corner <= 0.15))
     print()
     if traj_mode or not corners:
         print("B1/B2/B3 skipped: they are defined against a commanded rectangle (%s)"
@@ -458,10 +487,38 @@ def main() -> int:
         b1_ok = ex <= cw + 0.10 and ny <= ch + 0.10
         b1_legacy = ny <= ch + 0.06 and ex <= cw + 0.10
         print("B1 truth box extents over the route (%.1f s): E %.3f m  N %.3f m   "
-              "(command %.3f / %.3f; target <= %.2f / %.2f = +0.10 on both axes)  [%s]"
+              "(command %.3f / %.3f; target <= %.2f / %.2f = +0.10 on both axes, the same 0.10 m B3 "
+              "allows for ONE corner arrival)  [%s]"
               % (len(m_route) and (t_tap[m_route][-1] - t_tap[m_route][0]) * 1e-6, ex, ny, cw, ch,
                  cw + 0.10, ch + 0.10, "PASS" if b1_ok else "FAIL"))
         print("   against the legacy bound %.2f on N: %s" % (ch + 0.06, "PASS" if b1_legacy else "FAIL"))
+        # THE REPORTED COMPANIONS (2026-10-15): they answer the question a FAIL raises -- is the box the
+        # WINDOW's fault or the AIRCRAFT's? -- without touching the bound or the verdict.
+        if len(m_corner) > 3:
+            q = p_tap[m_corner]
+            print("   the same window restricted to the corner visits (truth within 0.15 m of a commanded "
+                  "corner, %d of %d samples): E %.3f m  N %.3f m  [REPORTED, not gated]"
+                  % (len(m_corner), len(m_route), q[:, 0].max() - q[:, 0].min(),
+                     q[:, 1].max() - q[:, 1].min()))
+        if len(m_route) > 3:
+            q = p_tap[m_route]
+
+            def _corner_of(pt):
+                dd = np.array([np.hypot(pt[0] - c[0], pt[1] - c[1]) for c in corners])
+                k = int(np.argmin(dd))
+                return k + 1, float(pt[0] - corners[k][0]), float(pt[1] - corners[k][1])
+
+            k0, de0, dn0 = _corner_of(q[int(np.argmin(q[:, 0]))])
+            k1, de1, dn1 = _corner_of(q[int(np.argmax(q[:, 0]))])
+            step = np.linalg.norm(np.diff(q[:, :2], axis=0), axis=1) / np.maximum(
+                np.diff(t_tap[m_route]) * 1e-6, 1e-9)
+            dmin_c = np.min(np.stack([np.linalg.norm(q[:, :2] - np.asarray(c[:2], float), axis=1)
+                                      for c in corners]), axis=0)
+            near = dmin_c[:-1] <= 1.0
+            v_peak = float(step[near].max()) if near.any() else float("nan")
+            print("   where the E extent comes from: corner %d %+.3f m (N %+.3f) and corner %d %+.3f m "
+                  "(N %+.3f) from their own commanded point, reached with a peak speed of %.2f m/s within "
+                  "1 m of a corner  [REPORTED, not gated]" % (k0, de0, dn0, k1, de1, dn1, v_peak))
 
     # B2 straightness per leg: fit a line to each leg's truth samples, take the max perpendicular error.
     # Windowing is by SIM TIME (the phase log's second column), because the recordings are indexed by it
@@ -486,7 +543,11 @@ def main() -> int:
         L = np.linalg.norm(d)
         if L < 1e-6:
             continue
-        perp = np.abs(np.cross(np.tile(d, (len(seg), 1)), seg - a)) / L
+        # the 2-D cross product written out: np.cross on 2-component vectors is DEPRECATED in numpy 2 and
+        # printed "Arrays of 2-dimensional vectors are deprecated" on every run's stderr.  Same number,
+        # same formula (d_x*r_y - d_y*r_x), so B2's millimetres are untouched.
+        r = seg - a
+        perp = np.abs(d[0] * r[:, 1] - d[1] * r[:, 0]) / L
         worst = float(np.max(perp))
         b2_ok += worst <= 0.050
         print("   leg %d: %5d samples, length %.3f m, worst perpendicular %.1f mm (<= 50) %s"

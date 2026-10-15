@@ -1,0 +1,537 @@
+Mission A, B1 adjudicated: the window is NOT the pad, and the extents ARE at the corners
+date: 2026-10-15   tools: tools/b1-window-probe.py, tools/hover-table.py, tools/corner-dwell-trace.py,
+          tools/corner-excursion.py (section 6), tools/metrics.py's own two REPORTED lines
+SECTIONS 6 AND 7 WERE ADDED AFTER THE ROUND THAT WROTE 1-5 DIED: section 6 is the per-corner
+excursion table with its mechanism, section 7 is the RECT11 c3 dwell miss that section 1's own
+figures raised and never explained.  Both were produced by re-running the tools on the same runs;
+nothing in sections 1-5 was edited.
+the row under adjudication (every clean sortie, unmodified metrics.txt):
+   B1 truth box extents over the route: E 2.137-2.155 m, N 1.279-1.324 m
+   (command 2.000 / 1.200; target <= 2.10 / 1.30)  [FAIL]
+
+================================================================================
+== 1. THE WINDOW, as tools/metrics.py defines it (quoted from the code, not paraphrased)
+================================================================================
+182:        t_route0 = float(legs[0]["t_wall"])
+458:        route_t0 = t_sim_all[leg_idx[1]] if len(leg_idx) > 1 else t_sim_all[leg_idx[0]]
+459:        route_t1 = t_sim_all[leg_idx[-1] + 1] if leg_idx[-1] + 1 < len(phases) else int(t_tap[-1])
+460:        m_route = np.flatnonzero((t_tap >= route_t0) & (t_tap <= route_t1))
+462:        ex = float(p_route[:, 0].max() - p_route[:, 0].min())
+463:        ny = float(p_route[:, 1].max() - p_route[:, 1].min())
+   i.e.  t_route0 = t_sim of the SECOND leg phase,  t_route1 = t_sim of the phase AFTER the last leg
+   and the extents are E/N of the truth (frames.ned_to_enu of the tap), so they are in W.
+
+WHAT THAT COVERS, measured from each run's own phase.csv (leg phases, s of the recording):
+-- missionA-RECT6-clean-square
+   phases: preflight 0.0-22.6, takeoff 22.6-24.6, hold 24.6-27.6, leg1 27.6-29.8, leg2 29.8-35.3, leg3 35.3-37.3, leg4 37.3-42.4, leg5 42.4-44.4, land 44.4-50.9, done 50.9-nan
+   leg1 (pad->corner 1)      : 27.64 .. 29.82 s   <- the entry leg, NOT in the B1 window
+   B1's window               : 29.82 .. 44.44 s   = arrival at corner 1 .. the end of the last leg
+   the phase after the window: land at 44.44 s   (landing; the landing is NOT in it)
+-- missionA-RECT7-hold5
+   phases: preflight 0.0-22.3, takeoff 22.3-24.3, hold 24.3-27.3, leg1 27.3-29.7, leg2 29.7-40.5, leg3 40.5-48.5, leg4 48.5-59.5, leg5 59.5-67.8, land 67.8-74.7, done 74.7-nan
+   leg1 (pad->corner 1)      : 27.33 .. 29.66 s   <- the entry leg, NOT in the B1 window
+   B1's window               : 29.66 .. 67.83 s   = arrival at corner 1 .. the end of the last leg
+   the phase after the window: land at 67.83 s   (landing; the landing is NOT in it)
+
+================================================================================
+== 2. THE THREE EXTENT SETS, side by side, from each run's own tap.csv truth
+================================================================================
+(a) the whole B1 window as coded;  (b) the four corner visits only;  (c) everything after the aircraft
+first reaches the rectangle's own bounding box.  Bound = command box + 0.10 m on each axis.
+
+### missionA-RECT6-clean-square
+   tap: 65159 samples, 54.3 s;  command square E[0.500 2.500] N[0.400 1.600] (2.000 x 1.200)
+   B1's window in tools/metrics.py: [leg2 entry, land entry] = [29.79, 44.41] s of the recording
+   (a) B1 window as coded                    17551 samples over  14.6 s   E  0.422 ..  2.577 =  2.155   N  0.343 ..  1.625 =  1.282
+       the leg1 phase BEFORE it (pad->c1)     2626 samples over   2.2 s   E -0.001 ..  0.455 =  0.456   N -0.011 ..  0.370 =  0.381
+   (b) corner visits, r <= 0.15 m            15347 samples over  18.6 s   E  0.383 ..  2.577 =  2.194   N  0.307 ..  1.625 =  1.318
+   (b') corner visits, r <= 0.40 m           20271 samples over  19.1 s   E  0.191 ..  2.577 =  2.386   N  0.146 ..  1.625 =  1.478
+   (c) after the first bbox entry (t=32.04 s)  18803 samples over  15.7 s   E  0.422 ..  2.577 =  2.155   N  0.333 ..  1.625 =  1.292
+   (d) whole airborne recording              27602 samples over  23.0 s   E -0.008 ..  2.577 =  2.585   N -0.011 ..  1.625 =  1.636
+   verdict against the command box + 0.10 (E <= 2.100, N <= 1.300):
+      (a) B1 window as coded           E 2.155 FAIL   N 1.282 PASS
+      (b) corner visits, r<=0.15       E 2.194 FAIL   N 1.318 FAIL
+      (b') corner visits, r<=0.40      E 2.386 FAIL   N 1.478 FAIL
+      (c) after first bbox entry       E 2.155 FAIL   N 1.292 PASS
+      (d) whole airborne recording     E 2.585 FAIL   N 1.636 FAIL
+### missionA-RECT7-hold5
+   tap: 95098 samples, 79.2 s;  command square E[0.500 2.500] N[0.400 1.600] (2.000 x 1.200)
+   B1's window in tools/metrics.py: [leg2 entry, land entry] = [29.63, 67.80] s of the recording
+   (a) B1 window as coded                    45826 samples over  38.2 s   E  0.420 ..  2.573 =  2.154   N  0.349 ..  1.636 =  1.287
+       the leg1 phase BEFORE it (pad->c1)     2795 samples over   2.3 s   E  0.001 ..  0.455 =  0.454   N -0.010 ..  0.371 =  0.382
+   (b) corner visits, r <= 0.15 m            42338 samples over  42.2 s   E  0.380 ..  2.573 =  2.194   N  0.311 ..  1.636 =  1.325
+   (b') corner visits, r <= 0.40 m           48720 samples over  42.8 s   E  0.187 ..  2.573 =  2.386   N  0.151 ..  1.636 =  1.485
+   (c) after the first bbox entry (t=31.69 s)  47278 samples over  39.4 s   E  0.420 ..  2.573 =  2.154   N  0.359 ..  1.636 =  1.277
+   (d) whole airborne recording              56019 samples over  46.7 s   E -0.003 ..  2.573 =  2.577   N -0.010 ..  1.636 =  1.647
+   verdict against the command box + 0.10 (E <= 2.100, N <= 1.300):
+      (a) B1 window as coded           E 2.154 FAIL   N 1.287 PASS
+      (b) corner visits, r<=0.15       E 2.194 FAIL   N 1.325 FAIL
+      (b') corner visits, r<=0.40      E 2.386 FAIL   N 1.485 FAIL
+      (c) after first bbox entry       E 2.154 FAIL   N 1.277 PASS
+      (d) whole airborne recording     E 2.577 FAIL   N 1.647 FAIL
+### missionA-RECT9-hold5
+   tap: 94020 samples, 78.3 s;  command square E[0.500 2.500] N[0.400 1.600] (2.000 x 1.200)
+   B1's window in tools/metrics.py: [leg2 entry, land entry] = [29.38, 66.77] s of the recording
+   (a) B1 window as coded                    44890 samples over  37.4 s   E  0.431 ..  2.574 =  2.143   N  0.341 ..  1.639 =  1.297
+       the leg1 phase BEFORE it (pad->c1)     2613 samples over   2.2 s   E -0.001 ..  0.456 =  0.457   N -0.008 ..  0.371 =  0.379
+   (b) corner visits, r <= 0.15 m            42046 samples over  41.3 s   E  0.381 ..  2.574 =  2.193   N  0.309 ..  1.639 =  1.330
+   (b') corner visits, r <= 0.40 m           47596 samples over  41.9 s   E  0.188 ..  2.574 =  2.386   N  0.150 ..  1.639 =  1.489
+   (c) after the first bbox entry (t=31.66 s)  46076 samples over  38.4 s   E  0.431 ..  2.574 =  2.143   N  0.372 ..  1.639 =  1.267
+   (d) whole airborne recording              54899 samples over  45.7 s   E -0.005 ..  2.574 =  2.579   N -0.008 ..  1.639 =  1.647
+   verdict against the command box + 0.10 (E <= 2.100, N <= 1.300):
+      (a) B1 window as coded           E 2.143 FAIL   N 1.297 PASS
+      (b) corner visits, r<=0.15       E 2.193 FAIL   N 1.330 FAIL
+      (b') corner visits, r<=0.40      E 2.386 FAIL   N 1.489 FAIL
+      (c) after first bbox entry       E 2.143 FAIL   N 1.267 PASS
+      (d) whole airborne recording     E 2.579 FAIL   N 1.647 FAIL
+### missionA-RECT10-hold5
+   tap: 95221 samples, 79.3 s;  command square E[0.500 2.500] N[0.400 1.600] (2.000 x 1.200)
+   B1's window in tools/metrics.py: [leg2 entry, land entry] = [29.15, 67.58] s of the recording
+   (a) B1 window as coded                    46138 samples over  38.4 s   E  0.418 ..  2.573 =  2.154   N  0.343 ..  1.632 =  1.289
+       the leg1 phase BEFORE it (pad->c1)     2691 samples over   2.2 s   E  0.006 ..  0.454 =  0.448   N -0.014 ..  0.372 =  0.387
+   (b) corner visits, r <= 0.15 m            43000 samples over  42.4 s   E  0.381 ..  2.573 =  2.192   N  0.309 ..  1.632 =  1.323
+   (b') corner visits, r <= 0.40 m           48940 samples over  43.0 s   E  0.191 ..  2.573 =  2.382   N  0.147 ..  1.632 =  1.485
+   (c) after the first bbox entry (t=31.32 s)  47462 samples over  39.5 s   E  0.418 ..  2.573 =  2.154   N  0.358 ..  1.632 =  1.274
+   (d) whole airborne recording              56213 samples over  46.8 s   E -0.005 ..  2.573 =  2.578   N -0.014 ..  1.632 =  1.646
+   verdict against the command box + 0.10 (E <= 2.100, N <= 1.300):
+      (a) B1 window as coded           E 2.154 FAIL   N 1.289 PASS
+      (b) corner visits, r<=0.15       E 2.192 FAIL   N 1.323 FAIL
+      (b') corner visits, r<=0.40      E 2.382 FAIL   N 1.485 FAIL
+      (c) after first bbox entry       E 2.154 FAIL   N 1.274 PASS
+      (d) whole airborne recording     E 2.578 FAIL   N 1.646 FAIL
+### missionA-RECT11-hold5
+   tap: 88805 samples, 74.0 s;  command square E[0.500 2.500] N[0.400 1.600] (2.000 x 1.200)
+   B1's window in tools/metrics.py: [leg2 entry, land entry] = [29.07, 62.97] s of the recording
+   (a) B1 window as coded                    40704 samples over  33.9 s   E  0.439 ..  2.576 =  2.137   N  0.340 ..  1.664 =  1.324
+       the leg1 phase BEFORE it (pad->c1)     2613 samples over   2.2 s   E  0.002 ..  0.458 =  0.456   N -0.010 ..  0.374 =  0.384
+   (b) corner visits, r <= 0.15 m            37850 samples over  37.8 s   E  0.381 ..  2.576 =  2.194   N  0.308 ..  1.664 =  1.356
+   (b') corner visits, r <= 0.40 m           43449 samples over  38.4 s   E  0.190 ..  2.576 =  2.385   N  0.147 ..  1.664 =  1.517
+   (c) after the first bbox entry (t=31.41 s)  41806 samples over  34.8 s   E  0.439 ..  2.576 =  2.137   N  0.350 ..  1.664 =  1.314
+   (d) whole airborne recording              50707 samples over  42.2 s   E -0.008 ..  2.576 =  2.584   N -0.010 ..  1.664 =  1.674
+   verdict against the command box + 0.10 (E <= 2.100, N <= 1.300):
+      (a) B1 window as coded           E 2.137 FAIL   N 1.324 FAIL
+      (b) corner visits, r<=0.15       E 2.194 FAIL   N 1.356 FAIL
+      (b') corner visits, r<=0.40      E 2.385 FAIL   N 1.517 FAIL
+      (c) after first bbox entry       E 2.137 FAIL   N 1.314 FAIL
+      (d) whole airborne recording     E 2.584 FAIL   N 1.674 FAIL
+
+READ IT: (b) the corner visits read E 2.137-2.194 m -- LARGER than (a) on every sortie, never smaller;
+(c) reads E 2.137-2.155 m, the same as (a).  Nothing here is inside the 2.10 m bound, so the FAIL is
+not a property of the window.  The set that WOULD be 0.154 m over is the pre-2026-10-13 window (d),
+which counted everything above 0.5 m: E 2.577-2.585 m, i.e. the pad's own 0.456 m of E.
+
+================================================================================
+== 3. THE MECHANISM: the position loop's arrival ring
+================================================================================
+-- the COMMAND is the corner itself, to 2.8 mm, and stays there through the hold
+-- the FCU's own estimate agrees with the truth to a few mm, so this is not an estimator error
+-- so the aircraft sits 60-83 mm from a command that is 2.8 mm from the corner: it is the POSITION LOOP
+
+### missionA-RECT7-hold5
+   hover = truth within 0.30 m of the corner AND slower than 0.03 m/s, runs >= 0.5 s
+          t0..t1     dur | COMMAND (W) minus corner           | FCU estimate (F) minus corner      | TRUTH (W) minus corner            
+   c1    64.8.. 65.7    0.9 s | cmd  E +0.0028 N +0.0028 | fcu  E +0.0083 N -0.0358 | truth E +0.0078 N -0.0375   (45 setpoints, 1117 tap samples)
+               truth spread in the hover: E +0.0067..+0.0082  N -0.0406..-0.0296  U -0.1019..-0.0996 (cmd U -0.0124, fcu U -0.0104)
+   c1    66.2.. 79.2   13.0 s | cmd  E +0.0028 N +0.0028 | fcu  E -0.0002 N +0.0041 | truth E -0.0005 N +0.0045   (405 setpoints, 15601 tap samples)
+               truth spread in the hover: E -0.0062..+0.0038  N -0.0149..+0.0095  U -1.9000..-0.1002 (cmd U -0.0124, fcu U -1.0366)
+   c2    36.9.. 40.7    3.8 s | cmd  E +0.0028 N +0.0876 | fcu  E +0.0084 N +0.0032 | truth E +0.0108 N -0.0023   (184 setpoints, 4547 tap samples)
+               truth spread in the hover: E +0.0050..+0.0187  N -0.0052..+0.0021  U -0.1043..-0.0986 (cmd U -0.0124, fcu U -0.0091)
+   c3    46.9.. 48.7    1.8 s | cmd  E -0.2699 N +0.0028 | fcu  E +0.0035 N -0.0000 | truth E +0.0038 N -0.0025   (88 setpoints, 2190 tap samples)
+               truth spread in the hover: E +0.0002..+0.0052  N -0.0085..+0.0088  U -0.1051..-0.1010 (cmd U -0.0124, fcu U -0.0106)
+   c4    55.7.. 59.8    4.1 s | cmd  E +0.0028 N -0.0764 | fcu  E -0.0025 N +0.0025 | truth E -0.0049 N -0.0004   (197 setpoints, 4870 tap samples)
+               truth spread in the hover: E -0.0137..-0.0013  N -0.0072..+0.0064  U -0.1064..-0.1023 (cmd U -0.0124, fcu U -0.0120)
+
+-- and the ring itself, on the run with the largest E extent (RECT7), 29.5-41.5 s:
+      30.50 | +0.7440 +0.3493 +1.9067  1.18 | +2.5028 +0.4028 +0.00 +0.00 | +0.7398 +0.3509 +2.0048
+      31.00 | +1.5366 +0.3635 +1.8906  1.70 | +2.5028 +0.4028 +0.00 +0.00 | +1.5443 +0.3635 +1.9824
+      31.50 | +2.1867 +0.3916 +1.8879  0.79 | +2.5028 +0.4028 +0.00 +0.00 | +2.2186 +0.3889 +1.9772
+      32.00 | +2.3801 +0.4096 +1.8958  0.10 | +2.5028 +0.4028 +0.00 +0.00 | +2.4452 +0.4089 +1.9812
+      32.50 | +2.3674 +0.4145 +1.9035  0.09 | +2.5028 +0.4028 +0.00 +0.00 | +2.4333 +0.4187 +1.9925
+      33.00 | +2.3324 +0.4096 +1.9040  0.03 | +2.5028 +0.4028 +0.00 +0.00 | +2.3710 +0.4148 +1.9968
+      33.50 | +2.3518 +0.4025 +1.9008  0.10 | +2.5028 +0.4028 +0.00 +0.00 | +2.3623 +0.4069 +1.9930
+      34.00 | +2.4211 +0.3983 +1.9000  0.16 | +2.5028 +0.4028 +0.00 +0.00 | +2.4175 +0.4008 +1.9924
+      34.50 | +2.5002 +0.3987 +1.9001  0.14 | +2.5028 +0.4028 +0.00 +0.00 | +2.4856 +0.3995 +1.9935
+      35.00 | +2.5568 +0.4019 +1.8996  0.08 | +2.5028 +0.4028 +0.00 +0.00 | +2.5496 +0.4052 +1.9934
+      35.50 | +2.5729 +0.4031 +1.9003  0.01 | +2.5028 +0.4028 +0.00 +0.00 | +2.5746 +0.4068 +1.9916
+      36.00 | +2.5554 +0.4023 +1.9040  0.05 | +2.5028 +0.4028 +0.00 +0.00 | +2.5544 +0.4070 +1.9953
+      36.50 | +2.5329 +0.4000 +1.9044  0.04 | +2.5028 +0.4028 +0.00 +0.00 | +2.5328 +0.4065 +1.9981
+      37.00 | +2.5161 +0.3971 +1.9006  0.03 | +2.5028 +0.4028 +0.00 +0.00 | +2.5153 +0.4038 +1.9951
+      37.50 | +2.5081 +0.3951 +1.8975  0.01 | +2.5028 +0.4028 +0.00 +0.00 | +2.5043 +0.4009 +1.9918
+      38.00 | +2.5087 +0.3949 +1.8967  0.01 | +2.5028 +0.4028 +0.00 +0.00 | +2.5037 +0.4007 +1.9898
+   the aircraft crosses corner 2 at 1.70 m/s (t=31.0), the loop undershoots, overshoots to E 2.5734
+   (+70.6 mm) at t=35.4, and settles on 2.5049 (+2.1 mm) by t=37.75.  The corner visit is what the box
+   measures, and the ring is why the box is 153 mm wider than the command.
+
+-- WHERE the E extremes are, per sortie, from the flight's own metrics-restated.txt:
+missionA-RECT1-noego               where the E extent comes from: corner 4 -0.070 m (N -0.024) and corner 2 +0.081 m (N +0.004) from their own commanded point, reached with a peak speed of 1.78 m/s within
+missionA-RECT6-clean-square        where the E extent comes from: corner 4 -0.078 m (N -0.009) and corner 2 +0.077 m (N +0.008) from their own commanded point, reached with a peak speed of 1.75 m/s within
+missionA-RECT7-hold5               where the E extent comes from: corner 4 -0.080 m (N +0.004) and corner 2 +0.073 m (N +0.003) from their own commanded point, reached with a peak speed of 1.74 m/s within
+missionA-RECT8-nohold-regression   where the E extent comes from: corner 4 -0.071 m (N -0.020) and corner 2 +0.068 m (N +0.004) from their own commanded point, reached with a peak speed of 1.74 m/s within
+missionA-RECT9-hold5               where the E extent comes from: corner 4 -0.069 m (N +0.001) and corner 2 +0.074 m (N +0.004) from their own commanded point, reached with a peak speed of 1.73 m/s within
+missionA-RECT10-hold5              where the E extent comes from: corner 4 -0.082 m (N +0.006) and corner 2 +0.073 m (N +0.004) from their own commanded point, reached with a peak speed of 1.75 m/s within
+missionA-RECT11-hold5              where the E extent comes from: corner 4 -0.061 m (N -0.005) and corner 2 +0.076 m (N +0.004) from their own commanded point, reached with a peak speed of 1.75 m/s within
+
+================================================================================
+== 4. THE DENOMINATOR THAT NAMES THE CAUSE: the same world, the same square, the SLOW arm
+================================================================================
+The RECT sorties fly worlds/pillars.yaml (a 2.0 x 1.2 m square) with
+MISSION_PARM=params/phase_a_mission_fast.parm -- WP_SPD 2.0, WP_ACC 2.5.  That file's own header says
+the geometry has to carry the speed: 2.0 m/s with WP_ACC 2.5 costs 1.60 m of every leg, so this arm is
+meant for worlds/pillars_fast.yaml (a 6.0 x 4.0 m square).  Measured peak speed within 1 m of a corner
+on the 2 x 1.2 m square: 1.73-1.78 m/s.
+
+The frozen 10-flight batch (logs/missionA-stepB10-20261013_232331) flew the same pipeline with
+params/phase_a_mission.parm -- WP_SPD 0.25 -- in the same world:
+B1 truth box extents over the route (28.8 s): E 2.038 m  N 1.255 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [P
+B1 truth box extents over the route (28.8 s): E 2.059 m  N 1.258 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [P
+B1 truth box extents over the route (28.7 s): E 2.024 m  N 1.264 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [P
+B1 truth box extents over the route (28.6 s): E 2.032 m  N 1.265 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [P
+B1 truth box extents over the route (28.8 s): E 2.040 m  N 1.265 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [P
+B1 truth box extents over the route (28.8 s): E 2.058 m  N 1.253 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [P
+B1 truth box extents over the route (28.7 s): E 2.060 m  N 1.262 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [P
+B1 truth box extents over the route (28.8 s): E 2.028 m  N 1.291 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [P
+B1 truth box extents over the route (28.9 s): E 2.045 m  N 1.265 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [P
+B1 truth box extents over the route (28.8 s): E 2.056 m  N 1.247 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [P
+   -> B1 PASS 10 of 10, E 2.024-2.060 m, N 1.247-1.291 m
+   -> and the fast arm, 7 sorties: E 2.137-2.155 m, FAIL 0 of 7
+NO BOUND WAS CHANGED, and the gated quantity is still the whole route: the row prints the raw extent,
+the corner-visit extent and the excursion, and names which one is gated.
+
+================================================================================
+== 5. THE RESTATEMENT: metrics-restated.txt next to each flight's own metrics.txt
+================================================================================
+Written by re-running tools/metrics.py (current) on each run dir; the original metrics.txt is untouched.
+Every line reproduces EXACTLY except three groups, and the two non-B1 groups are NOT a B1 artefact:
+   * the 'truth samples' summary line, and
+   * the whole A4 block,
+because run-mission.sh computes the metrics WHILE the truth tap and the FCU's log are still being
+written: metrics.txt was mtime 1-2 s BEFORE tap.csv in all seven run dirs, and it quotes 2.9-3.6 s less
+tap than the file now holds (RECT7: 91300 vs 95098 samples).  Truncating the tap back to the quoted
+count reproduces the numbers it quotes, and the A4 difference survives that truncation because the FCU's
+BIN grew too -- measured with _stage/why-a4-differs.sh: RECT7 A4 519 of 561 samples -> 548 of 590.
+A4 PASSES either way (17.92 -> 24.00 mm against <= 50); A1, A2, B2, B3, B4, C1 and C2 are byte-identical,
+C2's denominator included (RECT7: 0 of 56696 samples inside the 0.20 m footprint, both times).
+   * and the B1 rows: same E/N, same bound, same FAIL on all seven; the added text is the derivation of
+     the bound plus two [REPORTED, not gated] lines (the corner-visit extent and the excursion).
+
+missionA-RECT1-noego               44 -> 47 lines;  original B1 E 2.151 N 1.287
+missionA-RECT6-clean-square        44 -> 47 lines;  original B1 E 2.155 N 1.282
+missionA-RECT7-hold5               45 -> 47 lines;  original B1 E 2.154 N 1.287
+missionA-RECT8-nohold-regression   45 -> 47 lines;  original B1 E 2.139 N 1.279
+missionA-RECT9-hold5               45 -> 47 lines;  original B1 E 2.143 N 1.297
+missionA-RECT10-hold5              45 -> 47 lines;  original B1 E 2.154 N 1.289
+missionA-RECT11-hold5              45 -> 47 lines;  original B1 E 2.137 N 1.324
+
+-- the restated B1 block of each (the gated line first, then the two REPORTED ones):
+## missionA-RECT1-noego
+B1 truth box extents over the route (14.7 s): E 2.151 m  N 1.287 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner 
+   against the legacy bound 1.26 on N: FAIL
+   the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 11237 of 17681 samples): E 2.151 m  N 1.277 m  [REPORTED, not gated]
+   where the E extent comes from: corner 4 -0.070 m (N -0.024) and corner 2 +0.081 m (N +0.004) from their own commanded point, reached with a peak speed of 1.78 m/s within 1 m o
+## missionA-RECT6-clean-square
+B1 truth box extents over the route (14.6 s): E 2.155 m  N 1.282 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner 
+   against the legacy bound 1.26 on N: FAIL
+   the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 10597 of 17551 samples): E 2.155 m  N 1.275 m  [REPORTED, not gated]
+   where the E extent comes from: corner 4 -0.078 m (N -0.009) and corner 2 +0.077 m (N +0.008) from their own commanded point, reached with a peak speed of 1.75 m/s within 1 m o
+## missionA-RECT7-hold5
+B1 truth box extents over the route (38.2 s): E 2.154 m  N 1.287 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner 
+   against the legacy bound 1.26 on N: FAIL
+   the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 37470 of 45826 samples): E 2.154 m  N 1.284 m  [REPORTED, not gated]
+   where the E extent comes from: corner 4 -0.080 m (N +0.004) and corner 2 +0.073 m (N +0.003) from their own commanded point, reached with a peak speed of 1.74 m/s within 1 m o
+## missionA-RECT8-nohold-regression
+B1 truth box extents over the route (14.5 s): E 2.139 m  N 1.279 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner 
+   against the legacy bound 1.26 on N: FAIL
+   the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 10644 of 17356 samples): E 2.139 m  N 1.276 m  [REPORTED, not gated]
+   where the E extent comes from: corner 4 -0.071 m (N -0.020) and corner 2 +0.068 m (N +0.004) from their own commanded point, reached with a peak speed of 1.74 m/s within 1 m o
+## missionA-RECT9-hold5
+B1 truth box extents over the route (37.4 s): E 2.143 m  N 1.297 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner 
+   against the legacy bound 1.26 on N: FAIL
+   the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 37342 of 44890 samples): E 2.143 m  N 1.290 m  [REPORTED, not gated]
+   where the E extent comes from: corner 4 -0.069 m (N +0.001) and corner 2 +0.074 m (N +0.004) from their own commanded point, reached with a peak speed of 1.73 m/s within 1 m o
+## missionA-RECT10-hold5
+B1 truth box extents over the route (38.4 s): E 2.154 m  N 1.289 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner 
+   against the legacy bound 1.26 on N: FAIL
+   the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 38237 of 46138 samples): E 2.154 m  N 1.283 m  [REPORTED, not gated]
+   where the E extent comes from: corner 4 -0.082 m (N +0.006) and corner 2 +0.073 m (N +0.004) from their own commanded point, reached with a peak speed of 1.75 m/s within 1 m o
+## missionA-RECT11-hold5
+B1 truth box extents over the route (33.9 s): E 2.137 m  N 1.324 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner 
+   against the legacy bound 1.26 on N: FAIL
+   the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 33148 of 40704 samples): E 2.137 m  N 1.315 m  [REPORTED, not gated]
+   where the E extent comes from: corner 4 -0.061 m (N -0.005) and corner 2 +0.076 m (N +0.004) from their own commanded point, reached with a peak speed of 1.75 m/s within 1 m o
+
+================================================================================
+== 6. THE PER-CORNER EXCURSION: a TURNAROUND TRANSIENT at the fast corners
+================================================================================
+Two tools, two jobs.  tools/corner-excursion.py says WHICH corner and HOW FAR past the wall;
+_stage/s31-transient-or-offset.py says WHETHER WAITING WOULD HAVE REMOVED IT.  Both read the run's own
+tap.csv, and both print their own stdout below.
+
+-- (a) tools/corner-excursion.py <run-dir> --near-m 0.5 : the EXCURSION past this corner's own wall
+       ('past-wall' is the same quantity B1's box is built from), the arrival speed, and the peak's
+       delay after arrival.  c1 appears twice on the hold sorties: the opening stop at the pad corner
+       and the closing approach are different arrivals.
+
+### missionA-RECT1-noego
+   65092 tap samples over 54.2 s;  visit = truth within 0.50 m of the corner (split on a gap above 3.0 s)
+   past-wall = across the wall this corner sits on, measured from the COMMANDED corner.  The classification
+   window starts at the CLOSEST APPROACH -- the turnaround -- and runs for 8.0 s or to the end of the visit,
+   whichever is first; taking the LAST QUARTER OF THE VISIT instead measures the DEPARTURE, and with a dwell
+   that follows the departure the ratio reads 1.00 for a transient that had already decayed.  'x' is the
+   surviving fraction at the end of that window: near 0 = a transient, near 1 = an offset that waiting does
+   not remove.  A visit with no overshoot at all prints '--'.
+   cor t_arrive  v_peak  closest | past-wall at      since  | PEAK (surviving x) | back to 10 mm
+   c1    27.96   0.53  0.0308 | N +0.3885  27.96 s   0.0 s | 388.5 mm -> -495.8 mm x-1.28 |   none 
+   c1    43.22   1.27  0.0069 | N +0.0442  43.22 s   0.0 s |  44.2 mm ->  -6.0 mm x-0.14 |  3.06 s
+   c2    31.02   1.76  0.0008 | E +0.0811  35.18 s   4.2 s |  81.1 mm -> +41.9 mm x 0.52 |   none 
+   c3    36.16   1.28  0.0044 | N +0.0322  36.16 s   0.0 s |  32.2 mm -> -484.8 mm x-15.07 |  0.75 s
+   c4    38.71   1.68  0.0072 | E +0.0700  42.48 s   3.8 s |  70.0 mm -> +52.9 mm x 0.76 |   none 
+
+### missionA-RECT6-clean-square
+   65159 tap samples over 54.3 s;  visit = truth within 0.50 m of the corner (split on a gap above 3.0 s)
+   past-wall = across the wall this corner sits on, measured from the COMMANDED corner.  The classification
+   window starts at the CLOSEST APPROACH -- the turnaround -- and runs for 8.0 s or to the end of the visit,
+   whichever is first; taking the LAST QUARTER OF THE VISIT instead measures the DEPARTURE, and with a dwell
+   that follows the departure the ratio reads 1.00 for a transient that had already decayed.  'x' is the
+   surviving fraction at the end of that window: near 0 = a transient, near 1 = an offset that waiting does
+   not remove.  A visit with no overshoot at all prints '--'.
+   cor t_arrive  v_peak  closest | past-wall at      since  | PEAK (surviving x) | back to 10 mm
+   c1    28.37   0.54  0.0351 | N +0.3860  28.37 s   0.0 s | 386.0 mm -> -496.5 mm x-1.29 |   none 
+   c1    43.55   1.26  0.0036 | N +0.0436  43.55 s   0.0 s |  43.6 mm ->  -5.0 mm x-0.12 |  3.08 s
+   c2    31.47   1.72  0.0004 | E +0.0767  35.57 s   4.1 s |  76.7 mm -> +48.9 mm x 0.64 |   none 
+   c3    36.46   1.29  0.0041 | N +0.0401  36.46 s   0.0 s |  40.1 mm -> -486.1 mm x-12.12 |  0.81 s
+   c4    38.99   1.67  0.0056 | E +0.0784  42.72 s   3.7 s |  78.4 mm -> +53.5 mm x 0.68 |   none 
+
+### missionA-RECT7-hold5
+   95098 tap samples over 79.2 s;  visit = truth within 0.50 m of the corner (split on a gap above 3.0 s)
+   past-wall = across the wall this corner sits on, measured from the COMMANDED corner.  The classification
+   window starts at the CLOSEST APPROACH -- the turnaround -- and runs for 8.0 s or to the end of the visit,
+   whichever is first; taking the LAST QUARTER OF THE VISIT instead measures the DEPARTURE, and with a dwell
+   that follows the departure the ratio reads 1.00 for a transient that had already decayed.  'x' is the
+   surviving fraction at the end of that window: near 0 = a transient, near 1 = an offset that waiting does
+   not remove.  A visit with no overshoot at all prints '--'.
+   cor t_arrive  v_peak  closest | past-wall at      since  | PEAK (surviving x) | back to 10 mm
+   c1    28.08   0.53  0.0367 | N +0.3892  28.08 s   0.0 s | 389.2 mm -> -496.8 mm x-1.28 |   none 
+   c1    60.69   1.26  0.0014 | N +0.0091  62.10 s   1.4 s |   9.1 mm ->  -2.0 mm x-0.22 |  1.96 s
+   c2    31.31   1.71  0.0014 | E +0.0734  35.42 s   4.1 s |  73.4 mm ->  +5.5 mm x 0.07 |  1.99 s
+   c3    41.63   1.27  0.0018 | N +0.0065  42.12 s   0.5 s |   6.5 mm -> -499.2 mm x-76.90 |  2.84 s
+   c4    50.12   1.69  0.0022 | E +0.0805  54.19 s   4.1 s |  80.5 mm ->  +4.4 mm x 0.05 |  1.76 s
+
+### missionA-RECT9-hold5
+   94020 tap samples over 78.3 s;  visit = truth within 0.50 m of the corner (split on a gap above 3.0 s)
+   past-wall = across the wall this corner sits on, measured from the COMMANDED corner.  The classification
+   window starts at the CLOSEST APPROACH -- the turnaround -- and runs for 8.0 s or to the end of the visit,
+   whichever is first; taking the LAST QUARTER OF THE VISIT instead measures the DEPARTURE, and with a dwell
+   that follows the departure the ratio reads 1.00 for a transient that had already decayed.  'x' is the
+   surviving fraction at the end of that window: near 0 = a transient, near 1 = an offset that waiting does
+   not remove.  A visit with no overshoot at all prints '--'.
+   cor t_arrive  v_peak  closest | past-wall at      since  | PEAK (surviving x) | back to 10 mm
+   c1    27.98   0.53  0.0349 | N +0.3892  27.98 s   0.0 s | 389.2 mm -> -496.3 mm x-1.28 |   none 
+   c1    59.72   1.26  0.0016 | N +0.0062  61.25 s   1.5 s |   6.2 mm ->  +1.4 mm x 0.22 |  1.91 s
+   c2    31.05   1.71  0.0006 | E +0.0737  35.17 s   4.1 s |  73.7 mm ->  +4.1 mm x 0.06 |  2.03 s
+   c3    41.18   1.28  0.0014 | N +0.0074  42.51 s   1.3 s |   7.4 mm -> -499.7 mm x-67.59 |  2.03 s
+   c4    49.61   1.69  0.0008 | E +0.0692  53.71 s   4.1 s |  69.2 mm ->  +0.3 mm x 0.00 |  1.51 s
+
+### missionA-RECT10-hold5
+   95221 tap samples over 79.3 s;  visit = truth within 0.50 m of the corner (split on a gap above 3.0 s)
+   past-wall = across the wall this corner sits on, measured from the COMMANDED corner.  The classification
+   window starts at the CLOSEST APPROACH -- the turnaround -- and runs for 8.0 s or to the end of the visit,
+   whichever is first; taking the LAST QUARTER OF THE VISIT instead measures the DEPARTURE, and with a dwell
+   that follows the departure the ratio reads 1.00 for a transient that had already decayed.  'x' is the
+   surviving fraction at the end of that window: near 0 = a transient, near 1 = an offset that waiting does
+   not remove.  A visit with no overshoot at all prints '--'.
+   cor t_arrive  v_peak  closest | past-wall at      since  | PEAK (surviving x) | back to 10 mm
+   c1    27.69   0.53  0.0349 | N +0.3856  27.69 s   0.0 s | 385.6 mm -> -496.5 mm x-1.29 |   none 
+   c1    60.53   1.27  0.0004 | N +0.0115  61.79 s   1.3 s |  11.5 mm ->  +2.3 mm x 0.20 |  2.13 s
+   c2    30.82   1.73  0.0005 | E +0.0728  34.97 s   4.1 s |  72.8 mm ->  +5.8 mm x 0.08 |  1.92 s
+   c3    41.45   1.28  0.0009 | N +0.0070  46.56 s   5.1 s |   7.0 mm -> -499.4 mm x-71.71 |  0.00 s
+   c4    49.91   1.69  0.0011 | E +0.0817  54.02 s   4.1 s |  81.7 mm ->  +8.1 mm x 0.10 |  3.96 s
+
+### missionA-RECT11-hold5
+   88805 tap samples over 74.0 s;  visit = truth within 0.50 m of the corner (split on a gap above 3.0 s)
+   past-wall = across the wall this corner sits on, measured from the COMMANDED corner.  The classification
+   window starts at the CLOSEST APPROACH -- the turnaround -- and runs for 8.0 s or to the end of the visit,
+   whichever is first; taking the LAST QUARTER OF THE VISIT instead measures the DEPARTURE, and with a dwell
+   that follows the departure the ratio reads 1.00 for a transient that had already decayed.  'x' is the
+   surviving fraction at the end of that window: near 0 = a transient, near 1 = an offset that waiting does
+   not remove.  A visit with no overshoot at all prints '--'.
+   cor t_arrive  v_peak  closest | past-wall at      since  | PEAK (surviving x) | back to 10 mm
+   c1    27.66   0.53  0.0327 | N +0.3866  27.66 s   0.0 s | 386.6 mm -> -496.3 mm x-1.28 |   none 
+   c1    55.87   1.32  0.0004 | N +0.0084  55.87 s   0.0 s |   8.4 mm -> -10.3 mm x-1.22 |  0.62 s
+   c2    30.74   1.73  0.0007 | E +0.0757  34.87 s   4.1 s |  75.7 mm -> +16.4 mm x 0.22 |  1.76 s
+   c3    38.85   1.28  0.0001 | N +0.0143  38.85 s   0.0 s |  14.3 mm -> -499.3 mm x-34.94 |  3.33 s
+   c4    47.29   1.70  0.0036 | E +0.0610  51.42 s   4.1 s |  61.0 mm -> +10.9 mm x 0.18 |  1.38 s
+
+-- (b) _stage/s31-transient-or-offset.py : the same excursions measured INSIDE THE HOLD, from the
+       closest approach (the turnaround) to 8 s later.  'peak' is the largest offset past the wall;
+       'at END' is the offset at the end of that window; the ratio is the fraction that SURVIVED, so a
+       transient decays toward 0 and a bias stays near 1.  The clocks are checked, not assumed: the
+       FSM's 'hold' phase against the tap's first sample above 0.5 m is -0.07/-0.08 s on all six.
+
+### missionA-RECT1-noego
+   clock check: phase.csv 'hold' 24.22 vs the tap's first sample above 0.5 m 24.29 -> -0.07 s
+   cor  v_arr  | closest   at        | PAST the wall (peak / at END) | total swing     | peak->END  | back to 10 mm
+   c1    1.27 |  0.0255   44.1 s | N -0.0254  (end -0.1230) |  97.7 mm |   --  | 0.00 s
+   c2    1.76 |  0.0008   34.3 s | E +0.0811  (end +0.0730) |   8.1 mm |  0.90 |   none
+   c3    1.28 |  0.0044   37.3 s | N -0.0014  (end -0.0314) |  30.0 mm |   --  | 0.00 s
+   c4    1.68 |  0.0072   41.6 s | E +0.0700  (end +0.0698) |   0.3 mm |  1.00 |   none
+
+### missionA-RECT6-clean-square
+   clock check: phase.csv 'hold' 24.64 vs the tap's first sample above 0.5 m 24.71 -> -0.07 s
+   cor  v_arr  | closest   at        | PAST the wall (peak / at END) | total swing     | peak->END  | back to 10 mm
+   c1    1.26 |  0.0360   44.4 s | N -0.0360  (end -0.1250) |  89.0 mm |   --  | 0.00 s
+   c2    1.72 |  0.0004   34.7 s | E +0.0767  (end +0.0731) |   3.6 mm |  0.95 |   none
+   c3    1.29 |  0.0041   37.6 s | N -0.0027  (end -0.0267) |  24.0 mm |   --  | 0.00 s
+   c4    1.67 |  0.0056   41.8 s | E +0.0784  (end +0.0765) |   1.8 mm |  0.98 |   none
+
+### missionA-RECT7-hold5
+   clock check: phase.csv 'hold' 24.33 vs the tap's first sample above 0.5 m 24.41 -> -0.08 s
+   cor  v_arr  | closest   at        | PAST the wall (peak / at END) | total swing     | peak->END  | back to 10 mm
+   c1    1.26 |  0.0014   64.2 s | N +0.0406  (end -0.0010) |  41.5 mm | -0.02 | 1.29 s
+   c2    1.71 |  0.0014   34.5 s | E +0.0734  (end +0.0049) |  68.5 mm |  0.07 | 1.89 s
+   c3    1.27 |  0.0018   45.1 s | N +0.0360  (end +0.0119) |  24.1 mm |  0.33 | 0.81 s
+   c4    1.69 |  0.0022   53.3 s | E +0.0805  (end +0.0042) |  76.3 mm |  0.05 | 1.65 s
+
+### missionA-RECT9-hold5
+   clock check: phase.csv 'hold' 24.24 vs the tap's first sample above 0.5 m 24.31 -> -0.07 s
+   cor  v_arr  | closest   at        | PAST the wall (peak / at END) | total swing     | peak->END  | back to 10 mm
+   c1    1.26 |  0.0016   63.3 s | N +0.0280  (end +0.0015) |  26.5 mm |  0.05 | 1.76 s
+   c2    1.71 |  0.0006   34.2 s | E +0.0737  (end +0.0047) |  69.0 mm |  0.06 | 1.93 s
+   c3    1.28 |  0.0014   44.6 s | N +0.0386  (end +0.0122) |  26.4 mm |  0.32 | 0.78 s
+   c4    0.19 |  0.0008   57.3 s | E +0.0005  (end -0.0027) |   3.2 mm |   --  | 0.00 s
+
+### missionA-RECT10-hold5
+   clock check: phase.csv 'hold' 23.96 vs the tap's first sample above 0.5 m 24.03 -> -0.08 s
+   cor  v_arr  | closest   at        | PAST the wall (peak / at END) | total swing     | peak->END  | back to 10 mm
+   c1    1.27 |  0.0004   64.0 s | N +0.0425  (end -0.0015) |  43.9 mm | -0.03 | 1.24 s
+   c2    1.73 |  0.0005   34.1 s | E +0.0728  (end +0.0050) |  67.8 mm |  0.07 | 1.70 s
+   c3    0.11 |  0.0009   47.9 s | N +0.0149  (end +0.0149) |   0.0 mm |  1.00 |   none
+   c4    1.69 |  0.0011   53.1 s | E +0.0817  (end +0.0067) |  75.0 mm |  0.08 | 1.75 s
+
+### missionA-RECT11-hold5
+   clock check: phase.csv 'hold' 23.92 vs the tap's first sample above 0.5 m 23.99 -> -0.07 s
+   cor  v_arr  | closest   at        | PAST the wall (peak / at END) | total swing     | peak->END  | back to 10 mm
+   c1    1.32 |  0.0004   57.0 s | N +0.0501  (end +0.0147) |  35.4 mm |  0.29 | 1.28 s
+   c2    1.73 |  0.0007   34.0 s | E +0.0757  (end +0.0189) |  56.8 mm |  0.25 | 1.57 s
+   c3    0.28 |  0.0001   44.4 s | N +0.0020  (end +0.0020) |   0.0 mm |  1.00 | 0.00 s
+   c4    1.70 |  0.0036   50.5 s | E +0.0610  (end +0.0165) |  44.5 mm |  0.27 | 1.37 s
+
+READ (a) AND (b) TOGETHER, and the mechanism is not a hypothesis:
+
+  * THE FAILURE IS AT THE TWO CORNERS ARRIVED AT FAST.  c2 and c4 are approached at 1.67-1.76 m/s and
+    overshoot their wall by E +0.0610..+0.0817 m on every HOLD sortie; c3 is approached at 1.27-1.29
+    m/s and overshoots by N +0.0065..+0.0143 m.  The E extent of the box is exactly this: c2's
+    overshoot is the box's maximum and c1's return swing is its minimum.
+  * IT RINGS AND THEN SETTLES -- IT IS NOT AN OFFSET.  On the four hold sorties the surviving fraction
+    at the end of the window is 0.05-0.33 at c2 and c4 (RECT7 +0.0734 -> +0.0049, RECT10 +0.0817 ->
+    +0.0067, RECT11 +0.0757 -> +0.0189), and the aircraft is back within 10 mm of the command 0.8-1.9 s
+    after the peak.  A steady-state bias would not decay at all.
+  * THE CONTROL FOR THAT IS THE SAME MEASUREMENT ON THE NO-HOLD SORTIES.  RECT1 and RECT6 arrive at the
+    same 1.67-1.76 m/s and produce the same peak (E +0.0700..+0.0811 m), but with no dwell to settle in
+    the surviving fraction is 0.90-1.00 and the 'back to 10 mm' column reads NONE.  Same ring, no time
+    to decay -- which is why B1 reads 2.139-2.155 m on every sortie and why the fix is a dwell, not a
+    bound.
+  * AND THE SLOW ARM IS THE SCALE CONTROL: the same world and square with params/phase_a_mission.parm
+    (WP_SPD 0.25) -- logs/missionA-stepB10-20261013_232331, 10 flights -- PASS B1 10 of 10 at
+    E 2.024-2.060 / N 1.247-1.291 m against the SAME 2.10 / 1.30 bound, at about 7x lower arrival speed.
+
+SO B1 STAYS FAIL, AND IT IS A REAL DEFECT OF THE FLIGHT, NOT OF THE WINDOW: the aircraft leaves the
+commanded rectangle by 61-82 mm while arriving at corners it was commanded to hold, at an approach
+speed (1.7 m/s) that params/phase_a_mission_fast.parm's own header says belongs to the 6.0 x 4.0 m
+world.  The bound was not touched.
+
+================================================================================
+== 7. THE ONE MISS: RECT11 c3 dwelled 4.96 s of the 5.0 s asked -- ONE ARRIVAL, TWO SPANS
+================================================================================
+tool: tools/corner-dwell-trace.py <run-dir> c3 --radius 0.15.  The judged quantity is the LONGEST
+CONTIGUOUS span inside the radius, so 4.96 s is a statement about a GAP, not about a speed.
+
+---- missionA-RECT11-hold5
+   ### missionA-RECT11-hold5  corner c3 = (+2.500, +1.600), radius 0.15 m
+      spans inside the radius (>= 0.2 s):
+         t   39.21 ..   40.54 =  1.33 s   closest 0.0189 m   U 1.907..1.922
+         t   41.41 ..   46.37 =  4.96 s   closest 0.0001 m   U 1.892..1.934
+      GAP t   40.54 ..   41.41 =  0.86 s outside the radius: reached 0.1864 m (36 mm outside) at t=40.96 s, U 1.933 m, |v| 0.003 m/s there, and the aircraft passed the corner at 0.167 m/s
+      around the longest span (4.96 s, t 41.41..46.37):
+         t   39.41  d 0.0618 m  E +2.5070 N +1.5386 U +1.9120  |v| 0.307  IN
+---- missionA-RECT7-hold5
+   ### missionA-RECT7-hold5  corner c3 = (+2.500, +1.600), radius 0.15 m
+      spans inside the radius (>= 0.2 s):
+         t   42.00 ..   49.19 =  7.19 s   closest 0.0018 m   U 1.875..1.920
+      around the longest span (7.19 s, t 42.00..49.19):
+         t   40.00  d 1.1993 m  E +2.5091 N +0.4007 U +1.8973  |v| 0.009  out
+         t   41.00  d 1.1417 m  E +2.5049 N +0.4583 U +1.8934  |v| 0.429  out
+         t   42.00  d 0.1496 m  E +2.5064 N +1.4506 U +1.9183  |v| 0.611  IN
+---- missionA-RECT9-hold5
+   ### missionA-RECT9-hold5  corner c3 = (+2.500, +1.600), radius 0.15 m
+      spans inside the radius (>= 0.2 s):
+         t   41.53 ..   48.68 =  7.15 s   closest 0.0014 m   U 1.870..1.923
+      around the longest span (7.15 s, t 41.53..48.68):
+         t   39.53  d 1.2002 m  E +2.5105 N +0.3998 U +1.8974  |v| 0.007  out
+         t   40.53  d 1.1464 m  E +2.5046 N +0.4536 U +1.8953  |v| 0.406  out
+         t   41.53  d 0.1498 m  E +2.5053 N +1.4503 U +1.9213  |v| 0.646  IN
+---- missionA-RECT10-hold5
+   ### missionA-RECT10-hold5  corner c3 = (+2.500, +1.600), radius 0.15 m
+      spans inside the radius (>= 0.2 s):
+         t   41.81 ..   48.98 =  7.16 s   closest 0.0009 m   U 1.876..1.917
+      around the longest span (7.16 s, t 41.81..48.98):
+         t   39.81  d 1.2003 m  E +2.5059 N +0.3997 U +1.8975  |v| 0.008  out
+         t   40.81  d 1.1451 m  E +2.5051 N +0.4550 U +1.8951  |v| 0.417  out
+         t   41.81  d 0.1496 m  E +2.5057 N +1.4505 U +1.9152  |v| 0.631  IN
+
+READ IT: RECT7/9/10 reach c3 once and stay 7.15-7.19 s.  RECT11 reaches c3, OVERSHOOTS to 0.1864 m
+from it -- 36 mm outside the 0.15 m judging radius -- at t=40.96 s, comes back at t=41.41 s and stays
+until 46.37 s.  The judged span is 4.96 s: 6.29 s of corner time in total, cut into 1.33 s + 4.96 s
+by a 0.86 s excursion, so the miss is 0.04 s.
+
+-- what the two logs that drive the hold say (RECT11), and the same lines on the three that passed:
+   ---- missionA-RECT11-hold5
+      [  29.13] corner 3 reached: horizontal FCU 0.024 m / truth 0.047 m, vertical -0.076 m (band 0.35), 1.8 s
+      [  29.54]    corner 3 settled: FCU speed 0.064 m/s after 0.4 s
+      [  29.54] HOLDING corner 3 at [+2.503 +1.602 +1.987]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tou
+      ARRIVED at corner 3: the vehicle is 0.073 m from it (gate 0.100 m) after 3.8 s of flight; holding 5.0 s, then the next leg is published
+   ---- missionA-RECT7-hold5
+      [  31.68] corner 3 reached: horizontal FCU 0.026 m / truth 0.053 m, vertical -0.068 m (band 0.35), 1.8 s
+      [  31.88]    corner 3 settled: FCU speed 0.068 m/s after 0.2 s
+      [  31.88] HOLDING corner 3 at [+2.503 +1.603 +1.988]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tou
+      ARRIVED at corner 3: the vehicle is 0.024 m from it (gate 0.100 m) after 5.8 s of flight; holding 5.0 s, then the next leg is published
+   ---- missionA-RECT9-hold5
+      [  31.04] corner 3 reached: horizontal FCU 0.031 m / truth 0.056 m, vertical -0.064 m (band 0.35), 1.8 s
+      [  31.35]    corner 3 settled: FCU speed 0.052 m/s after 0.3 s
+      [  31.35] HOLDING corner 3 at [+2.503 +1.603 +1.987]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tou
+      ARRIVED at corner 3: the vehicle is 0.100 m from it (gate 0.100 m) after 5.3 s of flight; holding 5.0 s, then the next leg is published
+   ---- missionA-RECT10-hold5
+      [  31.60] corner 3 reached: horizontal FCU 0.038 m / truth 0.057 m, vertical -0.071 m (band 0.35), 1.8 s
+      [  31.86]    corner 3 settled: FCU speed 0.073 m/s after 0.3 s
+      [  31.86] HOLDING corner 3 at [+2.502 +1.602 +1.988]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tou
+      ARRIVED at corner 3: the vehicle is 0.027 m from it (gate 0.100 m) after 5.8 s of flight; holding 5.0 s, then the next leg is published
+
+-- the two arrivals, in the tap, at 0.25 s resolution:
+      around the longest span (4.96 s, t 41.41..46.37):
+         t   39.41  d 0.0618 m  E +2.5070 N +1.5386 U +1.9120  |v| 0.307  IN
+         t   39.66  d 0.0204 m  E +2.5047 N +1.5801 U +1.9093  |v| 0.048  IN
+         t   39.91  d 0.0303 m  E +2.5042 N +1.5700 U +1.9068  |v| 0.118  IN
+         t   40.16  d 0.0723 m  E +2.5053 N +1.5279 U +1.9097  |v| 0.204  IN
+         t   40.41  d 0.1248 m  E +2.5067 N +1.4754 U +1.9174  |v| 0.201  IN
+         t   40.66  d 0.1668 m  E +2.5071 N +1.4333 U +1.9260  |v| 0.127  out
+         t   40.91  d 0.1858 m  E +2.5067 N +1.4143 U +1.9322  |v| 0.024  out
+         t   41.16  d 0.1787 m  E +2.5060 N +1.4214 U +1.9349  |v| 0.076  out
+         t   41.41  d 0.1499 m  E +2.5052 N +1.4502 U +1.9345  |v| 0.149  IN
+         t   41.66  d 0.1073 m  E +2.5042 N +1.4928 U +1.9311  |v| 0.187  IN
+         t   41.91  d 0.0594 m  E +2.5031 N +1.5407 U +1.9257  |v| 0.192  IN
+
+MECHANISM: the producer declared ARRIVED at c3 when the pose was 0.073 m from the corner (gate
+0.100 m) after 3.8 s of flight -- the earliest and loosest arrival of the four sorties, against 0.024 m
+on RECT7, 0.027 m on RECT10 and 0.100 m on RECT9 -- and the FSM then held for its 5.8 s.  During that
+hold the arrival ring took the aircraft out to 0.1864 m, i.e. 36 mm past the 0.15 m radius, before it
+came back.  Because the judge takes the LONGEST CONTIGUOUS span, 6.29 s of corner time split
+1.33 s + 4.96 s reads 4.96 s: 0.04 s short.
+RECT9 is the control that rules out 'crossing the gate early' as the cause by itself: it crossed at
+exactly 0.100 m, the gate's own limit, and still held 7.15 s in ONE span.  So what matters is the
+PHASE of the ring when the hold clock starts, and RECT11's started while the aircraft was still 73 mm
+out and still moving.
+
+NOT a fix in this round.  The lever is the approach speed at c3 (1.27-1.29 m/s -- params/
+phase_a_mission_fast.parm WP_SPD 2.0 on a 2.0 x 1.2 m square, whose own header says that speed is for
+the 6.0 x 4.0 m world) or the FSM's corner tolerance, and both are flight behaviour.  The honest
+statement for the acceptance is: 3 of 4 sorties with 4 of 4 corners, 15 of 16 corner visits, and the
+one miss is this 0.04 s.
