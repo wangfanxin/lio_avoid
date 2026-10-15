@@ -498,3 +498,32 @@ the observation that this variant has no obstacle-distance cost (which explains 
 it does correct the attribution: **the penetrations are predominantly a map-coverage fault, and the next lever is
 more persistence rather than a different optimiser.**  It also explains why the window's own three runs still
 penetrate: 3 s of union is not enough to have seen the surface the vehicle is about to pass through.
+
+=== MORE PERSISTENCE WORKS ON THE MAP, AND MOVES THE FAULT ONE STEP DOWNSTREAM (`DIAG20-window8`) =======
+One change from the known-good baseline: `EGO_CLOUD_WINDOW` 3.0 -> **8.0 s** (inflation one cell, fitness 1.0,
+`ground_height` -0.50, self-blind off).  Round 20 had measured that the plan's worst point lies in BLIND space in
+four of five runs, so this tests the lever that finding named.
+
+    run                     plan's worst point     the map AT that point     truth min    inside 0.20 m
+    DIAG8  (window 0)           -0.285 m           FREE (blind, 0.90 m)        -0.164 m     5356 of  94124
+    DIAG14 (window 3)           -0.284 m           FREE (blind, 0.18 m)        -0.222 m     3387 of  46916
+    DIAG15 (window 3, fitness 4) -0.285 m          FREE (blind, 0.10 m)        +0.068 m     1231 of 100143
+    DIAG17 (window 3, repro)    -0.286 m           FREE (blind, 0.83 m)        -0.078 m     6741 of 106248
+    **DIAG20 (window 8)**      **-0.016 m**       **OCCUPIED by the map**      +0.058 m     4749 of  47109
+
+**The plan's worst excursion shrinks by a factor of twenty (-0.286 -> -0.016 m) and it is no longer in blind
+space** -- the map now holds the obstacle the plan is passing through, which is exactly what an 8 s union of
+viewpoints was supposed to buy.  That is the largest movement this number has shown in the whole investigation
+(every other configuration sat between -0.212 and -0.286 m).
+
+**AND THE FAILURE CHANGES KIND.**  With the map no longer blind, the worst point is now in space the map CALLS
+OCCUPIED -- which is the case `check_collision_and_rebound()` exists to prevent, and it does not: it sweeps only
+the first two-thirds of the trajectory's control points (`i_end = end_idx - (end_idx - order_)/3`), and when its
+rebound A* fails it DROPS the colliding segment and keeps the trajectory
+(`bspline_optimizer.cpp:1405-1408`).  So the next lever is not the map any more and not the optimiser's cost
+either -- it is the COVERAGE and the FAILURE MODE of that check.
+
+The truth's own numbers do not improve with it (+0.058 m, 4749 of 47109 inside the footprint, against 2108-12028
+for the 3 s runs) -- one more sample in the same noisy band (sd 0.143 m), which is the same lesson as before:
+**the plan's worst point moving by 0.27 m does not by itself move the flown result**, because that point may be
+replaced before it is flown.  rc=0, completed, C1 PASS 0.004 m, A1 6.13 mm, A2 3.53 mm.
