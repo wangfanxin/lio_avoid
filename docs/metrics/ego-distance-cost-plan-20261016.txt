@@ -326,3 +326,5 @@ WHERE THE LINE STANDS, for whoever picks it up:
   * the THREE QUESTIONS left are named: wire the weight to the launch parameter (one member added), examine
     whether the rc=1 was the term destabilising the optimiser, and decide whether 0.20 m is the right bar for
     this planner on this mission.
+
+Figure `docs/figures/traj-xy-DIAG29-distance-cost.png`, sha256 985a74023b039e61aa1c6c47b0bedb5df242876e7eb76cd6481f0c6621312e8b -- the last flight beside the best crossing, same mission and same style.
