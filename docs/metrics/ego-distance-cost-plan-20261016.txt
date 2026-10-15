@@ -658,3 +658,118 @@ not idle -- the same leftover-processes situation as round 51, where the parked 
 behind.  **The remedy is already written and used once**: `_stage/clear-and-fly29.sh` clears the leftovers with the
 gate's own pattern list and then flies.  So item 3 stands at: patches in and built, field verified inside the box,
 **one command from the crossing**.
+
+=== ITEM 3's CROSSING, ROUND 69: A VALID RUN, A REFUTED PREDICTION, AND THE MAP THAT DID SEE THE PILLAR =====
+Both patches applied and built (`grid_map.h` D1=1 D2=2, `grid_map.cpp` D1=1, `bspline_optimizer.cpp` D2=3,
+`bspline_optimizer.h` D2=2 -- checked BEFORE the flight, because round 66 recorded a claim instead of a check),
+the install tree is symlinks into `build/`, and `build/ego_planner/ego_planner_node` (02:39) is newer than the
+last patched source (02:37): the flown binary contained the patches.  `_stage/round69-markers.sh`,
+`_stage/round69-install.sh`.
+
+1. THE RUN IS VALID, and this is checked FIRST -- row 121's discard protocol exists because DIAG29's earlier
+   sortie judged nothing.  `_stage/round69-valid1.sh`, `round69-text.sh`:
+     * no FCU failsafe.  The supervisor's own record of the FCU's words at teardown: **"SIM Hit ground at
+       0.254274 m/s | SIM Hit ground at 0.214394 m/s | SIM Hit ground at 0.464048 m/s | Disarming motors"** --
+       touchdown and disarm, no `EKF Failsafe`, no `EKF variance`;
+     * no abort: the supervisor logged the plan box's own completion and a commanded landing --
+       "the plan box has DECLARED THE TOUR COMPLETE (trajectory_flag = COMPLETED after waypoint 2): 74.1 s of
+       route, 3851 setpoints relayed by the bridge", `phase -> land` at 94.4 s, `landed` at 99.4 s;
+     * harness rc = 0.  Criterion 2's shape (sustained COMPLETED, no gate abort, normal landing) held on this
+       sortie too.
+
+2. THE MEASUREMENT, from the tools every arm was measured with (`_stage/diag-table.py` for the truth,
+   `_stage/plan-curve.py` for the plan -- see item 5 on why the plan column had to be rebuilt):
+
+     run                        TRUTH min   inside 0.20 m            PLAN min   plan inside      plan detour
+     DIAG20-window8             +0.058 m    4749 of  92977 ( 5.11%)   -0.016 m    6.77%          0.838 m
+     DIAG21-window8-repro       +0.167 m    1887 of  95528 ( 1.98%)   -0.209 m    2.81%          0.869 m
+     DIAG22-window8-arm3        -0.276 m    2613 of  97522 ( 2.68%)   -0.094 m    2.96%          0.851 m
+     DIAG23-window8-arm4        +0.089 m    2508 of  94075 ( 2.67%)   +0.084 m    3.07%          0.922 m
+     **DIAG29b (the term)**     **+0.058 m** **19020 of 139718 (13.61%)** **-0.107 m** **14.36%**  **1.229 m**
+
+   * the plan's own minimum in this run is -0.107 m, from pillar 15 at (-1.50,-3.50), z = 1.26 m
+     (`t_us = 1792090067763389`).  **The recorder's own `clr_m` column and my recomputation from
+     `traj.csv.points.csv` agree to the millimetre in all five runs** -- that agreement is what makes the
+     rebuilt plan column trustworthy;
+   * the run's inside-rate is **2.7x the worst window-8 arm run** and its sample count is 1.5x (139718 against
+     92977..97522) because the sortie lasted longer: the SHARE is the fair statistic, and both are worse;
+   * the plan still bends -- its largest sideways excursion while genuinely ON the corner leg is **1.229 m**,
+     against 0.838..0.922 m in the arm, and pillar radius + footprint is 0.50 m -- so this is a detour, not a
+     graze.  Avoidance as a behaviour is present; the C2 row's 0-of-0.20 m is not met.
+
+3. **THE PREDICTION IS REFUTED, both halves.**  It said the plan's own minimum "rises from +0.040..+0.126 m
+   toward dist0 (0.5 m)" and the footprint count "falls below 1887".  Measured: the plan's minimum is -0.107 m
+   (the arm's best plan point is +0.084 m), and the footprint count is 19020, four times the arm's worst 4749.
+
+4. WHY, AND THIS IS THE PART WORTH KEEPING -- the run exposes a MECHANISM, not just a number.  The same log
+   counters, arm vs term (`_stage/round69-part4.sh`):
+
+     counter            window-8 arm        the distance-cost run
+     GEN_NEW_TRAJ       763 / 867 / 763 / 839    **2724**
+     EMERGENCY_STOP     4 / 4 / 0 / 0            **17**
+     EXEC_TRAJ          86 / 84 / 99 / 85        **68**
+
+   A term added to the optimiser's cost made the planner re-plan three times as often and emergency-stop four
+   times as often, while executing fewer trajectories.  This is exactly the failure mode pre-registered at
+   line 340-341 ("a term that destabilises the optimiser would show exactly this way").  The field is rebuilt
+   inside `cloudCallback` from `occupancy_buffer_inflate_`, which `resetBuffer` clears on every cloud message
+   (`grid_map.cpp:835`), so the added cost inherits a single-scan shell's flicker at the cloud rate; a soft
+   quadratic penalty on top of a flickering field buys churn, not clearance.  The FIELD ITSELF IS NOT REFUTED
+   (it verified against the collision check's own array and its query agrees with `getInflateOccupancy` inside
+   the box); what is refuted is that ADDING THIS TERM, AT THESE WEIGHTS, ON THIS FIELD improves the crossing.
+
+5. THE MAP SUB-QUESTION IS ANSWERED, AND THE ANSWER IS NOT "THE MAP WAS BLIND".  `_stage/plan-worst-in-map.py`,
+   extended this round with the arm runs so the comparison is on one instrument: the map at the plan's worst
+   point is
+
+     DIAG20-window8        OCCUPIED by the map     (a planner fault)
+     DIAG21-window8-repro  free -- blind space, nearest marked cell 0.14 m away
+     DIAG22-window8-arm3   OCCUPIED by the map
+     DIAG23-window8-arm4   OCCUPIED by the map
+     **DIAG29b**           **OCCUPIED by the map** -- the plan drew through space its own map calls occupied
+
+   So on this run ego's own map, read through the DIAG/2 slices (`grid_map`'s inflated occupancy), DID have the
+   pillar marked where the plan went.  What this does NOT separate, and the limit must be stated with the
+   result: the DIAG/2 slice is matched to the plan point BY POSITION and carries no timestamp, so "the map knew
+   when the plan was drawn" and "the map learned it after the plan was committed" are the same picture here.
+   The next instrument is therefore one word long: **stamp the DIAG/2 slice header with its time**, and then the
+   commit-versus-discovery question is answerable from a single run.
+
+6. TWO INSTRUMENTS WERE CAUGHT LYING, and both were caught by disagreement rather than by inspection:
+   * **the PLAN column has been dead on every ego run.**  `_stage/diagonal-clearance.py` reads `traj.csv`
+     looking for columns ending `x_w`/`y_w`/`z_w`; the /plan/cmd recorder writes
+     `t_us,t0_us,n,arc_m,clr_m,z_min_w,z_max_w,frame_id` (`src/tools/record-traj.py:131`), which has no such
+     column, so its PLAN line has printed "could not read traj.csv (list index out of range)" on all 29
+     sorties -- and `diag-table.py` prints "no traj.csv" for the same reason.  The plan's points are in
+     `traj.csv.points.csv`, in W.  New tool `_stage/plan-curve.py` reads that file, and the arm's plan column
+     above did not exist before this round;
+   * **my own detour metric measured the wrong thing.**  Its first version used the distance to the leg
+     SEGMENT, so points on the approach and the return (42..47% of every plan) set the maximum -- and it
+     returned 1.448 m / 1.449 m in five different runs, identical to three decimals, which is what gave it
+     away: a quantity that does not move when the optimiser changes is not measuring the optimiser.  The
+     corrected metric (perpendicular distance, on-leg points only) gives 0.838..1.229 m, and those numbers
+     differ between runs, as they should.
+
+7. A DISCIPLINE SLIP, recorded because the record is the only place it survives: **the tag was reused.**  The
+    round-69 flight ran as `DIAG29-distance-cost`, the same tag as the earlier flyaway sortie, and
+    `run-mission.sh` writes `logs/missionA-<TAG>`, so **the flyaway run's directory was overwritten**.  What
+    survives of it: STATUS rows 117/119/120/121, the section above at "THE FLIGHT: ... REFUTED", and the round-53
+    figure `docs/figures/traj-xy-DIAG29-distance-cost.png`, which was drawn from that run's data and is now its
+    only spatial trace.  This round's own figure is therefore named `traj-xy-DIAG29b-distance-cost-wired.png`.
+
+8. THE FCU-TEXT TRACE COULD NOT BE READ FOR THE THING IT EXISTS TO REPORT: 22 of this run's 24 `FCU-TEXT` lines
+   carry no message text, because the print dumps the enclosing scope BEFORE the line that decodes `m.text`
+   (`src/bridge/mavlink_impl.py:153`).  The discard protocol was applied through the supervisor's own teardown
+   line, which decodes properly.  FIXED IN THE SAME COMMIT: the decode now happens first and the line prints
+   `text=%r`.  An instrument that is silent about a failsafe is worse than no instrument, and this one had
+   already been the reason a flyaway read as a refutation once (row 117).
+
+9. DISPOSITION -- THE PATCHES ARE OUT OF THE FLIGHT TREE.  The experiment is flown and refuted, so it comes out,
+   the same rule applied to the A* clearance cost and the collision-coverage patch: `apply-distance-field2.py
+   --revert` then `apply-distance-field1.py --revert` (order matters: /2 restores `grid_map.h` from the state
+   AFTER /1), `colcon build --packages-select plan_env bspline_opt ego_planner` **rc=0**, and the CHECK rather
+   than the claim: all four files D1=0 D2=0, and `strings build/plan_env/libplan_env.so | grep -c 'DIAG/3'` = 0
+   while `DIAG/2` = 3 (the map-slice instrument is the documented configuration and stays).  Both patches remain
+   as reversible scripts: `_stage/apply-distance-field1.py`, `_stage/apply-distance-field2.py`.
+
+Figure `docs/figures/traj-xy-DIAG29b-distance-cost-wired.png`, sha256 8032138468e55d2ef92312fc9c2a318bda451e70ddcc955b15b2fd129dd85f73 -- this round's top view: the term's crossing beside the arm's best, both with the published plan drawn over the truth.

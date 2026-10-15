@@ -150,9 +150,14 @@ class MavlinkBridge(Bridge):
                 # (EKF Failsafe | EKF variance) survived as ONE teardown line at supervisor.py:676,
                 # and a grep of mine truncated even that (STATUS rows 119-120).  Knowledge-free on
                 # purpose: print the branch's own scope, so the text is captured whatever it is called.
-                print('FCU-TEXT %.2f %s' % (time.time(),
-                      {k: v for k, v in locals().items() if k not in ('self', 't')}), flush=True)
+                # ORDER FIXED 2026-10-16 (round 69): the decode has to happen BEFORE the print.  As first
+                # written, the print dumped the enclosing scope while `text` was still unbound, so the CURRENT
+                # message's words could never appear on its own line -- and in the round-69 run 22 of the 24
+                # FCU-TEXT lines carried no text at all.  The trace is the discard protocol's own instrument
+                # (an EKF failsafe means the run judges nothing), and it could not be read for that one thing.
                 text = m.text if isinstance(m.text, str) else m.text.decode("utf-8", "replace")
+                print('FCU-TEXT %.2f text=%r %s' % (time.time(), text,
+                      {k: v for k, v in locals().items() if k not in ('self', 't', 'text')}), flush=True)
                 self._state.messages.append((time.monotonic(), text))
                 self._state.messages = self._state.messages[-50:]
             elif t == "COMMAND_ACK":
