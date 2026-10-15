@@ -692,3 +692,22 @@ because the two arms overlap completely in that count.  The one fact worth keepi
 with round 8's finding that the recovery works every time it is asked, and that it is simply asked far too
 rarely, and only over the first two-thirds of each trajectory.  Written by reading the counters, not by
 assuming them; this is the sixth self-correction of the investigation.
+
+=== THE NEXT ACTION, PREPARED AND DELIBERATELY NOT APPLIED (`_stage/apply-collision-coverage1.py`) ======
+The last four rounds' measurements converge on one line of code.  `check_collision_and_rebound()` is the only
+mechanism in this planner that can push a trajectory out of an obstacle, and at a relay window of 8 s or more the
+counters show it firing **2.2-5.1 MILLION times per crossing**, finding **15 000-38 000 collisions**, with its
+rebound A* succeeding essentially every time (`astar_fail` 0-161).  Seventeen thousand successful recoveries, and
+still **0 of 25 crossings meet the C2 row** -- so what is left UNCOVERED is the suspect, and the function names it:
+
+    int i_end = end_idx - (end_idx - order_) / 3;   // only the first TWO-THIRDS are ever swept
+
+plus the case where a colliding segment's rebound A* fails: that segment is DROPPED and the trajectory kept
+(`bspline_optimizer.cpp:1405-1408`).
+
+The prepared patch extends that sweep to the whole trajectory and changes nothing else -- not the map, not what A*
+is offered, not the optimiser's costs.  It is deliberately NOT applied: the flight tree stands at the verified
+documented configuration, and an applied-but-unbuilt, unflown patch is exactly the state this project has spent
+rounds learning to avoid.  Prediction recorded BEFORE it is flown: the plan's worst point stops being one the map
+marks OCCUPIED (the failure round 21 measured at window 8) and the clearance population improves; the refutation
+is no change in either, which would mean the uncovered third is not where the penetrations live either.
