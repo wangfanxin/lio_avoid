@@ -357,3 +357,37 @@ makes `dist0` mean what upstream's name says for the first time.
 AND THE OTHER TWO QUESTIONS, unchanged and still open: whether the `rc=1` of the term's one flight was the term
 destabilising the optimiser (a term that does that would show exactly this way, and it is the first thing to look
 at), and whether the 0.20 m footprint is the right bar for this planner on this mission.
+
+=== CORRECTION: `DIAG29` WAS A FLYAWAY, NOT A CROSSING -- SO THE TERM IS **UNTESTED**, NOT REFUTED =====
+Row 114 concluded that "the first real obstacle-distance cost this planner has ever had did not improve the
+crossing".  Its own logs, read three rounds later (round 55), say the run was not a crossing at all:
+
+    supervisor:  [  58.06] phase -> abort
+                 [  58.06] ABORT: the FCU left the mission mode (LAND)      <- the FCU changed mode itself
+    bridge:      mode=LAND armed=1 ... plan_rx=10497 plan_ids=1 plan_age=0.01
+    the truth:   **max altitude 508.75 m**, ended at **N +223.18  E +175.06**, extent N -5.16..245.28
+                 E -3.01..175.06 -- against a 6.60 m geofence
+
+**The aircraft flew away**: 508 m up and 245 m out, with the FCU in LAND and still armed, while the plan box kept
+publishing under a single trajectory id.  The clearance statistics this investigation applied to that run
+(`-0.225 m`, 24% inside the footprint) measured a few seconds of flight inside the field followed by an aircraft
+leaving the arena -- they are not a crossing's numbers and cannot speak to the cost term's effect.
+
+SO, CORRECTED:
+  * **the term is UNTESTED**, not refuted.  Its effect on the crossing remains unknown, and the flight that was
+    supposed to measure it produced a flyaway instead.
+  * **question 2 is answered, and not in the term's favour or against it**: the `rc=1` was NOT the cost term
+    destabilising the optimiser in the sense the plan asked about (A* failures were 59, `the drone is in
+    obstacle` 9 360, `Failed to generate direction` 1 103 -- ordinary magnitudes, not the million-scale
+    pathology of the inflation experiments).  What ended the sortie was an **FCU-side mode change to LAND at
+    58 s followed by a flyaway** -- an aircraft-side event, of which the planner's own counts are a symptom at
+    most.
+  * the flyaway itself is a **stack-level finding worth its own investigation** and is unrelated to the distance
+    cost: a vehicle that climbs to 508 m under LAND, with the bridge reporting `armed=1`, is a failure mode this
+    project has never documented before, and it happened on a run whose only difference from the documented
+    baseline was the two field patches.
+  * **the field patches remain reverted** (row 115), so nothing about this is in the tree.
+
+This is the twelfth self-correction of the investigation, and it is the species I have learned to look for: a
+conclusion drawn from a metric without reading the run that produced it.  The metric was computed correctly; the
+RUN was not what the metric's name says.
