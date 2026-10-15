@@ -45,8 +45,12 @@ A1_TARGET_MM = 20.0
 A2_TARGET_MM = 50.0
 
 
-def read_tap(path, wire=False):
-    """The truth tap.  Default: positions in W (ENU).  wire=True: as recorded (NED), for A4."""
+def read_tap(path, wire=False, velocity=False):
+    """The truth tap.  Default: positions in W (ENU).  wire=True: as recorded (NED), for A4.
+
+    `velocity=True` returns the tap's own NED velocity (`vn,ve,vd`, columns 5..7) instead of a position:
+    A4-v compares a velocity stream with the truth, and the truth's velocity is in the same record.
+    """
     t, p = [], []
     with open(path) as fh:
         fh.readline()
@@ -55,8 +59,15 @@ def read_tap(path, wire=False):
             if len(f) < 6:
                 continue
             t.append(int(f[0]))
-            p.append([float(f[2]), float(f[3]), float(f[4])])
+            if velocity:
+                if len(f) < 8:
+                    continue
+                p.append([float(f[5]), float(f[6]), float(f[7])])
+            else:
+                p.append([float(f[2]), float(f[3]), float(f[4])])
     p = np.array(p, dtype=float)
+    if velocity:
+        return np.array(t, dtype=np.int64), p
     if wire:
         return np.array(t, dtype=np.int64), p
     return np.array(t, dtype=np.int64), np.array([frames.ned_to_enu(x) for x in p])
@@ -78,6 +89,46 @@ def read_ekf_pos(path):
         t.append(int(m.TimeUS))
         p.append([float(m.PN), float(m.PE), float(m.PD)])
     return np.array(t, dtype=np.int64), np.array(p, dtype=float)
+
+
+def read_ekf_vel(path):
+    """XKF1's VELOCITY estimate (NED, m/s) out of the FCU's own flight log -- the velocity half of A4.
+
+    WHY IT IS A SEPARATE READER AND A SEPARATE ROW (2026-10-16): position and velocity reach the EKF on
+    DIFFERENT channels with different statistics.  Position comes from the 200 Hz `/lio/robo/odom`; velocity
+    comes from `/lio/odom` at ~10 Hz, held by the bridge into the ~48 Hz class-331 stream
+    (`docs/metrics/velocity-stair-20261016.txt`: 79 % of the samples repeat the previous value and the steps
+    that do happen run at p90 126-139 mm/s).  A4 has always been a position row, so the velocity could only
+    be argued about, never measured.
+    """
+    from pymavlink import mavutil
+    mlog = mavutil.mavlink_connection(path)
+    t, v = [], []
+    while True:
+        m = mlog.recv_match(type="XKF1", blocking=False)
+        if m is None:
+            break
+        t.append(int(m.TimeUS))
+        v.append([float(m.VN), float(m.VE), float(m.VD)])
+    return np.array(t, dtype=np.int64), np.array(v, dtype=float)
+
+
+def read_extnav_vel(path):
+    """The velocity the EKF was FED, from the FCU's VISV records (VX/VY/VZ are North-East-Down).
+
+    This is the input side of the noise question: `VISO_VEL_M_NSE` is a statement about THIS stream, and
+    the only honest way to set it is to measure this stream against the truth.
+    """
+    from pymavlink import mavutil
+    mlog = mavutil.mavlink_connection(path)
+    t, v = [], []
+    while True:
+        m = mlog.recv_match(type="VISV", blocking=False)
+        if m is None:
+            break
+        t.append(int(m.TimeUS))
+        v.append([float(m.VX), float(m.VY), float(m.VZ)])
+    return np.array(t, dtype=np.int64), np.array(v, dtype=float)
 
 
 def read_odom(path):
@@ -411,6 +462,51 @@ def main() -> int:
                           "vertical rms %8.2f mm   (LIO vs truth is A1 above)"
                           % (float(np.sqrt(np.mean(np.sum(dr[:, :2] ** 2, axis=1)))) * 1e3,
                              float(np.sqrt(np.mean(dr[:, 2] ** 2))) * 1e3))
+
+                # ---- A4-v: THE VELOCITY HALF, ON THE SAME ALIGNED CLOCK (new 2026-10-16) ---------------
+                # The clock is the one this row just fitted on POSITION (`t_al`), which is the only honest
+                # choice: the two logs are the same FCU log, so their clocks cannot differ.  Each velocity
+                # is also reported at ITS OWN best-fit lag, because a velocity channel can lag by a
+                # different amount (it is fed at ~10 Hz and held), and the difference between the two
+                # numbers is exactly the delay that a gate would otherwise score as an error.
+                v_ekf_t, v_ekf = read_ekf_vel(args.bin)
+                v_fed_t, v_fed = read_extnav_vel(args.bin)
+                if len(v_ekf_t) > 10:
+                    tap_v = p_tap_ned[:, :0]                # placeholder, replaced below
+                    # the tap's own NED velocity, on the tap's clock
+                    v_tap_t, v_tap = read_tap(args.tap, wire=True, velocity=True)
+                    m_tapv = (v_tap_t >= t_al[0] - 5_000_000) & (v_tap_t <= t_al[-1] + 5_000_000)
+                    for name, tt_, vv_ in (("the FCU's own EKF (XKF1 V)", v_ekf_t, v_ekf),
+                                           ("the velocity it was FED (VISV)", v_fed_t, v_fed)):
+                        if len(tt_) < 10:
+                            print("   A4-v %s: no records in this log" % name)
+                            continue
+                        al = tt_ + best_lag + best_lag_e
+                        mm = (al >= t_take)
+                        if mm.sum() < 10:
+                            print("   A4-v %s: no samples after take-off" % name)
+                            continue
+                        iav, ibv = match(al[mm], v_tap_t)
+                        dvv = vv_[mm][iav] - v_tap[ibv]
+                        dvh = float(np.sqrt(np.mean(np.sum(dvv[:, :2] ** 2, axis=1)))) * 1e3
+                        own_best, own_lag = None, 0
+                        for lag in range(-200_000, 200_001, 2000):
+                            ref = np.column_stack([np.interp(al[mm] + lag, v_tap_t, v_tap[:, k])
+                                                   for k in range(3)])
+                            hh = float(np.sqrt(np.mean(np.sum((vv_[mm] - ref)[:, :2] ** 2, axis=1)))) * 1e3
+                            if own_best is None or hh < own_best:
+                                own_best, own_lag = hh, lag
+                        print("   A4-v %-28s horizontal rms %7.2f mm/s over %d samples at the position "
+                              "row's lag; its OWN best-fit lag is %+d ms (%.2f mm/s); vertical %.2f mm/s"
+                              % (name, dvh, int(mm.sum()), own_lag // 1000, own_best,
+                                 float(np.sqrt(np.mean(dvv[:, 2] ** 2))) * 1e3))
+                        if "FED" in name:
+                            # THE NUMBER `VISO_VEL_M_NSE` IS A STATEMENT ABOUT: the rms of the velocity
+                            # stream the EKF was handed against the truth, and the p95 of the same error.
+                            p95 = float(np.percentile(np.linalg.norm(dvv[:, :2], axis=1), 95)) * 1e3
+                            print("      -> the honest basis for VISO_VEL_M_NSE is this stream's own rms "
+                                  "(%.4f m/s) and p95 (%.4f m/s); the parameter in force is read back from "
+                                  "the FCU by `tools/bin-params.py`" % (dvh * 1e-3, p95 * 1e-3))
             else:
                 print("A4: no samples after take-off in the FCU's log  [FAIL]")
         else:

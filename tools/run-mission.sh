@@ -82,6 +82,20 @@ if [ -n "$EKF_PARM" ]; then
     EKF_ARG=",$EKF_PARM"
     EKF_NAME="$(basename "$EKF_PARM" .parm)"
 fi
+# ONE-VARIABLE EXPERIMENTS WITHOUT TOUCHING A FROZEN FILE.  `EXTRA_PARM` is a SINGLE parameter file
+# appended LAST to `--defaults` (the firmware applies them in order, so the last wins), and it is how a
+# parameter A/B is flown while `params/*.parm` stays byte-for-byte what the frozen manifest lists: the file
+# lives outside the repo and its PATH IS PRINTED in the revision block, so the sortie's own log names the
+# configuration it overrode.  MEASURED 2026-10-13 and kept: two `--defaults` arguments do not accumulate
+# (the second REPLACES the first) -- which is why this is ONE comma-joined list and not a second flag.
+EXTRA_PARM="${EXTRA_PARM:-}"
+EXTRA_ARG=""
+EXTRA_NAME="none"
+if [ -n "$EXTRA_PARM" ]; then
+    [ -f "$EXTRA_PARM" ] || { echo "no EXTRA_PARM file at $EXTRA_PARM" >&2; exit 1; }
+    EXTRA_ARG=",$EXTRA_PARM"
+    EXTRA_NAME="$EXTRA_PARM ($(grep -c . "$EXTRA_PARM") line(s))"
+fi
 # THE DWELL, AND WHY THE HARNESS SETS IT (F1, 2026-10-16).  The owner's requirement is a hover at every
 # corner, and the number is 5.0 s (`docs/PLAN.md`).  It used to be passed only when the caller exported
 # RECT_HOLD_S; with it unset the producer's `--hold-s -1` read `mission.hold_s` out of the FROZEN world
@@ -180,6 +194,7 @@ echo "   this repo : $(git -C "$REPO" rev-parse --short HEAD) $(git -C "$REPO" l
 echo "   ardupilot : $(git -C "$AP" describe --tags --always) $(git -C "$AP" rev-parse --short HEAD) (tap applied: $(git -C "$AP" --no-pager diff --stat | tail -1 | tr -s ' '))"
 echo "   super_lio : $(git -C /home/fanxin/lio_avoid/src/Super-LIO rev-parse --short HEAD)  liblio $(md5sum "$WS/install/super_lio/lib/liblio.so" | cut -c1-16)"
 echo "   config    : lio/config/livox_360.yaml + apm_lio_only,sitl_basics,${ALT_MODE}_posz,$MISSION_NAME,$EKF_NAME"
+echo "   override  : $EXTRA_NAME   (appended LAST to --defaults: the last value wins)"
 echo "   world     : $WORLD  ($CORNERS)"
 echo "   airframe  : sim model '$SITL_MODEL' against FRAME_TYPE 1 (X) -- the two must agree (see SITL_MODEL above)"
 printf 'model=%s\nfirmware=FRAME_CLASS 1 / FRAME_TYPE 1 (X mixer)\nrule=the SITL model names the motor geometry; it must match FRAME_TYPE\n' \
@@ -208,7 +223,7 @@ cd "$OUT" || exit 1
 # without any runtime arbitration (`_stage/refactor-bridge-plan.md` section 4.2).
 setsid nohup env LIO_TRUTH_TAP=$TAP "$BIN" --model "$SITL_MODEL" --speedup 1 -I0 \
     --home -35.363261,149.165230,584,0 --serial0 tcp:5760 --serial1 tcp:5761 \
-    --defaults "$REPO/params/apm_lio_only.parm,$REPO/params/sitl_basics.parm,$ALT_PARM,$MISSION_PARM$EKF_ARG" \
+    --defaults "$REPO/params/apm_lio_only.parm,$REPO/params/sitl_basics.parm,$ALT_PARM,$MISSION_PARM$EKF_ARG$EXTRA_ARG" \
     -w > sitl.log 2>&1 &
 SITL=$!
 cd - > /dev/null
