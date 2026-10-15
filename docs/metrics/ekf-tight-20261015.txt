@@ -1,0 +1,108 @@
+EKF trust experiment: VISO_POS_M_NSE 30 mm -> 10 mm, flown as RECT21-tight-ekf
+date: 2026-10-15
+run:  /home/fanxin/lio_avoid/logs/missionA-RECT21-tight-ekf   (rc 0, landed, no ABORT)
+config: ALT_MODE=lio NAV_SOURCE=lio WORLD=worlds/pillars.yaml
+        MISSION_PARM=phase_a_mission_fast.parm
+        EKF_PARM=params/ekf_trust_lio_tight.parm      <-- NEW this run (the frozen ekf_trust_lio.parm was NOT touched)
+        RECT_HOLD_S=5
+
+================================================================================
+1. WHAT WAS CHANGED, AND WHY THESE THREE NUMBERS AND NOT ONE
+================================================================================
+One physical change: the noise the EKF is told about our position source.
+  VISO_POS_M_NSE   0.03 -> 0.01   (30 mm -> 10 mm; the LIO is measured at 3.38-4.57 mm, A1)
+That setting is a FLOOR, not a value: `libs/AP_VisualOdom/AP_VisualOdom_MAV.cpp:42` does
+`posErr = constrain_float(posErr, _frontend.get_pos_noise(), 100.0f)`, and our ODOMETRY carries
+`[0.0]*21, [0.0]*21` covariances (`bridge/mavlink_impl.py:442-449`), so the message declares zero error
+and the floor is what the EKF uses.  The flight log proves the chain: `PErr` was a constant 30.00 mm
+before and is a constant 10.00 mm now.
+
+WARNING, FROM THIS PROJECT'S OWN RECORD: EK3_POSNE_M_NSE / EK3_VELNE_M_NSE are the **GPS** noises
+(`AP_NavEKF3.cpp:184/:158`) and EK3_ALT_M_NSE the **baro** noise (:218); with EK3_SRC1_*=6 (ExternalNav)
+they are inert.  The parameters that actually carry our measurement noise are the VISO_* trio, and with
+VISO_TYPE 1 they reach the EKF through AP_VisualOdom.  An earlier round believed otherwise -- see the
+header of the frozen file -- which is why the frozen file's 0.03 / 0.03 / 0.10 lines changed nothing.
+
+Two couplings moved with it, both to hold the ABSOLUTE tolerances where the frozen file put them:
+  FS_EKF_THRESH   10.0 -> 30.0    the failsafe compares the innovation consistency TEST RATIO
+                                  (`AP_AHRS::get_variances` -> `NavEKF3::getVariances`, "innovation
+                                  consistency test ratios", AP_NavEKF3.cpp:1532), which scales as
+                                  1/noise.  The frozen file records the cost of getting this wrong:
+                                  "with 3.0 the tolerance was 90 mm and a normal trajectory-following
+                                  manoeuvre tripped it -- 3 of 5 Mission B flights ended in LAND mode".
+                                  0.300 m / 0.01 = 30.
+  EK3_POS_I_GATE  500 -> 1500     "percentage number of standard deviations applied to the position
+                                  innovation consistency check" (AP_NavEKF3.cpp:186-192, 500 = 5.00 SD),
+                                  so it also scales with the noise: 5 SD x 30 mm was 150 mm absolute and
+                                  5 SD x 10 mm would have been 50 mm, i.e. 3x tighter in metres -- the
+                                  way good measurements start being rejected.  Kept at 150 mm absolute.
+
+================================================================================
+2. PROOF THE VALUES WERE IN FORCE (the FCU's own log is the only witness)
+================================================================================
+tools/bin-params.py on this run's flight.BIN (1328 parameter names logged by the FCU):
+   EK3_POSNE_M_NSE    0.0300      (untouched -- inert, see above)
+   VISO_POS_M_NSE     0.0100      <-- the change
+   VISO_VEL_M_NSE     0.0300      (deliberately NOT changed, see section 5)
+   FS_EKF_THRESH      30.0000     <-- coupling 1
+   EK3_POS_I_GATE     1500.0000   <-- coupling 2
+
+================================================================================
+3. THE RESULT: the FCU's own estimate vs truth, from ITS log (tools/bin-lag.py)
+================================================================================
+                          RECT7 (before, 0.03)      RECT21 (after, 0.01)
+   position N residual rms     15.08 mm                  12.53 mm      -17 %
+   position E residual rms     18.51 mm                  10.31 mm      -44 %
+   horizontal (N,E) combined   23.87 mm                  16.23 mm      -32 %
+   best-fit lag                +4 / +6 ms                -4 / 0 ms     (never the problem)
+   velocity N residual rms     13.66 mm/s                36.76 mm/s    WORSE (section 5)
+   velocity E residual rms     27.19 mm/s                27.21 mm/s    unchanged
+Metric-side A4 (mean removed, datum offsets removed): 17.92 -> 14.84 mm horizontal, 29.04 -> 31.76 mm
+vertical; the vertical ALIGNMENT residual (a datum, not noise) moved 95.3 -> 77.2 mm and is reported
+separately on purpose.
+
+================================================================================
+4. THE ACCEPTANCE GATES: nothing was sacrificed, and nothing was thrown away
+================================================================================
+   A1 route horizontal rms   3.68 mm (<= 20)          A2 vertical 4.56 mm (<= 50)
+   B2 straightness           5 of 5 legs PASS (worst leg 2, 40.4 mm <= 50)
+   C2 clearance              minimum pillar-surface distance 0.532 m, **0 of 51612 samples inside the
+                             0.20 m footprint** (46 pillars, whole flight, truth)
+   B4 landing                'land' in the phase log -> yes;  no ABORT;  no producer leg timeout
+   hover (tools/dwell-audit.py --radius 0.15):  c1 11.58 s, c2 7.34 s, c3 4.80 s, c4 7.71 s -> 3 of 4
+                             (c3 misses by 0.20 s -- the KNOWN sette-start defect, section 5)
+   NO EKF FAILSAFE, NO LANE SWITCH: the FSM log has only "setting the EKF origin" / "EKF origin ACCEPTED
+   on attempt 1" and a normal LAND at the end of the tour.
+   THE RISK WAS MEASURED, NOT ASSUMED: the innovation gate moved with the noise precisely so that good
+   measurements would not start being rejected, and the log says they were not --
+   `Ign` = 0 of 2428 VISP and 0 of 2428 VISV, reset counter 0 throughout (before: 0 of 2632 / 0 of 2632).
+
+================================================================================
+5. WHAT THIS RUN DOES NOT FIX, AND THE NEXT EXPERIMENT (measured, not guessed)
+================================================================================
+* THE VELOCITY FEED IS A STAIRCASE, and this is the next single-variable experiment.
+  Measured from the logs: VISV arrives at 48.40 Hz but carries only 10.08 DISTINCT value tuples/s -- the
+  10 Hz `/lio/odom` source held by the FSM into a 48 Hz stream -- with steps at each change of median
+  10.41 mm/s, p90 134.73 mm/s, max 287.28 mm/s, while we declare the same velocity to the EKF as 30 mm/s.
+  A 135 mm/s step declared as 30 mm/s noise is a ~4.5 sigma innovation every 100 ms.  Its honest noise is
+  LARGER than 0.03, not smaller, which is why VISO_VEL_M_NSE was left alone here: changing it in the same
+  run would have made this run's result unattributable.  Meanwhile the FCU's velocity estimate got worse
+  (N 13.66 -> 36.76 mm/s) which is consistent with the staircase, not with the position change.
+  NOTE: the velocity channel has no covariance path at all -- `GCS_MAVLINK::handle_odometry`
+  (GCS_Common.cpp:4052) reads pose_covariance for posErr/angErr but calls
+  `handle_vision_speed_estimate(...)` with the SPEED estimate, and EKF3 takes the velocity noise from
+  `_frontend.get_vel_noise()` (`AP_VisualOdom_MAV.cpp:79`).  So the source cannot declare its own velocity
+  accuracy; the parameter or the source RATE is the only lever.
+* THE HOVER'S ONE MISS IS NOT A TIMING ACCIDENT.  c3 was held 5.8 s by the FSM and declared ARRIVED by the
+  producer at 0.055 m, but `dwell-audit` sees only 4.80 s inside 0.15 m because the arrival RING carried
+  the aircraft outside the judging radius and back, splitting one visit in two (the same mechanism as
+  RECT11's c3, 4.96 s).  The fix is to start the dwell clock on SETTLED (inside the radius AND slow), not
+  on the first crossing -- scheduled, not done.
+* THE VERTICAL DATUM IS NOT NOISE and no parameter will remove it: across all eight runs with an FCU log
+  the in-flight vertical datum offset is -0.087 +- 0.003 m and the parked value -0.110 +- 0.004 m.
+* ONE SORTIE IS NOT A RESULT.  RECT21 is a single flight and needs a repeat before section 3 is a
+  conclusion; the baseline RECT7 is likewise one flight of eight with an FCU log, and all eight sit in
+  16.18-21.19 mm horizontally, which is the band this run moved out of.
+
+figures: docs/figures/ekf-tight-RECT21.png (the experiment), docs/figures/traj-xy-RECT21-tight-ekf.png
+         (top view), docs/figures/traj-xyzt-RECT21-tight-ekf.png (top view + altitude + time)
