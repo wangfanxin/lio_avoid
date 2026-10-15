@@ -1,3 +1,46 @@
+
+####################################################################################################
+##  RESUME HERE (written round 65) -- the remaining work, in the order it should be run, with the
+##  exact commands.  Everything below this block is the reasoning and the measurements behind it.
+####################################################################################################
+
+STATE AS OF ROUND 65: repository at `759e70a`, working tree clean, tag `mission-a-rect46` unmoved; the FLIGHT
+TREE carries only the instruments (DIAG/1, DIAG/2) -- the distance-field patches are REVERTED and preserved as
+scripts; 29 sorties flown; criteria 1, 2, 4 and 5 met, criterion 3 met in every named measurement except the C2
+row's "0 samples inside the 0.20 m footprint" (0 of 29).
+
+ITEM 3 -- RETEST THE DISTANCE COST ON A CLEAN CROSSING (it has never been tested: its one flight, DIAG29, was a
+508 m flyaway caused by an EKF failsafe, not by the term -- STATUS row 117):
+    python3 /mnt/d/distill_self/_stage/apply-distance-field1.py          # the field
+    bash    /mnt/d/distill_self/_stage/build-distance1.sh                # applies 1 and builds; auto-reverts
+    python3 /mnt/d/distill_self/_stage/apply-distance-field2.py          # the cost term, NOW PARAMETER-DRIVEN
+    bash    /mnt/d/distill_self/_stage/build-distance2.sh                # builds; auto-reverts on failure
+    bash    /mnt/d/distill_self/_stage/park-verify-field.sh              # DIAG/3 must agree with getInflateOccupancy
+    bash    /mnt/d/distill_self/_stage/run-diag29.sh                     # window 8; the best arm
+  THEN, BEFORE RECORDING ANYTHING: read the `FCU-TEXT` lines (the trace added in STATUS row 62).  An EKF failsafe
+  there means the run judges NOTHING about the cost term and must be DISCARDED -- neither support nor refutation.
+  If it is clean, compare against the window-8 arm (+0.058 / +0.167 / -0.276 / +0.089 m; footprint 1887..4749)
+  against the prediction recorded below: the PLAN's own minimum rising from +0.040..+0.126 m toward `dist0`.
+  Revert afterwards with `--revert` on both patch scripts plus a rebuild -- refuted or not, the tree goes back.
+
+ITEM 4 -- DECIDE THE BAR (no code, no flight; the owner's call):
+  Is the C2 row's 0.20 m footprint the right bar for THIS planner on THIS mission?  If yes, item 3's line plus a
+  great deal more work is required.  If no, the delivered measurements ARE the objective's evidence: per-pillar
+  clearance on every crossing, the map's own view measured in process, the plan's detour shape, the rectangle
+  control (9635 airborne samples inside the footprint and a 0.299 m penetration, against ego's best +0.167 m
+  clearance -- avoidance worth about +0.45 m), and `docs/figures/traj-xy-DIAG21-best-crossing.png`.
+
+ITEM 5 -- THE ESTIMATOR LINE (independent of avoidance, and now recorded three times):
+  EKF variance -> the FCU leaves GUIDED for LAND -> a 508 m flyaway (DIAG29).  3 such events in 292 logged runs,
+  two of them on ego sorties carrying an experimental patch.  The A4-v rows have shown the velocity this stack
+  feeds the FCU at 100-130 mm/s rms with ~120 ms of lag across many sorties.  The next occurrence is now
+  timestamped at arrival rather than reconstructed at teardown.
+
+WHAT NOT TO REDO: the relay window (its optimum is 8 s; 15 s is worse), raising inflation (0.20 m deadlocks, 0.30 m
+gives 2789 A* errors), `lambda_fitness` 4.0, the A* clearance cost, the collision-sweep coverage, `dist0` 0.8 m --
+all flown, all refuted (STATUS rows 96, 105-108, 113-114).  And the map line is closed: the map HOLDS the obstacle
+at the moment of closest approach; the plan goes there anyway; the aircraft follows the plan to 0.003-0.044 m.
+
 THE ONE ROUTE LEFT, SCOPED: GIVE THIS PLANNER A REAL OBSTACLE-DISTANCE COST
 2026-10-16   written at the end of the ego-avoidance work.  HEAD 77bafbf.
 
