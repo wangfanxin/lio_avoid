@@ -1,0 +1,80 @@
+GIVING EGO'S MAP THE MEMORY IT ASSUMES IT HAS: one flag in our own relay, and the crossing stops going
+through pillars
+2026-10-16   HEAD 3c48eef + the change below.  Runs: `logs/missionA-DIAG8-map-slice` (window 0),
+             `logs/missionA-DIAG9-window3` (window 3.0 s).  Same world, same planner, same parameters.
+
+=== THE DEFECT THIS FIXES, IN ONE SENTENCE ====================================================
+ego's occupancy map is rebuilt from the CURRENT cloud message alone -- `cloudCallback` resets its local box
+(`grid_map.cpp:835`) and then writes `occupancy_buffer_inflate_[idx] = 1` per accepted point (`:910`), with no
+ESDF, no ray-casting and no probability update anywhere in that variant -- so an obstacle exists in it only
+while the current scan sees it, and MEASURED on the diagonal crossing the map held **0 % of the pillar the
+vehicle was inside** while holding 31-39 cells of pillars 1.1-1.6 m away
+(`docs/metrics/diagonal-map-truth-20261016.txt`).
+
+=== THE FIX, AND WHY IT BELONGS IN OUR CODE ===================================================
+A pillar that is unmarked at 0.4 m WAS marked at 1.0-1.5 m a second or two earlier.  The measured closing speed
+on this mission is ~0.4 m/s, so the whole approach the map forgets spans about 3 s.  `src/planner/cloud_relay.py`
+therefore gains `--window SECONDS` (default 0.0 = exactly the old behaviour): the decimated scans of the last N
+seconds are unioned by voxel key before publication.  It is valid because this cloud is in the WORLD frame --
+in a static world the union of consecutive scans is the swept view, not a smear -- and it costs nothing in
+precision: the union is keyed on the same 0.10 m lattice the map stores.
+
+The alternative was to patch ego's map to accumulate.  Not done: the map is a third-party component whose
+behaviour every earlier measurement in this project describes, and the relay is ours.  `EGO_CLOUD_WINDOW` is
+the harness knob; the relay's own selftest gained five checks (a static scene must NOT grow, a voxel inside the
+span must survive, one outside must not, window 0 must equal one scan, a shared voxel must not duplicate).
+
+=== THE A/B, SAME MISSION, ONE FLAG ===========================================================
+                                        DIAG8 (window 0)        DIAG9 (window 3.0 s)
+    truth's closest approach to a
+    pillar SURFACE                      **-0.164 m**            **+0.150 m**
+    samples inside a pillar             2056 of 94124 (2.18%)   0 of 100120  (0.00%)
+    samples inside the 0.20 m
+    footprint -- the C2 row,
+    over its AIRBORNE samples           5356 of 48943 (10.9%)   2108 of 53753 ( 3.9%)
+    (the same counts over ALL tap
+    samples: 94124 and 100120)          5356 of 94124 ( 5.69%)  2108 of 100120 (2.11%)
+    sortie                              rc=0, no hang           rc=0, no hang
+    A1 route horizontal rms             6.17 mm                 6.25 mm
+    A2 route vertical rms               3.02 mm                 3.08 mm
+    C1 final point                      0.004 m  [PASS]         0.003 m  [PASS]
+
+A swing of **+0.314 m** in the only number that describes whether obstacles were avoided, from a change that
+touches nothing the planner is told.  The two incidents that DIAG8 pinned to pillars #16 and #11 do not occur.
+
+=== THE SAME INSTRUMENT SAYS WHY, NOT JUST THAT ==============================================
+PATCH DIAG/2's map slice, read the same way on both runs (marked cells within 0.45 m of a pillar's centre, as a
+function of that pillar's distance from the vehicle):
+
+    centre distance     DIAG8 median / zero-held    DIAG9 median / zero-held
+    0.00-0.50 m           0        /   100% (n=4)      8        /    50% (n=2)
+    0.50-0.75 m          17        /    44% (n=36)    31        /    29% (n=31)
+    0.75-1.00 m           3        /    44% (n=16)    33        /    44% (n=27)
+    1.00-1.50 m          28        /    24% (n=46)    40        /    15% (n=66)
+    1.50-2.00 m          18        /    39% (n=197)   18        /    44% (n=186)
+    2.00-3.00 m           0        /    50% (n=434)   24        /    44% (n=429)
+    3.00-4.90 m           0        /    54% (n=1024)  14        /    48% (n=1043)
+
+So the fix did what it was supposed to do where it was supposed to do it -- the map now holds 31-40 cells of a
+pillar at 0.5-1.5 m where it held 3-28 -- and the far bands improve too, which is the union's second effect:
+an obstacle seen from an earlier viewpoint stays in the map through the moment the current scan is occluded.
+
+=== WHAT IS NOT CLAIMED =======================================================================
+  * **C2 still FAILS**: 2108 samples lie between +0.150 and +0.200 m of a surface, i.e. the vehicle now clears
+    the pillars but not by the 0.20 m the row asks for.  This is a real remaining gap, not a rounding.
+  * The near band is still not perfect: at 0.42 m, pillar #11 still reads 0 cells in one slice.  A 3 s window
+    spans the approach, not the contact itself; the map still cannot represent a surface it is touching.
+  * **One A/B is not a distribution.**  Every ego crossing before this one failed C2, and the individual
+    crossings varied a lot (-0.071 to -0.279 m), so this needs reproducing before the window is promoted to a
+    default.  `EGO_CLOUD_WINDOW` defaults to 0.0 in the harness precisely so that it can be.
+  * The mechanism by which a surface within ~0.5 m vanishes from the MAP is still not separately established
+    (three candidates in `diagonal-map-truth-20261016.txt`); this round shows the window is sufficient, not
+    that any particular one of them is the cause.
+
+=== FILES =====================================================================================
+  figure  docs/figures/traj-xy-DIAG9-cloud-window.png
+          sha256 d599db04e15840b4bebd839ff8336a5d97b419eba68f2f96edcdc1ca3705951f
+  change  src/planner/cloud_relay.py (`--window`, `VoxelWindow`, five new selftest checks)
+          src/tools/run-mission.sh (`EGO_CLOUD_WINDOW`, passed to the relay, printed in the banner)
+  reading `_stage/map-vs-distance.py`, `_stage/slice-worst.py`, `_stage/slice-analysis.py`,
+          `_stage/rebound-census.py`; flight `_stage/run-diag9.sh`

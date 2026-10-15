@@ -195,6 +195,12 @@ EGO_ARRIVE_M="${EGO_ARRIVE_M:-0.30}"
 #: `PLANNER=ego` implies it; `EGO_STACK=0` overrides it for an ego that is already running elsewhere.
 EGO_STACK="${EGO_STACK:-$([ "$PLANNER" = "ego" ] && echo 1 || echo 0)}"
 EGO_CLOUD_TOPIC="${EGO_CLOUD_TOPIC:-/ego/cloud}"
+#: HOW MANY SECONDS OF SCANS THE RELAY UNIONS INTO EACH MESSAGE (0 = one scan, the behaviour every round up to
+#: and including 8 was flown with).  This is the fix round 8's measurement asks for: ego's map is a single-scan
+#: shell that held 0 % of the pillar the vehicle was inside (`docs/metrics/diagonal-map-truth-20261016.txt`), so
+#: the memory the planner assumes it has is restored here, on our side.  ~3 s is what the geometry asks for: the
+#: measured closing speed on the diagonal is ~0.4 m/s, so 3 s spans the whole approach the map forgets.
+EGO_CLOUD_WINDOW="${EGO_CLOUD_WINDOW:-0.0}"
 case "$PLANNER" in
     rectangle)
         PLANNER_FILE="$REPO/planner/rectangle_source.py"
@@ -242,10 +248,10 @@ if [ "${PLANNER_DRY_RUN:-0}" = "1" ]; then
     echo "   topic          : $PLANNER_TOPIC (quadrotor_msgs/PositionCommand, frame lio_world)"
     echo "   argv           : $PLANNER_ARGS"
     echo "   what would run : python3 $PLANNER_FILE $PLANNER_ARGS"
-    echo "   ego stack      : $EGO_STACK (cloud_relay /lio/cloud_world -> $EGO_CLOUD_TOPIC; ego max_vel $EGO_MAX_VEL max_acc $EGO_MAX_ACC)"
+    echo "   ego stack      : $EGO_STACK (cloud_relay /lio/cloud_world -> $EGO_CLOUD_TOPIC; ego max_vel $EGO_MAX_VEL max_acc $EGO_MAX_ACC; cloud window ${EGO_CLOUD_WINDOW}s)"
     if [ "$EGO_STACK" = "1" ]; then
         echo "                    would also run: ros2 launch ego_planner ego_on_lio.launch.py"
-        echo "                                   python3 $REPO/planner/cloud_relay.py --out $EGO_CLOUD_TOPIC"
+        echo "                                   python3 $REPO/planner/cloud_relay.py --out $EGO_CLOUD_TOPIC --window $EGO_CLOUD_WINDOW"
     fi
     exit 0
 fi
@@ -522,6 +528,7 @@ if [ "$EGO_STACK" = "1" ]; then
     set -u
     export ROS_LOCALHOST_ONLY=1
     python3 "$REPO/planner/cloud_relay.py" --in /lio/cloud_world --out "$EGO_CLOUD_TOPIC" \
+        --window "$EGO_CLOUD_WINDOW" \
         > "$OUT/ego_relay.log" 2>&1 &
     EGO_RELAY_PID=$!
     ros2 launch ego_planner ego_on_lio.launch.py \

@@ -15,6 +15,18 @@ could not have distinguished.
 THE RELAY DOES NOT INFLATE.  ego inflates by one voxel itself (`grid_map/obstacles_inflation: 0.099`), and
 inflating twice would quietly move every clearance claim.
 
+WHAT IT DOES ADD, since round 8, IS MEMORY (`--window`, and 0 keeps the old behaviour exactly).  ego's map
+does not accumulate -- `cloudCallback` resets its local box and then writes `occupancy_buffer_inflate_[idx]=1`
+per accepted point (`grid_map.cpp:835,910`), with no ESDF, no ray-casting and no probability update anywhere in
+that variant -- so the map is a SINGLE-SCAN SHELL one voxel thick.  MEASURED with PATCH DIAG/2 on the diagonal
+crossing (`DIAG8`): it held **0 % of the pillar the vehicle was inside** while holding 31-39 cells of the
+pillars 1.1-1.6 m away, and every observation with a pillar's centre within 0.50 m found zero cells; the
+planner's own hard collision check agreed with the map, which is why five crossings were caught by the C2 row
+while the planner logged no collision at all.  Unioning the last few seconds of scans restores the memory the
+planner assumes it has, using only our code, and it is valid because this cloud is in the WORLD frame: in a
+static world the union of consecutive scans is the swept view, not a smear.  ~3 s is the value the geometry
+asks for (measured closing speed on the diagonal ~0.4 m/s, so 3 s spans the whole approach the map forgets).
+
 THE QOS, and why the subscription is BEST_EFFORT.  Super-LIO publishes `/lio/cloud_world` through
 `create_publisher<PointCloud2>("/lio/cloud_world", 10)` (`ROSWrapper.cpp:338-340`) — the integer-depth
 overload, i.e. RELIABLE.  A RELIABLE subscriber connects to that, but it would SILENTLY NEVER CONNECT to a
@@ -24,7 +36,7 @@ RELIABLE (which is what ego requires).  The frame is passed through UNCHANGED: t
 ego never reads `header.frame_id`, and L IS that frame numerically — renaming it would be a claim that
 something was converted.
 
-usage: tools/../planner/cloud_relay.py [--voxel 0.10] [--rate 5.0] [--selftest]
+usage: tools/../planner/cloud_relay.py [--voxel 0.10] [--rate 5.0] [--window 0.0|3.0] [--selftest]
        [--in /lio/cloud_world] [--out /ego/cloud] [--odom /lio/robo/odom]
 """
 from __future__ import annotations
@@ -72,6 +84,59 @@ def crop_box(points, centre, half):
         else:
             dropped += 1
     return out, dropped
+
+
+class VoxelWindow:
+    """THE LAST `seconds` OF DECIMATED SCANS, unioned by voxel key.
+
+    WHY THIS EXISTS, and it is the whole reason the relay may touch the cloud at all.  ego's map does not
+    accumulate: `GridMap::cloudCallback` calls `resetBuffer(camera_pos +- local_update_range)` and then writes
+    `occupancy_buffer_inflate_[idx] = 1` per accepted point (`grid_map.cpp:835,910`) -- a DIRECT WRITE, with no
+    ESDF, no ray-casting and no probability update anywhere in that variant.  The map is therefore a
+    SINGLE-SCAN SHELL, one voxel thick, and MEASURED on the diagonal crossing (`DIAG8`, PATCH DIAG/2, which
+    dumps the same array the planner reads) it held **0 % of the pillar the vehicle was inside** while holding
+    31-39 cells of the pillars 1.1-1.6 m away, and **every** observation with a pillar's centre within 0.50 m
+    found zero cells.
+
+    The planner nonetheless assumes memory: it plans through space its map calls free, and its own hard
+    collision check agrees with the map, which is why five crossings were caught by the C2 row while the
+    planner logged no collision at all.  A cloud that is a UNION OF RECENT SCANS gives that memory back
+    without touching ego: a pillar that is unmarked at 0.4 m was marked at 1.0-1.5 m a second or two earlier,
+    and at this mission's closing speed (~0.4 m/s measured from the tap) a 3 s window spans the whole approach.
+
+    It is only valid because this cloud is in the WORLD frame, where a static world's points do not move: the
+    union of consecutive scans is the swept view, not a smear.  Deterministic: entries are kept in time order
+    and each voxel is overwritten by the newest point in it.
+    """
+
+    def __init__(self, seconds: float, voxel: float) -> None:
+        self.seconds = float(seconds)
+        self.voxel = float(voxel)
+        self.scans = []                       # [(t, {key: point}), ...], oldest first
+
+    def add(self, t: float, points) -> dict:
+        """Add one decimated scan and return the merged voxel map (newest point wins per voxel)."""
+        self.scans.append((t, {self._key(p): p for p in points}))
+        if self.seconds > 0.0:
+            cut = t - self.seconds
+            self.scans = [s for s in self.scans if s[0] >= cut]
+        else:
+            self.scans = self.scans[-1:]
+        merged = {}
+        for _, d in self.scans:
+            merged.update(d)
+        return merged
+
+    def _key(self, p):
+        return (int(math.floor(p[0] / self.voxel)), int(math.floor(p[1] / self.voxel)),
+                int(math.floor(p[2] / self.voxel)))
+
+    @property
+    def factor(self) -> float:
+        """How much bigger the union is than its newest scan -- the relay reports it, so the cost is visible."""
+        if not self.scans or not self.scans[-1][1]:
+            return 1.0
+        return len(set().union(*[set(d) for _, d in self.scans])) / float(len(self.scans[-1][1]))
 
 
 def cost_estimate(n_points):
@@ -134,6 +199,48 @@ def _selftest() -> int:
     if crop_box(pts2, None, ACCEPT_M)[1] != 0:
         bad.append("with no odometry the crop must be a pass-through and must not claim to drop anything")
 
+    # THE WINDOW, and its two failure modes: growing without bound, and forgetting too early.  A static world
+    # must NOT grow (that would inflate the map's write cost every message), a voxel inside the span must
+    # survive, and a voxel outside it must not.
+    print("      the window, on a world that does not move")
+    scan = [(0.00, 0.00, 0.0), (1.00, 0.00, 0.0), (2.00, 0.00, 0.0)]
+    w = VoxelWindow(seconds=3.0, voxel=0.10)
+    w.add(0.0, scan)
+    w.add(1.0, scan)
+    merged = w.add(2.0, scan)
+    print("      a STATIC scene, seen 3 times     -> %d voxels (one scan: %d)" % (len(merged), len(scan)))
+    if len(merged) != len(scan):
+        bad.append("a static scene grew to %d voxels from %d" % (len(merged), len(scan)))
+
+    w2 = VoxelWindow(seconds=3.0, voxel=0.10)
+    w2.add(0.0, [(5.00, 5.00, 0.0)])
+    w2.add(4.1, [(0.00, 0.00, 0.0)])
+    m2 = w2.add(4.2, [(0.00, 0.00, 0.0)])
+    print("      a voxel last seen 4.2 s ago      -> %d voxel(s) (must be 1: the window is 3 s)" % len(m2))
+    if len(m2) != 1:
+        bad.append("a 3 s window kept %d voxels; the one from t=0 must be gone" % len(m2))
+
+    w3 = VoxelWindow(seconds=3.0, voxel=0.10)
+    w3.add(0.0, [(5.00, 5.00, 0.0)])
+    m3 = w3.add(2.0, [(0.00, 0.00, 0.0)])
+    print("      a voxel last seen 2.0 s ago      -> %d voxel(s) (must be 2: still inside)" % len(m3))
+    if len(m3) != 2:
+        bad.append("the window dropped a voxel that is inside its span")
+
+    w0 = VoxelWindow(seconds=0.0, voxel=0.10)
+    w0.add(0.0, [(5.00, 5.00, 0.0)])
+    m0 = w0.add(1.0, [(0.00, 0.00, 0.0)])
+    print("      window 0 s (one scan, as before) -> %d voxel(s) (must be 1)" % len(m0))
+    if len(m0) != 1:
+        bad.append("window 0 kept %d voxels; it must be exactly one scan" % len(m0))
+
+    w4 = VoxelWindow(seconds=3.0, voxel=0.10)
+    w4.add(0.0, [(0.00, 0.00, 0.0), (1.00, 0.00, 0.0)])
+    m4 = w4.add(0.5, [(1.05, 0.00, 0.0), (2.00, 0.00, 0.0)])
+    print("      two views, one voxel shared      -> %d voxels (must be 3)" % len(m4))
+    if len(m4) != 3:
+        bad.append("the union across views gave %d voxels, expected 3" % len(m4))
+
     # WHAT THE RELAY BUYS, on a surface whose answer is known, and ONLY that.  The number that matters for
     # the real scan is the input, which is MEASURED -- 19480 points per scan at 5.0 Hz (RECT48's own
     # recording, see the header) -- and the ratio the relay achieves on it is reported at RUNTIME by the
@@ -182,13 +289,17 @@ def _ros_main(args) -> int:
             self.create_subscription(PointCloud2, args.topic_in, self.on_cloud, sub_qos)
             self.create_subscription(Odometry, args.odom, self.on_odom, 10)
             self.pos = None
+            self.win = VoxelWindow(args.window, args.voxel)
             self.n_in = self.n_out = self.n_drop = self.n_cloud = 0
             self.last_pub = 0.0
             self.last_frame = None
             self.create_timer(5.0, self.report)
             self.get_logger().info("cloud relay %s -> %s: %.3f m voxels, <= %.1f Hz, RELIABLE out, "
-                                   "frame passed through unchanged"
-                                   % (args.topic_in, args.out, args.voxel, args.rate))
+                                   "frame passed through unchanged, %s"
+                                   % (args.topic_in, args.out, args.voxel, args.rate,
+                                      "SINGLE SCAN (no persistence)" if args.window <= 0.0 else
+                                      "UNION of the last %.1f s of scans (persistence for a map that has none)"
+                                      % args.window))
 
         def on_odom(self, m):
             self.pos = (m.pose.pose.position.x, m.pose.pose.position.y, m.pose.pose.position.z)
@@ -202,7 +313,8 @@ def _ros_main(args) -> int:
             self.n_cloud += 1
             self.n_in += len(pts)
             kept, dropped = crop_box(pts, self.pos if args.crop else None, ACCEPT_M)
-            out = voxel_decimate(kept, args.voxel)
+            merged = self.win.add(now, kept)      # the union of the last `--window` seconds, by voxel
+            out = [merged[k] for k in sorted(merged)]
             self.n_drop += dropped
             self.n_out += len(out)
             self.last_frame = msg.header.frame_id
@@ -225,10 +337,11 @@ def _ros_main(args) -> int:
                 self.get_logger().warn("no cloud on %s yet (is the LIO up?)" % args.topic_in)
                 return
             self.get_logger().info("%d scan(s): %d -> %d points (%.1f%% kept), %d cropped away, frame %r, "
-                                   "odometry %s"
+                                   "odometry %s, window %.1f s (union is %.2fx the newest scan)"
                                    % (self.n_cloud, self.n_in, self.n_out,
                                       100.0 * self.n_out / max(1, self.n_in), self.n_drop, self.last_frame,
-                                      "yes" if self.pos else "NO -- crop disabled, forwarding whole scans"))
+                                      "yes" if self.pos else "NO -- crop disabled, forwarding whole scans",
+                                      self.win.seconds, self.win.factor))
 
     rclpy.init()
     node = Relay()
@@ -247,6 +360,11 @@ def main() -> int:
     ap.add_argument("--selftest", action="store_true", help="the arithmetic, with no ROS and no LIO")
     ap.add_argument("--voxel", type=float, default=0.10, help="decimation cell, m (= ego's map resolution)")
     ap.add_argument("--rate", type=float, default=5.0, help="max output rate, Hz (the source is 5 Hz)")
+    ap.add_argument("--window", type=float, default=0.0,
+                    help="seconds of scans to UNION into each message; 0 = one scan, the behaviour every "
+                         "earlier round was flown with.  This is the persistence ego's map does not have "
+                         "(`grid_map.cpp:835,910`), and the value to fly is ~3 s: measured closing speed on "
+                         "the diagonal is ~0.4 m/s, so 3 s spans the whole approach that the map forgets.")
     ap.add_argument("--crop", type=int, default=1, help="crop to ego's acceptance box (needs odometry)")
     ap.add_argument("--in", dest="topic_in", default=DEFAULT_IN)
     ap.add_argument("--out", default=DEFAULT_OUT)
