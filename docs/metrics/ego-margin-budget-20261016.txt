@@ -314,3 +314,29 @@ NOTE ON DENOMINATORS, because two honest numbers disagree by design.  The C2 row
 (54929 / 53753 / 54097) and the figure's panel titles use ALL tap samples (91160 / 100120 / 100143).  The COUNTS
 are identical in both -- 9635, 2108, 1231 -- and only the fraction changes.  Where a percentage matters, quote
 the C2 row's own.
+
+=== THE PLAN'S DETOUR SHAPE, DRAWN FOR THE CURRENT CONFIGURATION ==========================================
+Criterion 3 names three things about ego's own view: per-pillar clearance, the C2 row, and whether the map saw
+the pillars together with the PLAN's detour shape.  The last of those was drawn once, in round 7, for DIAG2 --
+before the relay window -- and never for the configuration that now flies.  Drawn from `traj.csv.points.csv`,
+i.e. from the published `/plan/cmd` stream through the same L->W calibration:
+
+    run             plan points    plan minimum    1st percentile    median
+    DIAG2               566 510        -0.274 m        -0.190 m      +0.443 m
+    DIAG9               513 283        +0.061 m        +0.138 m      +0.531 m
+    DIAG15              393 901        -0.285 m        +0.027 m      +0.435 m
+
+(These are the SAMPLED plan points, which is what the recorder writes per published command, so the counts are in
+the hundreds of thousands rather than the few thousand rows of `traj.csv`, and the percentiles differ slightly
+from that file's for the same runs.  The MINIMA agree between the two files, and the minimum is the number the
+argument uses.  The first version of this section carried the `traj.csv` numbers under this figure's heading, and
+that is exactly the species of error the whole investigation keeps finding: two files, one name.)
+
+The SHAPE is the same in all three and it is the thing the criterion asks about: **the plan bends around the
+pillars rather than through them**, turning before each one and passing down the corridors -- the red patches are
+corner cuts at the turns, not straight-line flight.  What changed across the configurations is the
+FIRST-PERCENTILE clearance (-0.190 -> +0.138 / +0.027 m), which is the same quantity the parameter search moved,
+and the plan's MINIMUM, which did not move (-0.274, +0.061, -0.285 m across three configurations -- and note that
+DIAG15 is the run whose TRUTH was the best of the three while its PLAN's 1st percentile is the worst, which is the
+clearest statement yet that flown quality and planned quality are only loosely coupled here).
+Figure `docs/figures/traj-xy-EGO-plan-detour-shape.png`, sha256 f6d04fc4de158a58e933ba4433a3cd8a77b824e879a53b68ea3577a4c2ebc4cc.
