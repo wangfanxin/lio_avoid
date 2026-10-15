@@ -773,3 +773,72 @@ last patched source (02:37): the flown binary contained the patches.  `_stage/ro
    as reversible scripts: `_stage/apply-distance-field1.py`, `_stage/apply-distance-field2.py`.
 
 Figure `docs/figures/traj-xy-DIAG29b-distance-cost-wired.png`, sha256 8032138468e55d2ef92312fc9c2a318bda451e70ddcc955b15b2fd129dd85f73 -- this round's top view: the term's crossing beside the arm's best, both with the published plan drawn over the truth.
+
+=== ROUND 70: THE OWNER'S DECISION ON CRITERION 3, THE CORPUS TABLE, AND WHY THE OPTIMISER IS NOT CHANGED ====
+Two questions were put to the owner after round 69, with the numbers attached.  Both answers are recorded here
+verbatim in substance because they decide what "done" means.
+
+  1. **The C2 bar is re-defined by the owner**: criterion 3 is met by "**不进入柱体 + 可测量的绕行**" -- the aircraft
+     must not enter a pillar body, and the avoidance must be measurable -- rather than by the original "0 samples
+     inside the 0.20 m footprint".  The 0.20 m share is kept as the reported limitation, and this file keeps the
+     row that says 0 of 29 crossings met it.
+  2. **The optimiser is NOT to be changed.**  The owner's reason, in their words: "不用改,ego 会有更新新轨迹的对吧"
+     -- ego keeps publishing fresh trajectories, so a hole in one trajectory's collision check should be repaired
+     by the next one.  Round 70 tests that claim instead of arguing it, and it is largely RIGHT (below), so the
+     full-sweep `check_collision_and_rebound` experiment is NOT flown and nothing in the flight tree changes.
+
+CRITERION 3's EVIDENCE TABLE -- every crossing in the corpus, one convention (`_stage/round70-corpus.py`; the
+clearance convention is `diag-table.py`'s, so these columns are comparable with every earlier table):
+
+    run                        TRUTH min   truth inside 0.20   body   PLAN min   plan in    detour
+    DIAG21-window8-repro        +0.167 m    1887 of  95528        0    -0.209 m    2.81%    0.869 m
+    DIAG24-window15             +0.155 m    2025 of  91729        0    +0.039 m    2.24%    1.102 m
+    DIAG27-dist0-08             +0.154 m    4234 of  97625        0    +0.108 m    3.78%    0.884 m
+    DIAG9-window3               +0.150 m    2108 of 100120        0    +0.061 m    2.32%    0.894 m
+    DIAG23-window8-arm4         +0.089 m    2508 of  94075        0    +0.084 m    3.07%    0.922 m
+    DIAG15-fitness4             +0.068 m    1231 of 100143        0    -0.285 m    2.39%    1.031 m
+    DIAG29-distance-cost        +0.058 m   19020 of 139718        0    -0.107 m   14.36%    1.229 m
+    DIAG20-window8              +0.058 m    4749 of  92977        0    -0.016 m    6.77%    0.838 m
+    DIAG10-window3-repro        +0.056 m   12028 of 106581        0    -0.212 m    7.83%    0.904 m
+    DIAG11-kill-plan-ego        +0.016 m   13953 of  65872        0    -0.130 m   11.52%    0.667 m
+    DIAG12-inflate020           -0.031 m  448426 of 496963      733    -0.293 m   77.23%    1.113 m
+    ... 18 further runs from -0.057 m down to -0.291 m ...
+    DIAG1-rect-control          -0.299 m    9635 of  91160     4131    -0.300 m   64.47%    0.000 m
+
+  * **the aircraft never entered a pillar body in 10 of the 29 crossings**, and the four best hold +0.150 ..
+    +0.167 m -- those are the numbers criterion 3 is now judged on, together with the detour;
+  * **every ego crossing detours**: the plan's largest perpendicular excursion from the straight leg is 0.57 ..
+    1.23 m, against the pillar radius + footprint of 0.50 m, while the straight legs themselves pass 0.297 m
+    INSIDE a pillar.  The rectangle control on the same mission deviates **0.000 m** from the line and comes
+    closest at **-0.299 m, i.e. inside a pillar** -- the contrast the criterion asks for;
+  * **the limitation, unchanged and reported**: 0 of 29 crossings met the original C2 row; the best is 1887 of
+    95528 (1.98%), and the plan itself still touches a pillar body in 25 of the 29 runs.
+
+WHY THE OPTIMISER IS NOT CHANGED -- the owner's claim, measured (`_stage/round70-replan.py`; the plan's message
+stamps and the planner's own log share the epoch clock, so this needs no new flight and no new instrument):
+
+    run                    plan in 0.20   plan in body   episodes of "inside"   longest episode   the planner said
+    DIAG21-window8-repro       2.81%        0.57%              8                  0.4 s         1 stop, at t0+39.8 s
+    DIAG23-window8-arm4        3.07%        0.00%              6                  0.9 s         nothing at all
+    DIAG20-window8             6.77%        0.31%             13                  0.6 s         1 stop, at t0+43.4 s
+    DIAG29-distance-cost      14.36%        0.38%             19                  6.0 s         3 stops, median
+                                                                                               2.75 s after an episode
+                                                                                               begins
+
+  * **the owner is right about the mechanism**: in the arm, an excursion of the published plan into the 0.20 m band
+    lasts 0.4 .. 0.9 s and ends by itself -- the next trajectory is clear -- and the planner usually says nothing,
+    because most excursions never reach the checked part of the horizon at all.  Replanning IS what keeps the
+    aircraft out of the pillars, which is exactly why the collision-check sweep was left alone;
+  * **and it also shows what the refuted term did**: with the obstacle-distance cost on a field rebuilt from a
+    per-message-reset single-scan shell, the same excursions last up to **6.0 s** and the run announces three of
+    them.  The term did not remove the excursions, it stretched them -- consistent with the 2724 `GEN_NEW_TRAJ`
+    of round 69.
+
+SO CRITERION 3, AS RE-DEFINED: the diagonal mission is reproduced, flown with the ego planner, the avoidance is
+measured (per-pillar clearance for every crossing, the map question answered -- the plan's worst point lies in
+space ego's own inflated occupancy MARKS OCCUPIED, so the map saw the pillars it flew between), the plan's detour
+shape is measured, and the comparison against the rectangle planner on the same mission is on the table
+(-0.299 m through a pillar, 0.000 m of detour, 64.47% of its airborne samples inside the footprint).  The 0.20 m
+row is reported as unmet, by every crossing.
+
+Figures, both from recorded data: `docs/figures/traj-xy-DIAG-corpus-closest-approach.png` sha256 33dd0e26d6094fdd1549fd6640a55f9e92913e3f541600d8b011d6561b0aa534 (the top view: every crossing's closest approach on the pillar field) and `docs/figures/round70/replan-episodes.png` sha256 3a5af914206353e51fb1e1b0ed1449f721a7a8bb3db5fefc83b9bf523ee75170 (the plan's clearance against time, with the planner's own announcements).  Round 70 flew nothing, so the per-round top view of the last flight remains `docs/figures/traj-xy-DIAG29b-distance-cost-wired.png`.
