@@ -455,12 +455,50 @@ def main() -> int:
         # right after A4, which is how a whole flight's metrics went missing).
         ex = ny = float("nan")
     else:
+        # WHERE THE WINDOW OPENS, STATED IN TERMS OF THE AIRCRAFT RATHER THAN OF A PHASE INDEX.
+        #
+        # The rule used to be `t_sim_all[leg_idx[1]]` -- the entry of the SECOND leg phase -- which was
+        # written when the tour's FIRST leg phase was the pad->corner-1 transit, so "the second leg phase"
+        # and "the arrival at corner 1" were the same instant (the note above records that the transit was
+        # deliberately left out on 2026-10-13).  The setpoint-driven take-off (2026-10-15) puts a CLIMB leg
+        # in front of the tour: the phases become leg1 = the climb, leg2 = the transit, and the same index
+        # then opened the window AT THE PAD -- 0.64 m outside the rectangle -- so RECT34-accept read
+        # "E 2.584 m N 1.651 m" for a 2.0 x 1.2 m square.  That is the pad, not the route: the same failure
+        # the 2026-10-13 note describes, arriving through a different door.
+        #
+        # THE RULE NOW: the first leg phase whose OWN recorded truth position is AT the tour's entry corner
+        # (within 0.15 m -- the radius `tools/dwell-audit.py` and B1's corner-visit companion already use
+        # for "the aircraft is at this corner").  It reads no new file and no new number, and it reproduces
+        # the historical window EXACTLY where the two rules can be compared: `_stage/b1-window-ab.py` over
+        # RECT23/24/26 gives delta E/N +0.0/+0.0 mm, over RECT32/33 +0.0/+0.0, and over RECT31 +0.0/+1.5
+        # (RECT31's plan declared its arrival on the pad, so its phase entries were shifted; both readings
+        # FAIL).  On RECT34 it gives E 2.163 / N 1.304 against the 2.584 / 1.651 the index rule produced.
+        # The INDEX RULE'S number is still printed, as REPORTED, whenever the two differ -- a window change
+        # must never be a way of making a number disappear.
         route_t0 = t_sim_all[leg_idx[1]] if len(leg_idx) > 1 else t_sim_all[leg_idx[0]]
+        route_t0_old = route_t0
+        if corners:
+            c0 = np.asarray(corners[0][:2], dtype=float)
+            for i in leg_idx:
+                r = phases[i]
+                try:
+                    q = np.array([float(r["truth_x"]), float(r["truth_y"])])
+                except (KeyError, ValueError):
+                    break
+                if float(np.linalg.norm(q - c0)) <= 0.15:
+                    route_t0 = t_sim_all[i]
+                    break
         route_t1 = t_sim_all[leg_idx[-1] + 1] if leg_idx[-1] + 1 < len(phases) else int(t_tap[-1])
         m_route = np.flatnonzero((t_tap >= route_t0) & (t_tap <= route_t1))
         p_route = p_tap[m_route] if len(m_route) else pw
         ex = float(p_route[:, 0].max() - p_route[:, 0].min())
         ny = float(p_route[:, 1].max() - p_route[:, 1].min())
+        ex_old = ny_old = float("nan")
+        if route_t0_old != route_t0:
+            m_old = np.flatnonzero((t_tap >= route_t0_old) & (t_tap <= route_t1))
+            if len(m_old):
+                ex_old = float(p_tap[m_old][:, 0].max() - p_tap[m_old][:, 0].min())
+                ny_old = float(p_tap[m_old][:, 1].max() - p_tap[m_old][:, 1].min())
         # the corner visits inside the same window: "is the box the route, or the corners?" -- both are
         # printed, and the one the verdict uses is the whole route, as it always was.
         if corners:
@@ -492,6 +530,14 @@ def main() -> int:
               % (len(m_route) and (t_tap[m_route][-1] - t_tap[m_route][0]) * 1e-6, ex, ny, cw, ch,
                  cw + 0.10, ch + 0.10, "PASS" if b1_ok else "FAIL"))
         print("   against the legacy bound %.2f on N: %s" % (ch + 0.06, "PASS" if b1_legacy else "FAIL"))
+        if route_t0_old != route_t0:
+            print("   THE WINDOW ITSELF, both ways: this row opens at the arrival at corner 1 (t_sim "
+                  "%.2f s, the first leg phase whose own truth position IS the corner); the older "
+                  "second-leg-phase rule would open at %.2f s and read E %.3f m  N %.3f m  "
+                  "[REPORTED, not gated] -- that window contains the PAD, which is %.2f m outside the "
+                  "commanded rectangle, and the box is about the rectangle"
+                  % (route_t0 * 1e-6, route_t0_old * 1e-6, ex_old, ny_old,
+                     float(np.hypot(corners[0][0], corners[0][1]))))
         # THE REPORTED COMPANIONS (2026-10-15): they answer the question a FAIL raises -- is the box the
         # WINDOW's fault or the AIRCRAFT's? -- without touching the bound or the verdict.
         if len(m_corner) > 3:
@@ -628,12 +674,20 @@ def main() -> int:
     b1_applicable = (not traj_mode) and bool(corners)
     b1_ok = (ex <= 2.10 and ny <= 1.30) if b1_applicable else True
     verdict = (h_rms <= 0.020 and v_rms <= 0.050 and not aborted and b1_ok)
+    # THE LABEL NAMES THE ROWS THAT FAILED, NOT THE BLOCK THEY LIVE IN.  "A1/A2/B1 FAIL" above a
+    # parenthetical reading "A1 3.21 mm <= 20, A2 1.82 mm <= 50" is a line that says three rows failed and
+    # then shows two of them passing -- MEASURED on RECT33-accept and RECT34-accept, where only B1 failed.
+    # The parenthetical keeps its exact shape (the batch summary parses these numbers), and the label is
+    # now derived from the same comparisons it prints.
+    _failed = [n for n, ok in (("A1", h_rms <= 0.020), ("A2", v_rms <= 0.050), ("B1", b1_ok),
+                               ("aborted", not aborted)) if not ok]
+    _label = "PASS" if not _failed else "FAIL: " + ", ".join(_failed)
     if b1_applicable:
         print("A1/A2/B1 %s   (A1 %.2f mm <= 20, A2 %.2f mm <= 50, B1 E %.3f <= 2.10, N %.3f <= 1.30, "
-              "aborted %s)" % ("PASS" if verdict else "FAIL", h_rms * 1e3, v_rms * 1e3, ex, ny, aborted))
+              "aborted %s)" % (_label, h_rms * 1e3, v_rms * 1e3, ex, ny, aborted))
     else:
         print("A1/A2 %s   (A1 %.2f mm <= 20, A2 %.2f mm <= 50, B1 n/a: %s, aborted %s)"
-              % ("PASS" if verdict else "FAIL", h_rms * 1e3, v_rms * 1e3,
+              % (_label, h_rms * 1e3, v_rms * 1e3,
                  "planner trajectory" if traj_mode else "the world commands no rectangle", aborted))
     return 0 if not aborted else 1
 

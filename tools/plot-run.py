@@ -78,6 +78,17 @@ def main() -> int:
     plans = []
     _tp = os.path.join(args.run, "traj.csv")
     _pp = _tp + ".points.csv"
+
+    def _load_calib():
+        """The L->W calibration this sortie flew with: anything recorded in L is drawn through it."""
+        import json as _json
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from common import frames as _frames
+        with open(args.calib) as _fh:
+            _d = _json.load(_fh)
+        return _frames.Calib(R_WL=np.array(_d["R_WL"], dtype=float),
+                             t_WL=np.array(_d["t_WL"], dtype=float))
+
     if os.path.exists(_tp) and os.path.exists(_pp):
         try:
             ph = np.genfromtxt(_tp, delimiter=",", names=True, dtype=None, encoding="utf-8")
@@ -91,13 +102,7 @@ def main() -> int:
                 # import as a MODULE: a dataclass built from a module that is not in sys.modules raises
                 # inside dataclasses itself (MEASURED 2026-10-14), and the except below then hid it by
                 # drawing the plans in the wrong frame.
-                import json as _json
-                sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                from common import frames as _frames
-                with open(args.calib) as _fh:
-                    _d = _json.load(_fh)
-                calib = _frames.Calib(R_WL=np.array(_d["R_WL"], dtype=float),
-                                      t_WL=np.array(_d["t_WL"], dtype=float))
+                calib = _load_calib()
             except Exception as _exc:
                 print("   (no calibration: %s -- plans would be drawn in L, so they are NOT drawn)"
                       % _exc)
@@ -106,10 +111,20 @@ def main() -> int:
             # fresh recording needs no calibration to be drawn and must NOT be converted again; a file
             # without the column is an old one and its points are in L.
             pframe = str(np.atleast_1d(pp["frame"])[0]) if "frame" in pp.dtype.names else "L"
+            # WHICH STAMP IN `points.csv` IDENTIFIES A PLAN -- MEASURED 2026-10-15, and it is the whole
+            # reason this overlay vanished from the F2 figures ("6451 Path messages, 0 distinct plans
+            # drawn").  `tools/record-traj.py` changed shape with F1: for the old `nav_msgs/Path` source
+            # `points.csv.t_us` was the stamp of the Path MESSAGE, so the join key was the freshest message
+            # stamp of that plan; for the `PositionCommand` source the same column holds the stamp at which
+            # that leg's target was FIRST commanded, i.e. exactly `traj.csv.t0_us` (one polyline per leg,
+            # 101 resampled points, written in W).  Join on `t0_us` and fall back to the message stamp, so
+            # an old run still draws.
             for t0 in np.unique(ph["t0_us"]):
                 sel = ph["t_us"][ph["t0_us"] == t0]
                 tm = int(sel[-1] if len(sel) else t0)          # the freshest message of this plan
-                rows = pp[pp["t_us"] == tm]
+                rows = pp[pp["t_us"] == t0]
+                if not len(rows):
+                    rows = pp[pp["t_us"] == tm]
                 if not len(rows):
                     continue
                 q = np.column_stack([rows["e"], rows["n"], rows["u"]]).astype(float)
@@ -124,6 +139,38 @@ def main() -> int:
                   % (len(ph), len(plans), pframe))
         except Exception as exc:
             print("   could not read the plan recording: %s" % exc)
+
+    # THE PLAN IS A SEQUENCE OF WAYPOINTS, NOT A CONTINUOUS PATH -- and that is a property of the PLAN box,
+    # not of the drawing: `planner/cmd_stream.py` publishes ONE target at a time with velocity and
+    # acceleration ZERO (`sample()` docstring), so the straight lines between targets and the whole speed
+    # profile come from the FCU's own position controller.  The markers below are those targets, in the
+    # order they were commanded, converted L->W with the sortie's own calibration; the polylines above are
+    # how the recorder renders the same targets.
+    wps = []
+    _cp = os.path.join(args.run, "traj.csv.cmd.csv")
+    if os.path.exists(_cp):
+        try:
+            cc = np.genfromtxt(_cp, delimiter=",", names=True, dtype=None, encoding="utf-8")
+            if cc.ndim == 0:
+                cc = cc.reshape(1)
+            for r in cc:
+                q = np.array([float(r["x_l"]), float(r["y_l"]), float(r["z_l"])])
+                if not len(wps) or np.linalg.norm(q - wps[-1][0]) > 1e-9:
+                    wps.append((q, int(r["trajectory_id"])))
+            calib_c = None
+            try:
+                calib_c = _load_calib()
+            except Exception as _exc:
+                print("   (no calibration: %s -- the commanded waypoints are in L, so they are NOT drawn)"
+                      % _exc)
+            if calib_c is not None and wps:
+                wps = [((calib_c.R_WL @ q) + calib_c.t_WL, tid) for q, tid in wps]
+            print("   commanded waypoints: %d distinct targets in %d messages%s"
+                  % (len(wps), len(cc), "" if calib_c is not None else " (NOT converted, not drawn)"))
+            for i, (q, tid) in enumerate(wps[:12]):
+                print("      w%-2d traj_id=%-2d  E %+8.4f  N %+8.4f  U %+8.4f" % (i + 1, tid, q[0], q[1], q[2]))
+        except Exception as exc:
+            print("   could not read the command recording: %s" % exc)
 
     # the FCU's own estimate (XKF1), clock-aligned to the truth by the take-off ramp -- the same trick A4
     # uses.  This is the curve that answers "did the EKF keep what the LIO gave it".
@@ -167,6 +214,14 @@ def main() -> int:
             ax.plot([], [], lw=1.2, color=cm.viridis(0.5),
                     label="published paths (%d plans, in full)" % len(plans))
         ax.plot(p_t[:, 0], p_t[:, 1], lw=1.6, color="#1f4fd8", label="truth (1200 Hz)", zorder=5)
+        # the targets themselves, on top of the truth: "the plan is these points, and only these points"
+        if wps and wps[0][0][2] > -1e6:
+            ax.plot([q[0] for q, _ in wps], [q[1] for q, _ in wps], ls="none", marker="o", mfc="none",
+                    mec="#7a1010", ms=7, mew=1.0, zorder=6,
+                    label="commanded waypoints (%d, in order)" % len(wps))
+            for i, (q, _tid) in enumerate(wps, start=1):
+                ax.annotate("w%d" % i, (q[0], q[1]), textcoords="offset points", xytext=(7, -11),
+                            fontsize=8, color="#7a1010", zorder=7)
         ax.plot(p_lw[:, 0], p_lw[:, 1], lw=0.9, color="#e8791a", alpha=0.9,
                 label="LIO odometry (200 Hz, L->W)")
         if ekf is not None:

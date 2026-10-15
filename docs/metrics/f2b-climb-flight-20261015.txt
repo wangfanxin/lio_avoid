@@ -1,0 +1,119 @@
+THE CLIMB LEG, FLOWN; THE B1 WINDOW, FIXED; AND THE PLAN OVERLAY, RESTORED
+================================================================================
+Written 2026-10-15 by the round that fixed the climb leg's arming rule.  Commit under this file:
+"plan: the climb leg's clock armed ON THE PAD" is the fix; this file is the flight that proves it, plus two
+instrument repairs the same flight exposed.  Every number is copied from the run's own files and names its
+denominator; the run directories are named next to each block.
+
+
+1. WHAT FLEW: `RECT34-accept` (the owner's 0.2 m profile, the arming fix, frozen `ekf_trust_lio.parm`)
+------------------------------------------------------------------------------------------------------
+The phases as flown, from `phase.csv`: preflight takeoff hold leg1 leg2 leg3 leg4 leg5 leg6 land done --
+ELEVEN rows, and `leg1` is the climb leg, i.e. the tour now has SIX legs on the wire and SIX in the phase
+log (RECT31/32/33 had five, because the climb leg never became a leg at all).
+
+THE CLIMB LEG, from the plan box's own log (`traj.log`), verbatim in substance:
+  * before take-off: "LEG 1 has not started: the vehicle has not left the pad (altitude 0.111 m, needs >
+    0.50 m or 0.50 m of motion) -- 3003 pose samples on /lio/robo/odom".  This line appears ONCE.  It is
+    the fix visible in the log: RECT33's clock armed instead of waiting.
+  * then: "LEG 1 (waypoint 0 -> 1 ): the vehicle is 0.008 m from the leg's start -- flight clock ARMED
+    ...; leg_start_w=[-0.0033 -0.0025 0.1115] ... p_w=[0.001 -0.0092 0.5058]" -- armed with the aircraft
+    0.506 m up, not on the pad.
+  * "ARRIVED at waypoint 1: the vehicle is 0.260 m from it (gate 0.060 m) after 1.3 s of flight; SETTLED to
+    0.003 m/s (threshold 0.080 m/s) -- the 3.0 s dwell starts NOW".  The 0.260 m gate is
+    `arrive_m + vertical_arrive_slack_m` (0.060 + 0.200): the climb is judged on HEIGHT, with the stack's
+    measured ~0.1 m altitude-datum term covered.
+  * the other five waypoints then arrive at 0.028-0.060 m and every dwell is the commanded 5.0 s;
+    "TOUR COMPLETE: waypoint 5 held for 5.0 s (total 70.8 s of tour)".
+  * ZERO timeout lines in the whole file (RECT33: one, for leg 1).
+
+ON THE WIRE (`setpoints.csv`, one row per class-84 packet the bridge sent): 2478 packets.  The first six
+distinct commanded targets, in order and in W, are
+   (0.000, 0.000, 2.500)   the climb, commanded for 4.97 s (t 31.2..36.2 s)
+   (0.500, 0.400, 2.000)   corner 1      (0.500, 0.400)
+   (2.500, 0.400, 2.000)   corner 2      (2.500, 0.400)
+   (2.500, 1.600, 2.000)   corner 3      (2.500, 1.600)
+   (0.500, 1.600, 2.000)   corner 4      (0.500, 1.600)
+   (0.500, 0.400, 2.000)   corner 1 again (the closing point)
+and the truth's altitude at the END of the climb leg is 2.486 m (RECT33: 0.707 m, with the leg abandoned
+after 0.83 s).  The FCU's own CTUN agrees: Alt peak +2.670 m, DAlt peak +2.504 m = the requested 2.500 m
++0.004, `VERDICT: ACHIEVED` (`tools/takeoff-bin-report.py`).
+
+
+2. THE ACCEPTANCE ROWS ON `RECT34-accept` (all from the run's `metrics.txt`, recomputed after the window
+   change in section 3)
+------------------------------------------------------------------------------------------------------
+  A1 route horizontal rms        3.21 mm   (<= 20)          PASS
+  A2 route vertical rms          1.82 mm   (<= 50)          PASS
+  A3 delivered-odometry continuity 200.1 Hz, 16293 samples, worst gap 4.998 ms, p99 outliers PASS
+  A4 FCU estimate vs truth       22.08 mm  (<= 50), best-fit lag +54 ms  PASS
+  B1 truth box over the route    E 2.163 m (<= 2.10) FAIL, N 1.304 m (<= 1.30) FAIL  -- unchanged failure
+  B2 straightness                6 of 6 legs, worst perpendicular 9.0-16.6 mm (<= 50)
+  B3 corner arrival              5 of 5 corners, 0.6-4.1 mm (<= 100)
+  B4 landing                     'land' phase -> yes; the supervisor's own line: armed=False mode=LAND
+  C1 final point                 0.014 m from (0.500, 0.400)  (<= 0.30)
+  C2 obstacle clearance          minimum pillar-surface distance 0.551 m;  0 of 63837 samples inside 0.20 m
+  no ABORT, no leg timeout, no EKF failsafe (the third line of the run's own "no abort" block is empty)
+DWELL: 4 of 4 corners >= 5.0 s DEFAULT (12.95 / 8.04 / 6.41 / 9.80 s) and 4 of 4 with `--airborne-m 0.5`
+(9.04 / 8.04 / 6.41 / 9.80 s).  This is the first F2 sortie whose A4 window is the PLAN's own vertical
+hold (3.0 s at the top of the climb) flown as a leg -- the shape the profile was designed around.
+`tools/acceptance-table.py` over the seven nominal sorties: 7 of 7 sorties with 4 of 4 corners >= 5.0 s
+(strict, airborne > 0.5 m) and 28 of 28 corner visits; tightest corner c3 in all seven.
+
+
+3. B1'S WINDOW: THE SETPOINT-DRIVEN TAKE-OFF PUT THE PAD INSIDE THE BOX
+-----------------------------------------------------------------------
+`RECT34-accept` first read "B1 ... E 2.584 m  N 1.651 m" -- a bigger jump than any flight-quality change
+in this project's history, and it is not a flight-quality number.  `tools/metrics.py` opened the box at
+`t_sim_all[leg_idx[1]]`, the entry of the SECOND leg phase, and that index was chosen when the tour's first
+leg phase WAS the pad->corner-1 transit (the code's own 2026-10-13 note records the pad being excluded on
+purpose, after it had produced "2.54 x 1.57 m for a 2.0 x 1.2 m square").  A climb leg in front of the tour
+moves every phase by one: leg1 = the climb, leg2 = the transit, and the same index opened the window AT
+THE PAD, 0.64 m outside the rectangle.
+
+THE RULE NOW, in the aircraft's own terms: the window opens at the first leg phase whose recorded truth
+position (`phase.csv` `truth_x`/`truth_y`) is within 0.15 m of the tour's entry corner -- the same 0.15 m
+`tools/dwell-audit.py` and B1's corner-visit companion already use for "the aircraft is at this corner".
+`_stage/b1-window-ab.py` computes both rules on every sortie (`E / N` in metres, extent; delta in mm):
+
+  sortie            index rule (before)   arrival rule (now)      delta E / N     t0 before -> now
+  RECT23-plan-cmd   2.159  1.298          2.159  1.298            +0.0 / +0.0     29.28 -> 29.28
+  RECT24-plan-cmd   2.170  1.300          2.170  1.300            +0.0 / +0.0     29.46 -> 29.46
+  RECT26-accept     2.110  1.288          2.110  1.288            +0.0 / +0.0     33.74 -> 33.74
+  RECT31-accept     2.123  1.302          2.123  1.303            +0.0 / +1.5     37.13 -> 33.11
+  RECT32-accept     2.111  1.291          2.111  1.291            +0.0 / +0.0     38.14 -> 33.06
+  RECT33-accept     2.115  1.303          2.115  1.303            +0.0 / +0.0     38.43 -> 33.35
+  RECT34-accept     2.584  1.651          2.163  1.304            -421.2 / -347.1 36.25 -> 43.55
+
+NO BOUND MOVED: 2.10 / 1.30, unchanged, and `RECT34-accept` still FAILS both axes.  The historical numbers
+are reproduced exactly on the three F1 sorties and on RECT32/33, and to 1.5 mm of N on RECT31 (whose plan
+declared its arrival on the pad, so its phase entries were shifted; both readings FAIL).  Whenever the two
+rules differ, the INDEX RULE'S number is still printed in the row as `[REPORTED, not gated]`, with the
+sentence that says why: that window contains the pad, and the box is about the rectangle.
+THE FAILING ROW IS NAMED, TOO: the verdict line used to read "A1/A2/B1 FAIL (A1 3.21 mm <= 20, A2 1.82 mm
+<= 50, ...)" -- a label saying three rows failed above a parenthetical showing two of them passing.  It now
+names the rows that actually failed ("A1/A2/B1 FAIL: B1   (...)"); the parenthetical keeps its exact shape
+for the batch summary.
+
+
+4. THE PLAN OVERLAY, RESTORED (`tools/plot-run.py`)
+---------------------------------------------------
+`tools/plot-run.py` printed "6451 Path messages, 0 distinct plans drawn" on every F2 recording, and the
+RECT26 figure says so in its own caption.  The join key was the bug: the old `nav_msgs/Path` recorder wrote
+`points.csv.t_us` as the stamp of the Path MESSAGE, while the `PositionCommand` recorder writes the stamp
+at which that leg's target was FIRST commanded -- exactly `traj.csv.t0_us`.  The plotter now joins on
+`t0_us` (falling back to the message stamp, so an old run still draws) and marks the COMMANDED WAYPOINTS
+themselves, from `traj.csv.cmd.csv`, because the plan's output is a sequence of waypoints and not a path:
+`RECT33-accept` reads "plans: 6881 Path messages, 6 distinct plans drawn (points in W)" and
+"commanded waypoints: 6 distinct targets in 6881 messages -- w1 (0,0,2.5), w2 (0.5,0.4,2.0), ...".
+On RECT33 two of those six legs are degenerate BY CONSTRUCTION: the climb is `n=1` point (no horizontal
+extent) and the tour's entry leg is the pad->corner-1 diagonal.
+
+
+5. WHAT THIS DOES NOT CLAIM
+---------------------------
+  * B1 still FAILS on all seven nominal sorties: E 2.110-2.170 m against a 2.10 bound, N 1.288-1.304
+    against 1.30.  RECT34's 2.163 / 1.304 sits inside that historical spread -- the profile did not make
+    it worse, and it did not fix it.
+  * F3 is not closed: the three-sortie ratio batch has not been flown on this profile yet.
+  * The kill sortie has not been re-flown on `--trigger-on-airborne`.
