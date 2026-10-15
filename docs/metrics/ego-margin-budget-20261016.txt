@@ -288,3 +288,29 @@ A* cost term that penalises proximity to occupied cells, or a real ESDF distance
 in the map, and nothing in the parameter set, will do it.
 
 Figure `docs/figures/round15/diagonal-clearance-distribution.png`.
+
+=== CRITERION 3's COMPARISON, CLOSED: RECTANGLE AND EGO ON THE IDENTICAL MISSION ==========================
+Both planners have flown `worlds/diagonal.yaml` through the same harness, the same bridge, the same supervisor
+and the same mission file, so the comparison is one measurement applied to both:
+
+    run                  planner                                       truth min    inside 0.20 m
+    DIAG1-rect-control   RECTANGLE, no obstacle awareness at all          -0.299 m   9635 of 54929 (17.5%)
+    DIAG9-window3        EGO, best crossing (window 3 s)                  **+0.150 m**  2108 of 53753 ( 3.9%)
+    DIAG15-fitness4      EGO, best footprint count (window 3 s, fit 4)    +0.068 m   1231 of 54097 ( 2.3%)
+
+The control behaves exactly as it was built to: a planner whose only mention of the world is its `--world`
+default flies the straight lines, and both of those legs pass through a pillar CENTRE by construction
+(leg clearance -0.297 m), so it is caught by C2 -- **17.5% of its samples inside the footprint and a 0.299 m
+penetration**, against ego's best crossing clearing every pillar by +0.150 m with 3.9%.  The comparison the goal
+asks for therefore reads: **ego's avoidance is real and measurable, and it is worth about +0.45 m of minimum
+clearance over a planner that ignores obstacles.**
+
+AND NEITHER MEETS THE 0.20 m FOOTPRINT, which is the honest end of this criterion: 0 of 11 ego crossings and 1
+of 1 rectangle crossing fail the row, and the reason for ego's failures is quantified in the section above (its
+run-to-run spread, sd 0.143 m, is wider than every effect tuned, and C2 sits 2.1 sd above the mean).  Figure
+`docs/figures/traj-xy-DIAG-rect-vs-ego.png`, sha256 d9c68b7d858603c50f859c95dc1bcf94956dbb138c653deb156992acf61c0d80.
+
+NOTE ON DENOMINATORS, because two honest numbers disagree by design.  The C2 rows above use the AIRBORNE samples
+(54929 / 53753 / 54097) and the figure's panel titles use ALL tap samples (91160 / 100120 / 100143).  The COUNTS
+are identical in both -- 9635, 2108, 1231 -- and only the fraction changes.  Where a percentage matters, quote
+the C2 row's own.
