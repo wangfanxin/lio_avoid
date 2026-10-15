@@ -1,0 +1,411 @@
+Mission A: the corner hover as a RATIO -- RECT7-hold5 and RECT9/10/11-hold5
+date:    2026-10-15
+launcher: _stage/rect7-hold5-fly.sh (RECT7) and _stage/rect-hold5-fly.sh (RECT9/10/11) -- each waits
+          for the flight stack to be idle and REFUSES to kill anything, so the four could not overlap
+config:  ALT_MODE=lio NAV_SOURCE=lio WORLD=worlds/pillars.yaml MISSION_PARM=phase_a_mission_fast.parm
+          EKF_PARM=ekf_trust_lio.parm TRAJ_SOURCE=rectangle GEOFENCE_M=6.60 RECT_HOLD_S=5.0
+judge:   tools/dwell-audit.py on the truth tap (not on either log), radius 0.15 m, asked 5.0 s; C2 from
+          tools/metrics.py on the same tap; the producer and FSM logs are quoted only as MECHANISM
+
+THE POOLED RATIO, with its denominators
+   sorties with 4 of 4 corners hovered >= 5.0 s : 3 of 4   (RECT7, RECT9, RECT10 -- RECT11 is 3 of 4)
+   corner visits hovered >= 5.0 s               : 15 of 16 (the miss is RECT11 c3 at 4.96 s; section 5)
+   and with --airborne-m 0.5 (the stricter quantity): the same 3 of 4 sorties, the same 15 of 16
+   the four sorties BEFORE the arrival-gated producer, judged by the same tool with --airborne-m 0.5:
+                                                 : 0 of 4  (section 4)
+
+================================================================================
+== missionA-RECT9-hold5
+================================================================================
+-- run dir: /home/fanxin/lio_avoid/logs/missionA-RECT9-hold5
+-- 1. the dwell, from the truth tap, DEFAULT (radius 0.15 m):
+### missionA-RECT9-hold5   (94020 samples, 78.3 s, radius 0.15 m, asked 5.0 s per corner)
+   c1 (+0.50,+0.40): closest 0.002 m at t= 63.3 s | longest dwell within 0.15 m: 18.22 s  HOLD-OK
+   c2 (+2.50,+0.40): closest 0.001 m at t= 34.2 s | longest dwell within 0.15 m:  7.54 s  HOLD-OK
+   c3 (+2.50,+1.60): closest 0.001 m at t= 44.6 s | longest dwell within 0.15 m:  7.15 s  HOLD-OK
+   c4 (+0.50,+1.60): closest 0.001 m at t= 57.3 s | longest dwell within 0.15 m:  7.29 s  HOLD-OK
+   CORNERS HOVERED >= 5.0 s: 4 of 4
+-- 2. the dwell, --airborne-m 0.5 (the same samples, the stricter judged quantity):
+### missionA-RECT9-hold5   (94020 samples, 78.3 s, radius 0.15 m, asked 5.0 s per corner, AIRBORNE only: above 0.50 m, 54899 of 94020 samples)
+   c1 (+0.50,+0.40): closest 0.002 m at t= 63.3 s | longest dwell within 0.15 m:  9.94 s  HOLD-OK | AIRBORNE 0.50 m:  9.94 s
+   c2 (+2.50,+0.40): closest 0.001 m at t= 34.2 s | longest dwell within 0.15 m:  7.54 s  HOLD-OK | AIRBORNE 0.50 m:  7.54 s
+   c3 (+2.50,+1.60): closest 0.001 m at t= 44.6 s | longest dwell within 0.15 m:  7.15 s  HOLD-OK | AIRBORNE 0.50 m:  7.15 s
+   c4 (+0.50,+1.60): closest 0.001 m at t= 57.3 s | longest dwell within 0.15 m:  7.29 s  HOLD-OK | AIRBORNE 0.50 m:  7.29 s
+   CORNERS HOVERED >= 5.0 s: 4 of 4  (AIRBORNE only, above 0.50 m)
+-- 3. the acceptance lines, from the flight's own metrics.txt (unmodified):
+A1 route horizontal rms      3.56 mm   (target <= 20)
+A2 route vertical rms        4.31 mm   (target <= 50, mean removed)
+A3 delivered-odometry continuity (rate 200.1 Hz over 13263 samples, dt median 4.998 ms, worst gap 4.998 ms):
+   wander  rms 2nd difference  E  0.525 N  0.547 U  0.334 mm   (<= 2.00 per axis = 10% of A1's 20 mm, ROUTE window)   [PASS]
+      window 7917 of 13263 delivered samples (sim t 27.2..66.8 s, the leg phases B1/B2 use); over EVERY delivered sample, take-off and landing included, it is E  0.424 N  0.438 U
+   [PASS] A3
+A4 FCU estimate vs truth after take-off (511 of 553 samples, vertical alignment residual 94.8 mm):
+   horizontal rms    16.18 mm  (<= 50, mean removed) at the best-fit lag +2 ms; zero lag would be    16.20 mm
+   vertical rms    34.16 mm
+   datum offsets removed: N +0.0031 m  E +0.0012 m  D -0.0868 m  (while parked: N +0.0004 E -0.0001 D -0.1092 m)
+   [PASS] A4
+   vs the LIO pose it was fed (same fit A1 uses): horizontal rms    15.93 mm, vertical rms    29.66 mm   (LIO vs truth is A1 above)
+B1 truth box extents over the route (37.4 s): E 2.143 m  N 1.297 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [FAIL]
+B2 straightness per leg (truth vs the line through that leg's own endpoints):
+   leg 1:  2614 samples, length 0.594 m, worst perpendicular 1.3 mm (<= 50) PASS
+   leg 2: 12702 samples, length 2.052 m, worst perpendicular 37.9 mm (<= 50) PASS
+   leg 3:  9621 samples, length 1.205 m, worst perpendicular 5.2 mm (<= 50) PASS
+   leg 4: 12650 samples, length 1.997 m, worst perpendicular 14.7 mm (<= 50) PASS
+   leg 5:  9920 samples, length 1.201 m, worst perpendicular 9.7 mm (<= 50) PASS
+B3 corner arrival (truth to the commanded corner, horizontal; vertical shown for the record):
+   corner 1: closest horizontal approach 1.6 mm (<= 100) PASS   vertical -0.275 m
+   corner 2: closest horizontal approach 0.6 mm (<= 100) PASS   vertical -0.102 m
+   corner 3: closest horizontal approach 1.4 mm (<= 100) PASS   vertical -0.104 m
+   corner 4: closest horizontal approach 0.8 mm (<= 100) PASS   vertical -0.103 m
+   corner 5: closest horizontal approach 1.6 mm (<= 100) PASS   vertical -0.275 m
+B4 landing: 'land' in the phase log -> yes
+   note: the disarm itself is in the FSM's own output and the FCU's BIN, not in this file
+C2 obstacle clearance over the whole flight (46 pillars from pillars.yaml): minimum pillar-surface distance 0.550 m;  0 of 55585 samples inside the 0.20 m footprint  [PASS]
+C1 final point: the aircraft stopped 0.007 m from the last commanded point (0.503, 0.403)  [PASS]
+A1/A2/B1 FAIL   (A1 3.56 mm <= 20, A2 4.31 mm <= 50, B1 E 2.143 <= 2.10, N 1.297 <= 1.30, aborted False)
+-- 4. THE MECHANISM, the producer's arrival pacing (planner/rectangle_source.py, traj.log):
+corner holds ON: 4 legs, 5.0 s dwell at each corner, PACED BY ARRIVAL on /lio/robo/odom (gate 0.100 m); timeout 20.0 s
+LEG 0 (corner 0 -> 1, 2.000 m): the vehicle is 0.176 m from the leg's start -- flight clock ARMED (arrival gate 0.100 m, timeout 20.0 s, predicted 6.7 s at 0.30 m/s)
+ARRIVED at corner 1: the vehicle is 0.088 m from it (gate 0.100 m) after 5.0 s of flight; holding 5.0 s, then the next leg is published
+LEG 1 (corner 1 -> 2, 1.200 m) published after the 5.0 s hold
+LEG 1 (corner 1 -> 2, 1.200 m): the vehicle is 0.010 m from the leg's start -- flight clock ARMED (arrival gate 0.100 m, timeout 20.0 s, predicted 4.0 s at 0.30 m/s)
+ARRIVED at corner 2: the vehicle is 0.081 m from it (gate 0.100 m) after 2.8 s of flight; holding 5.0 s, then the next leg is published
+LEG 2 (corner 2 -> 3, 2.000 m) published after the 5.0 s hold
+LEG 2 (corner 2 -> 3, 2.000 m): the vehicle is 0.005 m from the leg's start -- flight clock ARMED (arrival gate 0.100 m, timeout 20.0 s, predicted 6.7 s at 0.30 m/s)
+ARRIVED at corner 3: the vehicle is 0.100 m from it (gate 0.100 m) after 5.3 s of flight; holding 5.0 s, then the next leg is published
+LEG 3 (corner 3 -> 0, 1.200 m) published after the 5.0 s hold
+LEG 3 (corner 3 -> 0, 1.200 m): the vehicle is 0.003 m from the leg's start -- flight clock ARMED (arrival gate 0.100 m, timeout 20.0 s, predicted 4.0 s at 0.30 m/s)
+ARRIVED at corner 0: the vehicle is 0.090 m from it (gate 0.100 m) after 2.8 s of flight; holding 5.0 s, then the next leg is published
+TOUR COMPLETE: leg 3 held corner 0 for 5.0 s (total 55.7 s of tour).  Publishing an EMPTY path for 2.0 s -- the consumer ends the tour on that statement, not on a timeout
+-- 5. THE MECHANISM, the consumer (fsm/mission_fsm.py, fsm.log):
+gates in force: arrive 0.060 m, settle speed 0.080 m/s within 3.0 s, speed 0.25 m/s, geofence 6.60 m
+[  23.95] HOLDING corner 2 at [+2.503 +0.403 +1.987]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tour)
+[  29.26] a NEW leg arrived on /planner/traj after 5.3 s of holding corner 2 (25 points, ends at [+1.602 -2.502 +1.884])
+[  31.35] HOLDING corner 3 at [+2.503 +1.603 +1.987]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tour)
+[  37.27] a NEW leg arrived on /planner/traj after 5.9 s of holding corner 3 (41 points, ends at [+1.604 -0.502 +1.884])
+[  42.49] HOLDING corner 4 at [+0.503 +1.603 +1.987]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tour)
+[  47.81] a NEW leg arrived on /planner/traj after 5.3 s of holding corner 4 (25 points, ends at [+0.404 -0.501 +1.884])
+[  49.83] HOLDING corner 5 at [+0.503 +0.403 +1.987]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tour)
+[  56.07] the newest message on /planner/traj is an EMPTY path: the source has no more legs, so the tour is complete (corner 5 was held 6.2 s)
+[  63.09] final: armed=False mode=LAND alt AMSL 584.2 m; 2059 setpoints, 2954 external-nav messages
+-- 6. no ABORT and no leg timeout:
+   fsm.log: no ABORT line; metrics.txt: aborted False (B4 landed: yes)
+   traj.log: no TIMEOUT and no NEVER ARRIVED -- --leg-timeout-s never fired, every leg ended in 'ARRIVED at corner'
+
+================================================================================
+== missionA-RECT10-hold5
+================================================================================
+-- run dir: /home/fanxin/lio_avoid/logs/missionA-RECT10-hold5
+-- 1. the dwell, from the truth tap, DEFAULT (radius 0.15 m):
+### missionA-RECT10-hold5   (95221 samples, 79.3 s, radius 0.15 m, asked 5.0 s per corner)
+   c1 (+0.50,+0.40): closest 0.000 m at t= 64.0 s | longest dwell within 0.15 m: 18.42 s  HOLD-OK
+   c2 (+2.50,+0.40): closest 0.000 m at t= 34.1 s | longest dwell within 0.15 m:  7.96 s  HOLD-OK
+   c3 (+2.50,+1.60): closest 0.001 m at t= 47.9 s | longest dwell within 0.15 m:  7.16 s  HOLD-OK
+   c4 (+0.50,+1.60): closest 0.001 m at t= 53.1 s | longest dwell within 0.15 m:  7.66 s  HOLD-OK
+   CORNERS HOVERED >= 5.0 s: 4 of 4
+-- 2. the dwell, --airborne-m 0.5 (the same samples, the stricter judged quantity):
+### missionA-RECT10-hold5   (95221 samples, 79.3 s, radius 0.15 m, asked 5.0 s per corner, AIRBORNE only: above 0.50 m, 56213 of 95221 samples)
+   c1 (+0.50,+0.40): closest 0.000 m at t= 64.0 s | longest dwell within 0.15 m:  9.96 s  HOLD-OK | AIRBORNE 0.50 m:  9.96 s
+   c2 (+2.50,+0.40): closest 0.000 m at t= 34.1 s | longest dwell within 0.15 m:  7.96 s  HOLD-OK | AIRBORNE 0.50 m:  7.96 s
+   c3 (+2.50,+1.60): closest 0.001 m at t= 47.9 s | longest dwell within 0.15 m:  7.16 s  HOLD-OK | AIRBORNE 0.50 m:  7.16 s
+   c4 (+0.50,+1.60): closest 0.001 m at t= 53.1 s | longest dwell within 0.15 m:  7.66 s  HOLD-OK | AIRBORNE 0.50 m:  7.66 s
+   CORNERS HOVERED >= 5.0 s: 4 of 4  (AIRBORNE only, above 0.50 m)
+-- 3. the acceptance lines, from the flight's own metrics.txt (unmodified):
+A1 route horizontal rms      3.38 mm   (target <= 20)
+A2 route vertical rms        4.35 mm   (target <= 50, mean removed)
+A3 delivered-odometry continuity (rate 200.1 Hz over 13373 samples, dt median 4.998 ms, worst gap 4.998 ms):
+   wander  rms 2nd difference  E  0.512 N  0.536 U  0.321 mm   (<= 2.00 per axis = 10% of A1's 20 mm, ROUTE window)   [PASS]
+      window 8138 of 13373 delivered samples (sim t 26.9..67.6 s, the leg phases B1/B2 use); over EVERY delivered sample, take-off and landing included, it is E  0.421 N  0.437 U
+   [PASS] A3
+A4 FCU estimate vs truth after take-off (521 of 564 samples, vertical alignment residual 94.0 mm):
+   horizontal rms    17.43 mm  (<= 50, mean removed) at the best-fit lag +12 ms; zero lag would be    18.09 mm
+   vertical rms    29.82 mm
+   datum offsets removed: N +0.0020 m  E +0.0009 m  D -0.0875 m  (while parked: N +0.0003 E -0.0003 D -0.1098 m)
+   [PASS] A4
+   vs the LIO pose it was fed (same fit A1 uses): horizontal rms    17.75 mm, vertical rms    28.41 mm   (LIO vs truth is A1 above)
+B1 truth box extents over the route (38.4 s): E 2.154 m  N 1.289 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [FAIL]
+B2 straightness per leg (truth vs the line through that leg's own endpoints):
+   leg 1:  2692 samples, length 0.592 m, worst perpendicular 2.7 mm (<= 50) PASS
+   leg 2: 13326 samples, length 2.050 m, worst perpendicular 36.9 mm (<= 50) PASS
+   leg 3:  9608 samples, length 1.208 m, worst perpendicular 7.1 mm (<= 50) PASS
+   leg 4: 13274 samples, length 2.003 m, worst perpendicular 10.5 mm (<= 50) PASS
+   leg 5:  9933 samples, length 1.198 m, worst perpendicular 14.4 mm (<= 50) PASS
+B3 corner arrival (truth to the commanded corner, horizontal; vertical shown for the record):
+   corner 1: closest horizontal approach 0.4 mm (<= 100) PASS   vertical -0.273 m
+   corner 2: closest horizontal approach 0.5 mm (<= 100) PASS   vertical -0.102 m
+   corner 3: closest horizontal approach 0.9 mm (<= 100) PASS   vertical -0.104 m
+   corner 4: closest horizontal approach 1.1 mm (<= 100) PASS   vertical -0.104 m
+   corner 5: closest horizontal approach 0.4 mm (<= 100) PASS   vertical -0.273 m
+B4 landing: 'land' in the phase log -> yes
+   note: the disarm itself is in the FSM's own output and the FCU's BIN, not in this file
+C2 obstacle clearance over the whole flight (46 pillars from pillars.yaml): minimum pillar-surface distance 0.553 m;  0 of 56896 samples inside the 0.20 m footprint  [PASS]
+C1 final point: the aircraft stopped 0.007 m from the last commanded point (0.502, 0.402)  [PASS]
+A1/A2/B1 FAIL   (A1 3.38 mm <= 20, A2 4.35 mm <= 50, B1 E 2.154 <= 2.10, N 1.289 <= 1.30, aborted False)
+-- 4. THE MECHANISM, the producer's arrival pacing (planner/rectangle_source.py, traj.log):
+corner holds ON: 4 legs, 5.0 s dwell at each corner, PACED BY ARRIVAL on /lio/robo/odom (gate 0.100 m); timeout 20.0 s
+LEG 0 (corner 0 -> 1, 2.000 m): the vehicle is 0.174 m from the leg's start -- flight clock ARMED (arrival gate 0.100 m, timeout 20.0 s, predicted 6.7 s at 0.30 m/s)
+ARRIVED at corner 1: the vehicle is 0.025 m from it (gate 0.100 m) after 5.5 s of flight; holding 5.0 s, then the next leg is published
+LEG 1 (corner 1 -> 2, 1.200 m) published after the 5.0 s hold
+LEG 1 (corner 1 -> 2, 1.200 m): the vehicle is 0.012 m from the leg's start -- flight clock ARMED (arrival gate 0.100 m, timeout 20.0 s, predicted 4.0 s at 0.30 m/s)
+ARRIVED at corner 2: the vehicle is 0.076 m from it (gate 0.100 m) after 2.8 s of flight; holding 5.0 s, then the next leg is published
+LEG 2 (corner 2 -> 3, 2.000 m) published after the 5.0 s hold
+LEG 2 (corner 2 -> 3, 2.000 m): the vehicle is 0.005 m from the leg's start -- flight clock ARMED (arrival gate 0.100 m, timeout 20.0 s, predicted 6.7 s at 0.30 m/s)
+ARRIVED at corner 3: the vehicle is 0.027 m from it (gate 0.100 m) after 5.8 s of flight; holding 5.0 s, then the next leg is published
+LEG 3 (corner 3 -> 0, 1.200 m) published after the 5.0 s hold
+LEG 3 (corner 3 -> 0, 1.200 m): the vehicle is 0.010 m from the leg's start -- flight clock ARMED (arrival gate 0.100 m, timeout 20.0 s, predicted 4.0 s at 0.30 m/s)
+ARRIVED at corner 0: the vehicle is 0.085 m from it (gate 0.100 m) after 2.8 s of flight; holding 5.0 s, then the next leg is published
+TOUR COMPLETE: leg 3 held corner 0 for 5.0 s (total 56.7 s of tour).  Publishing an EMPTY path for 2.0 s -- the consumer ends the tour on that statement, not on a timeout
+-- 5. THE MECHANISM, the consumer (fsm/mission_fsm.py, fsm.log):
+gates in force: arrive 0.060 m, settle speed 0.080 m/s within 3.0 s, speed 0.25 m/s, geofence 6.60 m
+[  24.24] HOLDING corner 2 at [+2.502 +0.402 +1.988]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tour)
+[  29.83] a NEW leg arrived on /planner/traj after 5.6 s of holding corner 2 (25 points, ends at [+1.602 -2.502 +1.884])
+[  31.86] HOLDING corner 3 at [+2.502 +1.602 +1.988]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tour)
+[  37.83] a NEW leg arrived on /planner/traj after 6.0 s of holding corner 3 (41 points, ends at [+1.604 -0.502 +1.884])
+[  43.16] HOLDING corner 4 at [+0.502 +1.602 +1.988]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tour)
+[  48.89] a NEW leg arrived on /planner/traj after 5.7 s of holding corner 4 (25 points, ends at [+0.404 -0.501 +1.884])
+[  50.97] HOLDING corner 5 at [+0.502 +0.402 +1.988]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tour)
+[  57.16] the newest message on /planner/traj is an EMPTY path: the source has no more legs, so the tour is complete (corner 5 was held 6.2 s)
+[  64.07] final: armed=False mode=LAND alt AMSL 584.1 m; 2112 setpoints, 3000 external-nav messages
+-- 6. no ABORT and no leg timeout:
+   fsm.log: no ABORT line; metrics.txt: aborted False (B4 landed: yes)
+   traj.log: no TIMEOUT and no NEVER ARRIVED -- --leg-timeout-s never fired, every leg ended in 'ARRIVED at corner'
+
+================================================================================
+== missionA-RECT11-hold5
+================================================================================
+-- run dir: /home/fanxin/lio_avoid/logs/missionA-RECT11-hold5
+-- 1. the dwell, from the truth tap, DEFAULT (radius 0.15 m):
+### missionA-RECT11-hold5   (88805 samples, 74.0 s, radius 0.15 m, asked 5.0 s per corner)
+   c1 (+0.50,+0.40): closest 0.000 m at t= 57.0 s | longest dwell within 0.15 m: 15.65 s  HOLD-OK
+   c2 (+2.50,+0.40): closest 0.001 m at t= 34.0 s | longest dwell within 0.15 m:  5.40 s  HOLD-OK
+   c3 (+2.50,+1.60): closest 0.000 m at t= 44.4 s | longest dwell within 0.15 m:  4.96 s  NO-HOLD
+   c4 (+0.50,+1.60): closest 0.004 m at t= 50.5 s | longest dwell within 0.15 m:  7.65 s  HOLD-OK
+   CORNERS HOVERED >= 5.0 s: 3 of 4
+-- 2. the dwell, --airborne-m 0.5 (the same samples, the stricter judged quantity):
+### missionA-RECT11-hold5   (88805 samples, 74.0 s, radius 0.15 m, asked 5.0 s per corner, AIRBORNE only: above 0.50 m, 50707 of 88805 samples)
+   c1 (+0.50,+0.40): closest 0.000 m at t= 57.0 s | longest dwell within 0.15 m:  7.91 s  HOLD-OK | AIRBORNE 0.50 m:  7.91 s
+   c2 (+2.50,+0.40): closest 0.001 m at t= 34.0 s | longest dwell within 0.15 m:  5.40 s  HOLD-OK | AIRBORNE 0.50 m:  5.40 s
+   c3 (+2.50,+1.60): closest 0.000 m at t= 44.4 s | longest dwell within 0.15 m:  4.96 s  NO-HOLD | AIRBORNE 0.50 m:  4.96 s
+   c4 (+0.50,+1.60): closest 0.004 m at t= 50.5 s | longest dwell within 0.15 m:  7.65 s  HOLD-OK | AIRBORNE 0.50 m:  7.65 s
+   CORNERS HOVERED >= 5.0 s: 3 of 4  (AIRBORNE only, above 0.50 m)
+-- 3. the acceptance lines, from the flight's own metrics.txt (unmodified):
+A1 route horizontal rms      3.49 mm   (target <= 20)
+A2 route vertical rms        4.44 mm   (target <= 50, mean removed)
+A3 delivered-odometry continuity (rate 200.1 Hz over 12435 samples, dt median 4.998 ms, worst gap 4.998 ms):
+   wander  rms 2nd difference  E  0.562 N  0.546 U  0.336 mm   (<= 2.00 per axis = 10% of A1's 20 mm, ROUTE window)   [PASS]
+      window 7220 of 12435 delivered samples (sim t 26.9..63.0 s, the leg phases B1/B2 use); over EVERY delivered sample, take-off and landing included, it is E  0.446 N  0.434 U
+   [PASS] A3
+A4 FCU estimate vs truth after take-off (471 of 513 samples, vertical alignment residual 102.0 mm):
+   horizontal rms    18.32 mm  (<= 50, mean removed) at the best-fit lag +10 ms; zero lag would be    18.74 mm
+   vertical rms    38.33 mm
+   datum offsets removed: N +0.0025 m  E +0.0025 m  D -0.0935 m  (while parked: N +0.0003 E -0.0002 D -0.1108 m)
+   [PASS] A4
+   vs the LIO pose it was fed (same fit A1 uses): horizontal rms    18.23 mm, vertical rms    25.83 mm   (LIO vs truth is A1 above)
+B1 truth box extents over the route (33.9 s): E 2.137 m  N 1.324 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [FAIL]
+B2 straightness per leg (truth vs the line through that leg's own endpoints):
+   leg 1:  2614 samples, length 0.596 m, worst perpendicular 1.6 mm (<= 50) PASS
+   leg 2: 10297 samples, length 2.056 m, worst perpendicular 40.6 mm (<= 50) PASS
+   leg 3:  9621 samples, length 1.198 m, worst perpendicular 7.2 mm (<= 50) PASS
+   leg 4: 10817 samples, length 2.020 m, worst perpendicular 10.7 mm (<= 50) PASS
+   leg 5:  9972 samples, length 1.204 m, worst perpendicular 3.8 mm (<= 50) PASS
+B3 corner arrival (truth to the commanded corner, horizontal; vertical shown for the record):
+   corner 1: closest horizontal approach 0.4 mm (<= 100) PASS   vertical -0.276 m
+   corner 2: closest horizontal approach 0.7 mm (<= 100) PASS   vertical -0.102 m
+   corner 3: closest horizontal approach 0.1 mm (<= 100) PASS   vertical -0.092 m
+   corner 4: closest horizontal approach 3.6 mm (<= 100) PASS   vertical -0.102 m
+   corner 5: closest horizontal approach 0.4 mm (<= 100) PASS   vertical -0.276 m
+B4 landing: 'land' in the phase log -> yes
+   note: the disarm itself is in the FSM's own output and the FCU's BIN, not in this file
+C2 obstacle clearance over the whole flight (46 pillars from pillars.yaml): minimum pillar-surface distance 0.536 m;  0 of 51388 samples inside the 0.20 m footprint  [PASS]
+C1 final point: the aircraft stopped 0.006 m from the last commanded point (0.503, 0.403)  [PASS]
+A1/A2/B1 FAIL   (A1 3.49 mm <= 20, A2 4.44 mm <= 50, B1 E 2.137 <= 2.10, N 1.324 <= 1.30, aborted False)
+-- 4. THE MECHANISM, the producer's arrival pacing (planner/rectangle_source.py, traj.log):
+corner holds ON: 4 legs, 5.0 s dwell at each corner, PACED BY ARRIVAL on /lio/robo/odom (gate 0.100 m); timeout 20.0 s
+LEG 0 (corner 0 -> 1, 2.000 m): the vehicle is 0.176 m from the leg's start -- flight clock ARMED (arrival gate 0.100 m, timeout 20.0 s, predicted 6.7 s at 0.30 m/s)
+ARRIVED at corner 1: the vehicle is 0.098 m from it (gate 0.100 m) after 3.0 s of flight; holding 5.0 s, then the next leg is published
+LEG 1 (corner 1 -> 2, 1.200 m) published after the 5.0 s hold
+LEG 1 (corner 1 -> 2, 1.200 m): the vehicle is 0.010 m from the leg's start -- flight clock ARMED (arrival gate 0.100 m, timeout 20.0 s, predicted 4.0 s at 0.30 m/s)
+ARRIVED at corner 2: the vehicle is 0.083 m from it (gate 0.100 m) after 2.8 s of flight; holding 5.0 s, then the next leg is published
+LEG 2 (corner 2 -> 3, 2.000 m) published after the 5.0 s hold
+LEG 2 (corner 2 -> 3, 2.000 m): the vehicle is 0.005 m from the leg's start -- flight clock ARMED (arrival gate 0.100 m, timeout 20.0 s, predicted 6.7 s at 0.30 m/s)
+ARRIVED at corner 3: the vehicle is 0.073 m from it (gate 0.100 m) after 3.8 s of flight; holding 5.0 s, then the next leg is published
+LEG 3 (corner 3 -> 0, 1.200 m) published after the 5.0 s hold
+LEG 3 (corner 3 -> 0, 1.200 m): the vehicle is 0.004 m from the leg's start -- flight clock ARMED (arrival gate 0.100 m, timeout 20.0 s, predicted 4.0 s at 0.30 m/s)
+ARRIVED at corner 0: the vehicle is 0.050 m from it (gate 0.100 m) after 2.8 s of flight; holding 5.0 s, then the next leg is published
+TOUR COMPLETE: leg 3 held corner 0 for 5.0 s (total 52.2 s of tour).  Publishing an EMPTY path for 2.0 s -- the consumer ends the tour on that statement, not on a timeout
+-- 5. THE MECHANISM, the consumer (fsm/mission_fsm.py, fsm.log):
+gates in force: arrive 0.060 m, settle speed 0.080 m/s within 3.0 s, speed 0.25 m/s, geofence 6.60 m
+[  24.27] HOLDING corner 2 at [+2.503 +0.402 +1.987]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tour)
+[  27.31] a NEW leg arrived on /planner/traj after 3.0 s of holding corner 2 (25 points, ends at [+1.602 -2.502 +1.884])
+[  29.54] HOLDING corner 3 at [+2.503 +1.602 +1.987]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tour)
+[  35.31] a NEW leg arrived on /planner/traj after 5.8 s of holding corner 3 (41 points, ends at [+1.604 -0.502 +1.884])
+[  40.59] HOLDING corner 4 at [+0.503 +1.602 +1.987]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tour)
+[  44.33] a NEW leg arrived on /planner/traj after 3.7 s of holding corner 4 (25 points, ends at [+0.404 -0.501 +1.884])
+[  46.46] HOLDING corner 5 at [+0.503 +0.402 +1.987]: waiting up to 15.0 s for the next leg on /planner/traj (an EMPTY path on that topic ends the tour)
+[  52.64] the newest message on /planner/traj is an EMPTY path: the source has no more legs, so the tour is complete (corner 5 was held 6.2 s)
+[  59.08] final: armed=False mode=LAND alt AMSL 584.1 m; 1889 setpoints, 2753 external-nav messages
+-- 6. no ABORT and no leg timeout:
+   fsm.log: no ABORT line; metrics.txt: aborted False (B4 landed: yes)
+   traj.log: no TIMEOUT and no NEVER ARRIVED -- --leg-timeout-s never fired, every leg ended in 'ARRIVED at corner'
+
+================================================================================
+== 4. the four sorties BEFORE the arrival-gated producer: the hover had never happened
+================================================================================
+-- missionA-RECT1-noego
+### missionA-RECT1-noego   (65092 samples, 54.2 s, radius 0.15 m, asked 5.0 s per corner, AIRBORNE only: above 0.50 m, 27821 of 65092 samples)
+   c1 (+0.50,+0.40): closest 0.007 m at t= 46.3 s | longest dwell within 0.15 m:  3.87 s  NO-HOLD | AIRBORNE 0.50 m:  3.87 s
+   c2 (+2.50,+0.40): closest 0.001 m at t= 34.3 s | longest dwell within 0.15 m:  2.23 s  NO-HOLD | AIRBORNE 0.50 m:  2.23 s
+   c3 (+2.50,+1.60): closest 0.004 m at t= 37.3 s | longest dwell within 0.15 m:  1.24 s  NO-HOLD | AIRBORNE 0.50 m:  1.24 s
+   c4 (+0.50,+1.60): closest 0.007 m at t= 41.6 s | longest dwell within 0.15 m:  3.49 s  NO-HOLD | AIRBORNE 0.50 m:  3.49 s
+   CORNERS HOVERED >= 5.0 s: 0 of 4  (AIRBORNE only, above 0.50 m)
+-- missionA-RECT6-clean-square
+### missionA-RECT6-clean-square   (65159 samples, 54.3 s, radius 0.15 m, asked 5.0 s per corner, AIRBORNE only: above 0.50 m, 27602 of 65159 samples)
+   c1 (+0.50,+0.40): closest 0.004 m at t= 46.7 s | longest dwell within 0.15 m:  3.77 s  NO-HOLD | AIRBORNE 0.50 m:  3.77 s
+   c2 (+2.50,+0.40): closest 0.000 m at t= 34.7 s | longest dwell within 0.15 m:  2.25 s  NO-HOLD | AIRBORNE 0.50 m:  2.25 s
+   c3 (+2.50,+1.60): closest 0.004 m at t= 37.6 s | longest dwell within 0.15 m:  1.22 s  NO-HOLD | AIRBORNE 0.50 m:  1.22 s
+   c4 (+0.50,+1.60): closest 0.006 m at t= 41.8 s | longest dwell within 0.15 m:  2.21 s  NO-HOLD | AIRBORNE 0.50 m:  2.21 s
+   CORNERS HOVERED >= 5.0 s: 0 of 4  (AIRBORNE only, above 0.50 m)
+-- missionA-RECT2-hold5
+### missionA-RECT2-hold5   (55278 samples, 46.0 s, radius 0.15 m, asked 5.0 s per corner, AIRBORNE only: above 0.50 m, 19210 of 55278 samples)
+   c1 (+0.50,+0.40): closest 0.005 m at t= 38.3 s | longest dwell within 0.15 m:  4.33 s  NO-HOLD | AIRBORNE 0.50 m:  4.33 s
+   c2 (+2.50,+0.40): closest 0.057 m at t= 31.3 s | longest dwell within 0.15 m:  1.06 s  NO-HOLD | AIRBORNE 0.50 m:  1.06 s
+   c3 (+2.50,+1.60): closest 1.190 m at t= 31.6 s | longest dwell within 0.15 m:  0.00 s  NO-HOLD  (never visited) | AIRBORNE 0.50 m:  0.00 s
+   c4 (+0.50,+1.60): closest 1.194 m at t= 38.8 s | longest dwell within 0.15 m:  0.00 s  NO-HOLD  (never visited) | AIRBORNE 0.50 m:  0.00 s
+   CORNERS HOVERED >= 5.0 s: 0 of 4  (AIRBORNE only, above 0.50 m)
+-- missionA-RECT3-hold5
+### missionA-RECT3-hold5   (52980 samples, 44.1 s, radius 0.15 m, asked 5.0 s per corner, AIRBORNE only: above 0.50 m, 16208 of 52980 samples)
+   c1 (+0.50,+0.40): closest 0.318 m at t= 27.6 s | longest dwell within 0.15 m:  0.00 s  NO-HOLD  (never visited) | AIRBORNE 0.50 m:  0.00 s
+   c2 (+2.50,+0.40): closest 0.003 m at t= 31.4 s | longest dwell within 0.15 m:  1.85 s  NO-HOLD | AIRBORNE 0.50 m:  1.85 s
+   c3 (+2.50,+1.60): closest 0.007 m at t= 36.6 s | longest dwell within 0.15 m:  3.69 s  NO-HOLD | AIRBORNE 0.50 m:  3.69 s
+   c4 (+0.50,+1.60): closest 1.501 m at t= 27.7 s | longest dwell within 0.15 m:  0.00 s  NO-HOLD  (never visited) | AIRBORNE 0.50 m:  0.00 s
+   CORNERS HOVERED >= 5.0 s: 0 of 4  (AIRBORNE only, above 0.50 m)
+
+================================================================================
+== 5. RECT11's MISS: corner c3, 4.96 s against 5.0 s -- the mechanism, from the tap
+================================================================================
+The dwell is the LONGEST CONTIGUOUS span within 0.15 m, so a 4.96 s reading is a statement about a GAP:
+the aircraft left the 0.15 m radius mid-hold and came back.  Where it went, from tools/corner-dwell-trace.py:
+### missionA-RECT11-hold5  corner c3 = (+2.500, +1.600), radius 0.15 m
+   spans inside the radius (>= 0.2 s):
+      t   39.21 ..   40.54 =  1.33 s   closest 0.0189 m   U 1.907..1.922
+      t   41.41 ..   46.37 =  4.96 s   closest 0.0001 m   U 1.892..1.934
+   GAP t   40.54 ..   41.41 =  0.86 s outside the radius: reached 0.1864 m (36 mm outside) at t=40.96 s, U 1.933 m, |v| 0.003 m/s there, and the aircraft passed the corner at 0.167 m/s
+   around the longest span (4.96 s, t 41.41..46.37):
+      t   39.41  d 0.0618 m  E +2.5070 N +1.5386 U +1.9120  |v| 0.307  IN
+      t   39.91  d 0.0303 m  E +2.5042 N +1.5700 U +1.9068  |v| 0.118  IN
+      t   40.41  d 0.1248 m  E +2.5067 N +1.4754 U +1.9174  |v| 0.201  IN
+      t   40.91  d 0.1858 m  E +2.5067 N +1.4143 U +1.9322  |v| 0.024  out
+      t   41.41  d 0.1499 m  E +2.5052 N +1.4502 U +1.9345  |v| 0.149  IN
+      t   41.91  d 0.0594 m  E +2.5031 N +1.5407 U +1.9257  |v| 0.192  IN
+
+and the same corner on the three sorties that passed it, for the comparison:
+### missionA-RECT7-hold5  corner c3 = (+2.500, +1.600), radius 0.15 m
+   spans inside the radius (>= 0.2 s):
+      t   42.00 ..   49.19 =  7.19 s   closest 0.0018 m   U 1.875..1.920
+   around the longest span (7.19 s, t 42.00..49.19):
+      t   40.00  d 1.1993 m  E +2.5091 N +0.4007 U +1.8973  |v| 0.009  out
+      t   42.00  d 0.1496 m  E +2.5064 N +1.4506 U +1.9183  |v| 0.611  IN
+### missionA-RECT9-hold5  corner c3 = (+2.500, +1.600), radius 0.15 m
+   spans inside the radius (>= 0.2 s):
+      t   41.53 ..   48.68 =  7.15 s   closest 0.0014 m   U 1.870..1.923
+   around the longest span (7.15 s, t 41.53..48.68):
+      t   39.53  d 1.2002 m  E +2.5105 N +0.3998 U +1.8974  |v| 0.007  out
+      t   41.53  d 0.1498 m  E +2.5053 N +1.4503 U +1.9213  |v| 0.646  IN
+### missionA-RECT10-hold5  corner c3 = (+2.500, +1.600), radius 0.15 m
+   spans inside the radius (>= 0.2 s):
+      t   41.81 ..   48.98 =  7.16 s   closest 0.0009 m   U 1.876..1.917
+   around the longest span (7.16 s, t 41.81..48.98):
+      t   39.81  d 1.2003 m  E +2.5059 N +0.3997 U +1.8975  |v| 0.008  out
+      t   41.81  d 0.1496 m  E +2.5057 N +1.4505 U +1.9152  |v| 0.631  IN
+
+THE MECHANISM, named: after the corner arrival the position loop RINGS (the same ring that makes B1
+FAIL -- see docs/metrics/B1-adjudication-20261015.txt).  RECT7/9/10 kept the ring inside the 0.15 m
+radius; RECT11's c3 ringing carried the aircraft 36 mm OUTSIDE it (0.1864 m from the corner) for 0.86 s,
+splitting 7.15 s of presence near the corner into 1.33 s + 4.96 s.  It was NOT the producer's hold: the
+FSM held c3 for 6.18 s (from 'corner 3 reached' to the next leg) and the producer's own record says
+'holding 5.0 s' at every corner.  It was NOT a leg timeout: no TIMEOUT and no NEVER ARRIVED in traj.log.
+
+================================================================================
+== 6. THE SAME FOUR SORTIES, RE-MEASURED ON THE COMPLETE RECORDINGS (added 2026-10-15)
+================================================================================
+Sections 1-5 quote each flight's own committed metrics.txt.  Those files were written by
+tools/run-mission.sh while sim/truth_rx.py was STILL RECORDING the truth tap, so their run-summary
+sample count and their whole A4 block are computed against a shortened tap -- MEASURED and fixed the
+same day, with the control flight and the full numbers in docs/metrics/tap-vs-metrics-20261015.txt.
+EVERY ACCEPTANCE ROW IS UNAFFECTED: A1/A2/A3/B1/B2/B3/C1/C2 are computed over the route window and the
+missing samples are all after it, so they reproduce verbatim from the same run a second time.
+
+The same four flights, re-measured on the closed recordings (this is what metrics-restated.txt beside
+each run now holds):
+
+   run                      A1 (mm)   A3 wander E/N/U (mm)  B1 E / N (m)             C2
+   missionA-RECT7-hold5     3.42      0.508 0.548 0.327     2.154 1.287              [PASS]
+   missionA-RECT9-hold5     3.56      0.525 0.547 0.334     2.143 1.297              [PASS]
+   missionA-RECT10-hold5    3.38      0.512 0.536 0.321     2.154 1.289              [PASS]
+   missionA-RECT11-hold5    3.49      0.562 0.546 0.336     2.137 1.324              [PASS]
+
+And the lines that DO differ between each committed metrics.txt and its restatement, with the reason:
+   missionA-RECT7-hold5: 14 changed lines
+      <    truth samples 91300 over 76.1 s; delivered-odometry samples 13430 over 67.1 s
+      >    truth samples 95098 over 79.2 s; delivered-odometry samples 13430 over 67.1 s
+      < A4 FCU estimate vs truth after take-off (519 of 561 samples, vertical alignment residual 95.3 mm):
+      <    horizontal rms    17.92 mm  (<= 50, mean removed) at the best-fit lag +2 ms; zero lag would be    17.93 mm
+      <    vertical rms    29.04 mm
+      <    datum offsets removed: N +0.0029 m  E +0.0016 m  D -0.0892 m  (while parked: N +0.0005 E -0.0000 D -0.1092 m)
+      > A4 FCU estimate vs truth after take-off (548 of 590 samples, vertical alignment residual 93.0 mm):
+      >    horizontal rms    24.00 mm  (<= 50, mean removed) at the best-fit lag +2 ms; zero lag would be    24.01 mm
+      >    vertical rms    35.99 mm
+      >    datum offsets removed: N +0.0001 m  E +0.0036 m  D -0.0841 m  (while parked: N +0.0005 E -0.0000 D -0.1092 m)
+      < B1 truth box extents over the route (38.2 s): E 2.154 m  N 1.287 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [FAIL]
+      > B1 truth box extents over the route (38.2 s): E 2.154 m  N 1.287 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m 
+      >    the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 37470 of 45826 samples): E 2.154 m  N 1.284 m  [REPORTED, 
+      >    where the E extent comes from: corner 4 -0.080 m (N +0.004) and corner 2 +0.073 m (N +0.003) from their own commanded point, reached with a peak speed
+   missionA-RECT9-hold5: 12 changed lines
+      <    truth samples 90294 over 75.2 s; delivered-odometry samples 13263 over 66.3 s
+      >    truth samples 94020 over 78.3 s; delivered-odometry samples 13263 over 66.3 s
+      < A4 FCU estimate vs truth after take-off (511 of 553 samples, vertical alignment residual 94.8 mm):
+      <    horizontal rms    16.18 mm  (<= 50, mean removed) at the best-fit lag +2 ms; zero lag would be    16.20 mm
+      > A4 FCU estimate vs truth after take-off (540 of 582 samples, vertical alignment residual 93.3 mm):
+      >    horizontal rms    20.33 mm  (<= 50, mean removed) at the best-fit lag +2 ms; zero lag would be    20.34 mm
+      <    datum offsets removed: N +0.0031 m  E +0.0012 m  D -0.0868 m  (while parked: N +0.0004 E -0.0001 D -0.1092 m)
+      >    datum offsets removed: N +0.0006 m  E +0.0017 m  D -0.0851 m  (while parked: N +0.0004 E -0.0001 D -0.1092 m)
+      < B1 truth box extents over the route (37.4 s): E 2.143 m  N 1.297 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [FAIL]
+      > B1 truth box extents over the route (37.4 s): E 2.143 m  N 1.297 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m 
+      >    the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 37342 of 44890 samples): E 2.143 m  N 1.290 m  [REPORTED, 
+      >    where the E extent comes from: corner 4 -0.069 m (N +0.001) and corner 2 +0.074 m (N +0.004) from their own commanded point, reached with a peak speed
+   missionA-RECT10-hold5: 14 changed lines
+      <    truth samples 91139 over 75.9 s; delivered-odometry samples 13373 over 66.8 s
+      >    truth samples 95221 over 79.3 s; delivered-odometry samples 13373 over 66.8 s
+      < A4 FCU estimate vs truth after take-off (521 of 564 samples, vertical alignment residual 94.0 mm):
+      <    horizontal rms    17.43 mm  (<= 50, mean removed) at the best-fit lag +12 ms; zero lag would be    18.09 mm
+      <    vertical rms    29.82 mm
+      <    datum offsets removed: N +0.0020 m  E +0.0009 m  D -0.0875 m  (while parked: N +0.0003 E -0.0003 D -0.1098 m)
+      > A4 FCU estimate vs truth after take-off (552 of 595 samples, vertical alignment residual 91.7 mm):
+      >    horizontal rms    22.16 mm  (<= 50, mean removed) at the best-fit lag +12 ms; zero lag would be    22.65 mm
+      >    vertical rms    34.68 mm
+      >    datum offsets removed: N -0.0003 m  E +0.0026 m  D -0.0830 m  (while parked: N +0.0003 E -0.0003 D -0.1098 m)
+      < B1 truth box extents over the route (38.4 s): E 2.154 m  N 1.289 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [FAIL]
+      > B1 truth box extents over the route (38.4 s): E 2.154 m  N 1.289 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m 
+      >    the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 38237 of 46138 samples): E 2.154 m  N 1.283 m  [REPORTED, 
+      >    where the E extent comes from: corner 4 -0.082 m (N +0.006) and corner 2 +0.073 m (N +0.004) from their own commanded point, reached with a peak speed
+   missionA-RECT11-hold5: 14 changed lines
+      <    truth samples 85033 over 70.8 s; delivered-odometry samples 12435 over 62.1 s
+      >    truth samples 88805 over 74.0 s; delivered-odometry samples 12435 over 62.1 s
+      < A4 FCU estimate vs truth after take-off (471 of 513 samples, vertical alignment residual 102.0 mm):
+      <    horizontal rms    18.32 mm  (<= 50, mean removed) at the best-fit lag +10 ms; zero lag would be    18.74 mm
+      <    vertical rms    38.33 mm
+      <    datum offsets removed: N +0.0025 m  E +0.0025 m  D -0.0935 m  (while parked: N +0.0003 E -0.0002 D -0.1108 m)
+      > A4 FCU estimate vs truth after take-off (500 of 542 samples, vertical alignment residual 101.2 mm):
+      >    horizontal rms    21.70 mm  (<= 50, mean removed) at the best-fit lag +10 ms; zero lag would be    22.02 mm
+      >    vertical rms    39.88 mm
+      >    datum offsets removed: N +0.0017 m  E +0.0049 m  D -0.0919 m  (while parked: N +0.0003 E -0.0002 D -0.1108 m)
+      < B1 truth box extents over the route (33.9 s): E 2.137 m  N 1.324 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes)  [FAIL]
+      > B1 truth box extents over the route (33.9 s): E 2.137 m  N 1.324 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m 
+      >    the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 33148 of 40704 samples): E 2.137 m  N 1.315 m  [REPORTED, 
+      >    where the E extent comes from: corner 4 -0.061 m (N -0.005) and corner 2 +0.076 m (N +0.004) from their own commanded point, reached with a peak speed
+
+READ IT: the changed lines are the run-summary truth-sample count and the A4 block, and nothing else.
+A4 PASSES in both versions (RECT7 17.92 -> 24.00 mm against <= 50; RECT9 16.18 -> 20.33; RECT10
+17.43 -> 22.16; RECT11 18.32 -> 21.70), and C2's denominator is identical either way (RECT9 0 of 55585
+in both, RECT10 0 of 56896, RECT11 0 of 51388) -- because C2 is measured over the whole flight, whose
+samples were already on disk before the truncation point.
