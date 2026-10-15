@@ -804,3 +804,32 @@ The aircraft's closest approaches land in space its own map DID mark in 4 of 6 r
 
 PLANNER DRAWS IT THERE
 (only pairs whose nearest plan point is within 1 m of the truth's position are counted, so a replan that moved the path elsewhere is not misread as a tracking error)
+
+=== A PARAMETER THAT WAS INERT BECAME LIVE, AND IT IS UNTESTED (`optimization/dist0`, `lambda_collision`) ==
+Round 8 established, by reading `bspline_optimizer.cpp:962-1001`, that this swarm variant's distance cost is a
+SEPARATION cost against `cps_.base_point[i][j]` / `cps_.direction[i][j]` -- other DRONES' points, empty for a
+single vehicle -- so `optimization/lambda_collision` (0.5) and `optimization/dist0` (0.5) multiplied NOTHING.
+That reading was made at window 0, where the rebound fired 43 times per crossing.
+
+Round 26's counters, read at window 8, say the situation changed:
+
+    window 0:    19 864 rebound calls,     43 collisions found
+    window 8: 2 201 131 - 2 423 392 calls, 14 859 - 17 294 collisions found (astar_fail 0-25)
+
+and `check_collision_and_rebound()` is precisely the function that POPULATES `cps_.base_point`/`direction` (from
+its rebound A* path) and sets `cps_.clearance = dist0_`.  So at window 8 those two parameters are no longer
+no-ops: **`lambda_collision` now multiplies a real quadratic standoff cost, and `dist0` sets its target distance**
+-- a 0.5 m standoff from the rebound path, which is itself a proxy for the obstacle surface.
+
+**Neither has ever been tested at window 8**, and every failure this investigation has localised now points at
+exactly that term: the map holds the obstacle (round 30: OCCUPIED at the closest approach in four of six runs),
+the plan still goes there (round 31: the plan is inside the footprint in four of four), and the aircraft follows
+the plan to within 0.003-0.044 m.  A weight that pulls the B-spline away from the rebound path is the one lever
+inside this architecture that acts on the localiser's own terms.
+
+THE EXPERIMENT TO RUN NEXT, stated before it is flown: `optimization/dist0` 0.5 -> 0.8 m and
+`optimization/lambda_collision` 0.5 -> 2.0, at window 8, everything else at the documented baseline.  PREDICTION:
+the plan's own minimum clearance in the best arm rises from its measured +0.040 .. +0.126 m toward the 0.5-0.8 m
+standoff the cost now asks for, and the C2 footprint count falls below the best 1887 of 47406.  THE REFUTATION:
+no change -- which would mean the term is still effectively inert even when populated, and would close the last
+parameter-shaped door in this planner.
