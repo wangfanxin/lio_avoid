@@ -186,18 +186,30 @@ def generate_launch_description():
         'optimization/lambda_smooth': 1.0,
         'optimization/lambda_collision': 0.5,
         'optimization/lambda_feasibility': 0.1,
-        'optimization/lambda_fitness': 1.0,      # UPSTREAM'S VALUE, and it stays the default although 4.0 was
-                                                 # flown and looked BETTER (DIAG15): the plan's 1st-percentile
-                                                 # clearance rose from -0.031 to +0.124 m and the 5th from +0.198
-                                                 # to +0.228, and the crossing came back with the best C2 numbers
-                                                 # yet at one cell (truth minimum +0.068 m, 1231 of 54097
-                                                 # samples inside the 0.20 m footprint, against 2108-12028 in the
-                                                 # other window runs).  IT IS NOT PROMOTED ON ONE RUN -- this
-                                                 # round's own lesson is that the window looked equally convincing
-                                                 # on two runs and failed on the third.  Note also what 4.0 did NOT
-                                                 # move: the plan's MINIMUM stayed at -0.285 m, unchanged from
-                                                 # DIAG8/DIAG14, so the worst single excursion has a different
-                                                 # cause (a trajectory published and then replaced, most likely).
+        'optimization/lambda_fitness': 1.0,      # UPSTREAM'S VALUE, and the 4.0 experiment is now CLOSED:
+                                                 # DIAG15 (4.0) cleared by +0.068 m with 1231 of 54097 samples
+                                                 # inside the C2 footprint; the reproduction DIAG17 (same
+                                                 # configuration) PENETRATED at -0.078 m with 6741 inside.  The
+                                                 # same pattern as the relay window -- one good run, then it does
+                                                 # not hold -- and the reason is now quantified: across ELEVEN
+                                                 # ego crossings of this mission the truth's minimum clearance has
+                                                 # a spread of about +-0.15 m around -0.10 m, so every lever tried
+                                                 # (+0.05 .. +0.15 m) is smaller than the run-to-run VARIANCE.
+                                                 # C2's 0.20 m footprint sits about two standard deviations above
+                                                 # that mean, which is why no parameter reaches it.  See STATUS row
+                                                 # 85 for the distribution and row 86 for what is left.
+                                                 # `calcFitnessCost` is the only term that pulls the B-spline onto
+                                                 # the A* reference; `lambda_collision`/`dist0` multiply a SWARM
+                                                 # separation cost that is empty for one vehicle.
+                                                 # DIAG15 (4.0) moved the plan's 1st-percentile clearance from
+                                                 # -0.031 to +0.124 m and gave the best C2 numbers at one cell
+                                                 # (truth min +0.068 m, 1231 of 54097 inside the 0.20 m footprint,
+                                                 # against 2108-12028 elsewhere) with tracking unaffected.  It was
+                                                 # NOT promoted on one run; the reproduction is DIAG17 and the
+                                                 # decision is STATUS row 85.  Note what 4.0 did NOT move: the
+                                                 # plan's MINIMUM stayed at -0.285 m, unchanged from DIAG8/DIAG14,
+                                                 # so the worst single excursion has another cause (a trajectory
+                                                 # published and then replaced, most likely).
                                                  # `calcFitnessCost` is the only term that pulls the B-spline onto
                                                  # the A* reference; `lambda_collision`/`dist0` below multiply a
                                                  # SWARM separation cost that is empty for one vehicle.

@@ -251,3 +251,40 @@ vehicle -- so nothing in it prefers the middle of free space, and the only term 
 `lambda_fitness` (measured: 1st percentile -0.031 -> +0.124 m at 4.0, not yet reproduced).
 
 Figure `docs/figures/traj-xy-DIAG16-twocell-bubble.png`, sha256 86f2685744e7ed363f0a46309f2e645400fd7db11b40390a628666302a9827b4.
+
+=== THE PARAMETER SEARCH IS CLOSED BY ITS OWN DISTRIBUTION: THE SPREAD IS WIDER THAN EVERY EFFECT ==========
+`lambda_fitness` 4.0 was the last measured lever and it did not reproduce: DIAG15 gave +0.068 m with 1231 of
+54097 samples inside the C2 footprint, and DIAG17 -- the same configuration, flown the next round -- gave
+**-0.078 m** with 6741 inside.  The parameter is back at upstream's 1.0.  That makes eleven ego crossings of
+`worlds/diagonal.yaml` at one cell of inflation, and they can now be read as a distribution rather than as
+results:
+
+    run                          configuration             truth min    inside 0.20 m
+    DIAG2-ego-avoidance          window 0                     -0.279    15875 of 114198
+    DIAG3-ego-map                window 0                     -0.169     4526 of  95615
+    DIAG4-ego-map                window 0                     -0.071     2257 of  93200
+    DIAG5-map-census             window 0                     -0.277    11453 of 105281
+    DIAG6-map-census             window 0                     -0.129     5127 of  89266
+    DIAG8-map-slice              window 0                     -0.164     5356 of  94124
+    DIAG9-window3                window 3                     +0.150     2108 of 100120
+    DIAG10-window3-repro         window 3                     +0.056    12028 of 106581
+    DIAG14-onecell-groundfix     window 3 + ground fix        -0.222     3387 of  95056
+    DIAG15-fitness4              window 3 + fitness 4         +0.068     1231 of 100143
+    DIAG17-fitness4-repro        window 3 + fitness 4         -0.078     6741 of 106248
+
+    mean -0.101 m,  standard deviation 0.143 m,  range -0.279 .. +0.150 m
+    crossings that cleared every pillar (min > 0):  **3 of 11**
+    crossings that met the C2 footprint (min >= 0.20): **0 of 11**
+
+**C2's 0.20 m footprint is 2.1 standard deviations above the mean of the same mission flown the same way.**  Every
+lever this project tried moved the result by less than that spread, and the two most promising moved it in
+OPPOSITE directions on consecutive runs (the relay window: +0.150 m then +0.056 m then -0.222 m; `lambda_fitness`
+4.0: +0.068 m then -0.078 m).  The honest conclusion is not that a better parameter exists but that **this
+planner does not systematically hold 0.20 m from a pillar on this mission** -- which is exactly what its
+architecture predicts, since it has NO obstacle-distance cost at all (`calcDistanceCostRebound` measures against
+other DRONES' points, empty for one vehicle) and its A* returns the shortest path through the corridor, i.e. one
+that hugs the boundary.  Reaching the C2 row therefore needs a planner that prefers the middle of free space: an
+A* cost term that penalises proximity to occupied cells, or a real ESDF distance cost in the optimiser.  Nothing
+in the map, and nothing in the parameter set, will do it.
+
+Figure `docs/figures/round15/diagonal-clearance-distribution.png`.
