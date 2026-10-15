@@ -160,8 +160,16 @@ VERIFIED, `RECT27d-kill-plan`:
 `tools/acceptance-table.py` over every F1+F2 sortie on the same mission, with `--abort-ok` for the
 deliberate kill sortie:
 
-  POOLED: 6 of 7 sorties with 4 of 4 corners hovered >= 5.0 s;  25 of 28 corner visits >= 5.0 s
-          the deliberate kill sortie is NOT a mission: excluding it, 6 of 6
+  `tools/acceptance-table.py` PRINTS ITS POOLED LINE OVER EVERY ROW IT IS GIVEN, and the seven-row
+  invocation above reads "6 of 7 sorties ... 25 of 28 corner visits" because the deliberate kill
+  sortie is one of those rows.  THE RATIO OVER THE SIX NOMINAL SORTIES, which is the one this file
+  quotes, is:
+
+      POOLED: 6 of 6 sorties with 4 of 4 corners hovered >= 5.0 s;  24 of 24 corner visits >= 5.0 s
+
+  and it is arithmetic on the table's own columns, not a second measurement: every row above reads
+  "4 of 4".  The kill sortie is judged on what it was for (`--abort-ok`: an `abort` phase after the
+  route began, a landing that ended in disarm, a NAMED abort in the log).
   the six nominal sorties and their tightest corner (c3): RECT23 6.35 s, RECT24 6.34 s, RECT26 6.38 s,
   RECT31 6.37 s, RECT32 6.38 s, RECT33 6.37 s -- all HOLD-OK
   the same figures with `--airborne-m 0` (the quantity every pre-F2 sortie was judged by): identical.
