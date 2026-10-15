@@ -842,3 +842,33 @@ shape is measured, and the comparison against the rectangle planner on the same 
 row is reported as unmet, by every crossing.
 
 Figures, both from recorded data: `docs/figures/traj-xy-DIAG-corpus-closest-approach.png` sha256 33dd0e26d6094fdd1549fd6640a55f9e92913e3f541600d8b011d6561b0aa534 (the top view: every crossing's closest approach on the pillar field) and `docs/figures/round70/replan-episodes.png` sha256 3a5af914206353e51fb1e1b0ed1449f721a7a8bb3db5fefc83b9bf523ee75170 (the plan's clearance against time, with the planner's own announcements).  Round 70 flew nothing, so the per-round top view of the last flight remains `docs/figures/traj-xy-DIAG29b-distance-cost-wired.png`.
+
+=== CORRECTION (round 70): THE LEVER I OFFERED THE OWNER HAD ALREADY BEEN FLOWN AND REFUTED ================
+In round 69 I put a question to the owner with two decisions in it, and in the second I offered, as the "strongest
+un-tested hypothesis today", this change: *make `check_collision_and_rebound` sweep all of the control points
+instead of the first two-thirds (`bspline_optimizer.cpp:1329`)*.  The owner answered "不用改,ego 会有更新新轨迹的对吧",
+and they were right -- but **the lever was not merely a matter of taste: it had already been flown and refuted six
+rounds earlier**, as PATCH COLLISION-COVERAGE/1:
+
+    `_stage/apply-collision-coverage1.py` -- "let the collision check see the WHOLE trajectory"
+    DIAG26-coverage1, window 8: truth minimum -0.237 m, 2500 of 28253 samples inside the 0.20 m footprint, rc=1
+    STATUS row 101: "THE LAST NAMED LEVER IS REFUTED TOO ... all THREE code/parameter routes have now been flown
+    and all three are refuted"
+
+The corpus table built in round 70 carries the same run: `DIAG26-coverage1` truth min -0.237 m, 583
+body-penetrating plan points, and a plan excursion of 103.888 m -- a runaway.  So the owner's decision (do not
+change the optimiser) is supported TWICE OVER: by their own mechanism argument, which round 70 then confirmed by
+measurement, and by an experiment that had already made the crossing worse.
+
+HOW THE SLIP HAPPENED, because the same shape has cost this project rounds before: the LOCALISATION was new --
+round 69's `plan-worst-in-map.py` result that the plan's worst point lies in space the map marks OCCUPIED -- and I
+treated the localisation as if it made the obvious remedy untested too.  What was new was the evidence, not the
+lever.  The check that would have caught it takes one command: search `docs/STATUS.md` for the lever's own words
+before proposing it.  This is the same absent-grep mistake as rows 119-120 (where a grep of mine truncated the
+FCU's last words), and it is recorded here rather than quietly dropped because the record is the only instrument
+this project has that survives a forgotten round.
+
+WHAT IT DOES NOT CHANGE: no flight was spent, no code was changed, and the round-70 measurement stands on its own
+(the arm's plan excursions into the 0.20 m band last 0.4..0.9 s and end by themselves; with the distance-cost term
+they last up to 6.0 s).  What it does change is the standing of the "2/3 sweep" line in this file: it is not an
+open hypothesis, it is a **closed, refuted** one.
