@@ -15,13 +15,21 @@ be provable, and because it is pure arithmetic it can be proven with ZERO tolera
 
 WHAT IS COMPARED, and why zero tolerance is the right number.  Both paths are driven with the SAME L
 point and the SAME `common.frames.Calib`, in the SAME process, and the comparison is on the ARGUMENTS
-HANDED TO PYMAVLINK -- the six numbers, the frame id, the type mask and the yaw that `send_position` and
+HANDED TO PYMAVLINK -- the six numbers, the frame id, the type mask and the yaw that the old chain and
 `send_cmd` each pass to `set_position_target_local_ned_send`.  Not "close": `repr()`-equal, i.e.
 bit-identical, and the test fails on the first differing byte.  The old path applies `R_WL @ p_L + t_WL`
 and then a permutation; the new path calls `frames.l_to_wire` (the same expression, one call) and the same
 permutation.  Composing the rotation, the offset and the permutation into ONE 3x4 matrix would have been
 mathematically equal and NOT bit-identical, because the sum accumulates in a different order -- which is
 why `frames.l_to_wire` deliberately keeps them separate (`common/frames.py`, its docstring).
+
+F1 (2026-10-16) DELETED THE OLD SIDE OF THIS COMPARISON.  `send_position`, `send_position_velocity` and
+`send_velocity` -- the bridge's three F/W-frame writers -- are gone, because the plan box's command stream
+reaches the wire through `send_cmd` and nothing else.  So "the old chain" is now written out IN THIS FILE
+(`old_chain()`), reproduceable from the deleted code, and the comparison runs over ALL THREE field arms:
+`fields="pos"` (what the corner tour actually flew: position + yaw), `"posvel"` and `"posvelacc"`.  A
+relocation whose reference implementation lives only in git history is not provable, which is why the
+reference is here rather than in a commit message.
 
 THE TABLE: several poses (including the four mission corners and values with no exact binary form), three
 velocities and accelerations, five yaws, and THREE calibrations -- the measured one the flight used, the
@@ -175,42 +183,82 @@ def calibrations(fr=None):
     return cals
 
 
+def old_chain(module, br, p_l, v_l, a_l, yaw, calib, fields="posvelacc"):
+    """THE CHAIN THAT FLEW UNTIL F1, written out HERE because F1 deleted its entry points.
+
+    `bridge/mavlink_impl.py` had three setpoint writers that took F/W numbers -- `send_position`,
+    `send_position_velocity` and `send_velocity`.  F1 deleted all three: the plan box's command stream
+    reaches the wire through `send_cmd` and nothing else, so "the old chain" no longer exists as callable
+    code.  Reproducing it here is what keeps the relocation provable at `atol = 0.0` instead of merely
+    claiming it -- and `fields` names which of the three arms is being reproduced:
+
+      "pos"        the arm the corner tour actually flew (`send_position`)
+      "posvel"     `send_position_velocity(p_f, v_f, yaw)`
+      "posvelacc"  `send_position_velocity(p_f, v_f, yaw, a_f)`
+
+    The masks come from the MODULE UNDER TEST, so a mutation of a mask constant is visible to the control.
+    """
+    mav = module.mavutil.mavlink
+    p_f = calib.R_WL @ np.asarray(p_l, dtype=float) + calib.t_WL
+    x_ned, y_ned, z_ned = float(p_f[1]), float(p_f[0]), -float(p_f[2])
+    if fields == "pos":
+        br.mav.mav.set_position_target_local_ned_send(
+            0, br.mav.target_system, br.mav.target_component,
+            mav.MAV_FRAME_LOCAL_NED, module.POS_YAW_MASK,
+            x_ned, y_ned, z_ned, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, yaw, 0.0)
+        return
+    v_f = calib.R_WL @ np.asarray(v_l, dtype=float)
+    vx, vy, vz = float(v_f[1]), float(v_f[0]), -float(v_f[2])
+    if fields == "posvel":
+        ax = ay = az = 0.0
+        mask = module.POS_VEL_YAW_MASK
+    else:
+        a_f = calib.R_WL @ np.asarray(a_l, dtype=float)
+        ax, ay, az = float(a_f[1]), float(a_f[0]), -float(a_f[2])
+        mask = module.POS_VEL_ACC_YAW_MASK
+    br.mav.mav.set_position_target_local_ned_send(
+        0, br.mav.target_system, br.mav.target_component,
+        mav.MAV_FRAME_LOCAL_NED, mask,
+        x_ned, y_ned, z_ned, vx, vy, vz, ax, ay, az, yaw, 0.0)
+
+
 def compare(module, quiet=False):
     """Returns (problems, n_cases, lines)."""
     problems, lines = [], []
     import common.frames as fr          # the tree-under-test's own frames module (see load_module)
     n = 0
-    for cal_name, calib in calibrations(fr):
-        for p_l in POSES_L:
-            for v_l in VELS_L:
-                for a_l in VELS_L:
-                    for yaw_deg in YAW_DEG:
-                        yaw = math.radians(yaw_deg)
-                        # ---- OLD PATH: the mission converts L -> W, the transport permutes W -> NED
-                        p_f = calib.R_WL @ np.asarray(p_l, dtype=float) + calib.t_WL
-                        v_f = calib.R_WL @ np.asarray(v_l, dtype=float)
-                        a_f = calib.R_WL @ np.asarray(a_l, dtype=float)
-                        br_old = make_bridge(module)
-                        br_old.send_position_velocity(p_f, v_f, yaw, a_f)
-                        old = setpoint_call(br_old)
-                        # ---- NEW PATH: the transport does both, in one place
-                        br_new = make_bridge(module)
-                        cmd = Cmd(p_l, v_l, a_l, yaw)
-                        br_new.send_cmd(cmd, calib)
-                        new = setpoint_call(br_new)
-                        n += 1
-                        where = "%s p=%s v=%s a=%s yaw=%.3f" % (cal_name, p_l, v_l, a_l, yaw)
-                        if old is None or new is None:
-                            problems.append("%s: one of the two paths sent nothing" % where)
-                            continue
-                        if len(old) != len(new):
-                            problems.append("%s: %d vs %d arguments" % (where, len(old), len(new)))
-                            continue
-                        for i, (x, y) in enumerate(zip(old, new)):
-                            if repr(x) != repr(y):
-                                problems.append("%s: argument %d differs -- old %r, new %r"
-                                                % (where, i, x, y))
-        lines.append("   %-46s %d cases compared" % (cal_name, n))
+    for fields in ("pos", "posvel", "posvelacc"):
+        per_field = 0
+        for cal_name, calib in calibrations(fr):
+            for p_l in POSES_L:
+                for v_l in VELS_L:
+                    for a_l in VELS_L:
+                        for yaw_deg in YAW_DEG:
+                            yaw = math.radians(yaw_deg)
+                            # ---- OLD PATH: the mission converts L -> W, the transport permutes W -> NED
+                            br_old = make_bridge(module)
+                            old_chain(module, br_old, p_l, v_l, a_l, yaw, calib, fields)
+                            old = setpoint_call(br_old)
+                            # ---- NEW PATH: the transport does both, in one place
+                            br_new = make_bridge(module)
+                            cmd = Cmd(p_l, v_l, a_l, yaw)
+                            br_new.send_cmd(cmd, calib, fields=fields)
+                            new = setpoint_call(br_new)
+                            n += 1
+                            per_field += 1
+                            where = "%s fields=%s p=%s v=%s a=%s yaw=%.3f" % (cal_name, fields, p_l, v_l,
+                                                                              a_l, yaw)
+                            if old is None or new is None:
+                                problems.append("%s: one of the two paths sent nothing" % where)
+                                continue
+                            if len(old) != len(new):
+                                problems.append("%s: %d vs %d arguments" % (where, len(old), len(new)))
+                                continue
+                            for i, (x, y) in enumerate(zip(old, new)):
+                                if repr(x) != repr(y):
+                                    problems.append("%s: argument %d differs -- old %r, new %r"
+                                                    % (where, i, x, y))
+        lines.append("   fields=%-10s %d cases compared" % (fields, per_field))
     return problems, n, lines
 
 
@@ -221,16 +269,21 @@ def check_names(module, quiet=False):
     calib = calibrations(fr)[0][1]
     p_l = [1.0, 2.0, 3.0]
     yaw = math.radians(30.0)
-    p_f = calib.R_WL @ np.asarray(p_l, dtype=float) + calib.t_WL
-    br_old = make_bridge(module)
-    br_old.send_position_velocity(p_f, np.zeros(3), yaw, np.zeros(3))
-    old = setpoint_call(br_old)
-    br_new = make_bridge(module)
-    br_new.send_cmd(Cmd(p_l, [0, 0, 0], [0, 0, 0], yaw), calib)
-    new = setpoint_call(br_new)
-    for i, label in ((3, "MAV_FRAME_ID"), (4, "type mask"), (14, "yaw"), (15, "yaw_rate")):
-        if repr(old[i]) != repr(new[i]):
-            problems.append("%s differs: old %r, new %r" % (label, old[i], new[i]))
+    for fields, expect in (("pos", "POS_YAW"), ("posvel", "POS_VEL_YAW"),
+                           ("posvelacc", "POS_VEL_ACC_YAW")):
+        br_old = make_bridge(module)
+        old_chain(module, br_old, p_l, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], yaw, calib, fields)
+        old = setpoint_call(br_old)
+        br_new = make_bridge(module)
+        br_new.send_cmd(Cmd(p_l, [0, 0, 0], [0, 0, 0], yaw), calib, fields=fields)
+        new = setpoint_call(br_new)
+        for i, label in ((3, "MAV_FRAME_ID"), (4, "type mask"), (14, "yaw"), (15, "yaw_rate")):
+            if repr(old[i]) != repr(new[i]):
+                problems.append("%s fields=%s differs: old %r, new %r" % (label, fields, old[i], new[i]))
+        if fields == "pos" and new[4] != module.POS_YAW_MASK:
+            problems.append("fields='pos' must put POS_YAW on the wire (the mask the corner tour flew), "
+                            "not %r" % (new[4],))
+        print("   fields=%-10s -> mask %s (the arm: %s)" % (fields, new[4], expect))
     return problems
 
 
@@ -264,13 +317,9 @@ def self_test(quiet=False):
             ("drop the sign flip of z on the way to NED",
              lambda r: _mutate(os.path.join(r, "bridge", "mavlink_impl.py"),
                                "        x_ned, y_ned, z_ned = float(p_f[1]), float(p_f[0]),"
-                               " -float(p_f[2])\n        vx, vy, vz = float(v_f[1]), float(v_f[0]),"
-                               " -float(v_f[2])\n        ax, ay, az = float(a_f[1]), float(a_f[0]),"
-                               " -float(a_f[2])",
+                               " -float(p_f[2])\n        if fields == \"pos\":",
                                "        x_ned, y_ned, z_ned = float(p_f[1]), float(p_f[0]),"
-                               " float(p_f[2])\n        vx, vy, vz = float(v_f[1]), float(v_f[0]),"
-                               " float(v_f[2])\n        ax, ay, az = float(a_f[1]), float(a_f[0]),"
-                               " float(a_f[2])"),
+                               " float(p_f[2])\n        if fields == \"pos\":"),
              "differs"),
         ]
         for label, mutate, needle in cases:

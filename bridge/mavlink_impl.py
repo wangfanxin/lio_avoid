@@ -332,82 +332,103 @@ class MavlinkBridge(Bridge):
                  % (attempts, result))
         return False
 
-    def send_position_velocity(self, p_f, v_f, yaw_rad: float, a_f=None):
-        """Position AND velocity (and acceleration, if given) in one setpoint -- the time-parameterised feed.
+    # ---- THE ONE SETPOINT ENTRY POINT: L IN, WIRE OUT (S4, and the ONE entry point since F1) ---------
+    #
+    # WHAT DIED HERE IN F1 (2026-10-16), and why nothing lost a capability.  Until F1 this class had
+    # THREE setpoint writers with TWO frame contracts, and a caller had to know which one it was calling:
+    #
+    #   send_position(p_f, yaw)               F/W numbers, POS_YAW mask   <- the corner tour flew THIS one
+    #   send_position_velocity(p_f, v_f, yaw) F/W numbers, POS_VEL_YAW     <- `--setpoint-mode posvel` arm
+    #   send_velocity(v_f, yaw)               F/W numbers, VEL_YAW         <- `--follow path` vel mode only
+    #
+    # Measured at HEAD 940cb50: `send_position` was the ONLY one the flown corner tour ever reached
+    # (`fsm/mission_fsm.py::pump` passes `setpoint` and no `velocity`, so its `posvel` default fell through
+    # to `send_position`), `send_position_velocity` had NO caller at all, and `send_velocity` had exactly
+    # one -- inside `--follow path`, which F1 deleted with the Path.  The plan box's stream now reaches the
+    # wire through `send_cmd` and nothing else, which is the whole point of the step: ONE conversion, ONE
+    # contract, and the frame is L at every call site above this line.
+    #
+    # `fields` IS the old `--setpoint-mode`, kept as an explicit argument rather than a default-free
+    # guess, because the mask is a FLOWN-CONFIGURATION decision and this project has a measurement for
+    # it: MEASURED 2026-10-14 (sortie G2) the POS_VEL_ACC_YAW mask with an acceleration of ZERO sent at the
+    # plan's end let the aircraft fly on at 2.6 m/s for 2.6 m until the geofence aborted it, while the same
+    # mission on POS_YAW stopped 0.020-0.023 m from the commanded point.  So "posvelacc" is available,
+    # documented, and NOT the default.
+    SETPOINT_FIELDS = ("pos", "posvel", "posvelacc")
 
-        WHY: a planner hands over a trajectory that knows how fast it wants to be flown.  Sending only the
-        position makes the FCU's own waypoint navigator re-derive a speed profile from its `WP_SPD`/`WP_ACC`
-        limits, which is what our geometric follower had to fight with a look-ahead; sending the planned
-        velocity as well tells it directly.  ArduPilot honours position + velocity in this message; the
-        acceleration field is sent when given, but for a copter `PSC` generally uses the velocity target and
-        its own acceleration limits, so whether it helps is a MEASUREMENT, not an assumption.
-        """
-        x_ned, y_ned, z_ned = float(p_f[1]), float(p_f[0]), -float(p_f[2])
-        vx, vy, vz = float(v_f[1]), float(v_f[0]), -float(v_f[2])
-        if a_f is None:
-            ax = ay = az = 0.0
-            mask = POS_VEL_YAW_MASK
-        else:
-            ax, ay, az = float(a_f[1]), float(a_f[0]), -float(a_f[2])
-            mask = POS_VEL_ACC_YAW_MASK
-        self.mav.mav.set_position_target_local_ned_send(
-            0, self.mav.target_system, self.mav.target_component,
-            mavutil.mavlink.MAV_FRAME_LOCAL_NED, mask,
-            x_ned, y_ned, z_ned, vx, vy, vz, ax, ay, az, yaw_rad, 0.0)
-        self._sent_positions += 1
-
-    def send_position(self, p_f, yaw_rad: float):
-        # F (ENU, z up) -> NED
-        x_ned, y_ned, z_ned = float(p_f[1]), float(p_f[0]), -float(p_f[2])
-        self.mav.mav.set_position_target_local_ned_send(
-            0, self.mav.target_system, self.mav.target_component,
-            mavutil.mavlink.MAV_FRAME_LOCAL_NED, POS_YAW_MASK,
-            x_ned, y_ned, z_ned, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, yaw_rad, 0.0)
-        self._sent_positions += 1
-
-    # ---- THE ONE L -> WIRE CROSSING (S4 of _stage/refactor-bridge-plan.md section 6) ------------------
-    def send_cmd(self, cmd_l, calib, yaw_rad=None):
+    def send_cmd(self, cmd_l, calib, yaw_rad=None, fields="pos"):
         """A `PositionCommand`-shaped command in **L**, placed on the wire in ONE conversion.
 
-        WHAT MOVED HERE, AND WHY IT IS THE SAME ARITHMETIC.  Until 2026-08-16 the L -> W step lived in
+        WHAT MOVED HERE, AND WHY IT IS THE SAME ARITHMETIC.  Until 2026-10-16 the L -> W step lived in
         the mission (`fsm/mission_fsm.py:446-449` built what it called `p_f`) and the W -> NED permutation
-        lived here (`:345`, `:361`, `:369`).  `F` is `W` numerically -- the EKF origin is set to the pad --
-        so the two steps composed correctly, but the transport was silently depending on that identity
-        while `docs/ARCHITECTURE.md:206` and this file's `base.py` both claim the transport crosses the
-        frame boundary exactly once.  The expression the chain computes is
-        `permute(R_WL @ p_L + t_WL)`, which is what this method computes, in this file, once.  The A/B
-        that proves it is bit-identical (not merely close) is `tools/test-s4-l-to-wire.py`.
+        lived here.  `F` is `W` numerically -- the EKF origin is set to the pad -- so the two steps
+        composed correctly, but the transport was silently depending on that identity while
+        `docs/ARCHITECTURE.md:206` and this file's `base.py` both claim the transport crosses the frame
+        boundary exactly once.  The expression the chain computes is `permute(R_WL @ p_L + t_WL)`, which is
+        what this method computes, in this file, once.  The A/B that proves it is bit-identical (not merely
+        close) is `tools/test-s4-l-to-wire.py`, which still compares against a written-out copy of the
+        deleted entry points.
 
         FIELDS.  `p` crosses as `frames.l_to_wire`; `v` and `a` cross by the rotation alone
         (`frames.l_to_wire_velocity`: a velocity is a difference of positions, so `t_WL` cancels and must
-        NOT be added).  `yaw` is a heading about the common +z (L and W share it, `Calib` is a rotation
-        about z with a translation), so it is passed through -- `yaw_rad=None` means "take it from the
-        command", and an explicit value overrides it (the FSM's `--yaw-mode velocity` slews its own).
+        NOT be added).  `yaw` is passed through (`yaw_rad=None` means "take it from the command") -- it is
+        the heading LOCAL_NED reads (0 = North, +90 deg = East), the convention
+        `planner/cmd_stream.py` states at the top of the file.
+
+        `fields` selects which of the three the WIRE carries, and it is the old `--setpoint-mode`:
+
+          "pos"        position + yaw, the rest ignored -- **the default, and what every mission-A sortie
+                       actually flew** (see the block comment above: the FSM's posvel arm fell through to
+                       `send_position`, and the POS_VEL_ACC arm is the one measured to break holding);
+          "posvel"     position + velocity + yaw (a source with a time parameterisation, e.g. ego);
+          "posvelacc"  everything the trajectory can feed forward.
 
         `cmd_l` is anything with `p`, `v`, `a` and `yaw` (a `planner.cmd_stream.CmdSample`, or a
-        `quadrotor_msgs` message converted to one).  Returns the NED triple it sent, for a test's benefit.
+        `quadrotor_msgs` message converted to one).  Returns the W point it sent, for a test's benefit.
         """
         from common import frames
+        if fields not in self.SETPOINT_FIELDS:
+            raise ValueError("send_cmd: fields must be one of %s, not %r"
+                             % (", ".join(self.SETPOINT_FIELDS), fields))
         p_f = frames.l_to_wire(cmd_l.p, calib)
-        v_f = frames.l_to_wire_velocity(cmd_l.v, calib)
-        a_f = frames.l_to_wire_velocity(cmd_l.a, calib)
         yaw = float(cmd_l.yaw if yaw_rad is None else yaw_rad)
         x_ned, y_ned, z_ned = float(p_f[1]), float(p_f[0]), -float(p_f[2])
-        vx, vy, vz = float(v_f[1]), float(v_f[0]), -float(v_f[2])
-        ax, ay, az = float(a_f[1]), float(a_f[0]), -float(a_f[2])
+        if fields == "pos":
+            # LITERAL zeros, not the command's (zero) velocity: the mask says the FCU ignores them, and
+            # `-0.0` is a different byte from `0.0` to the zero-tolerance A/B this method is proven with.
+            vx = vy = vz = ax = ay = az = 0.0
+            mask = POS_YAW_MASK
+        else:
+            v_f = frames.l_to_wire_velocity(cmd_l.v, calib)
+            vx, vy, vz = float(v_f[1]), float(v_f[0]), -float(v_f[2])
+            if fields == "posvel":
+                ax = ay = az = 0.0
+                mask = POS_VEL_YAW_MASK
+            else:
+                a_f = frames.l_to_wire_velocity(cmd_l.a, calib)
+                ax, ay, az = float(a_f[1]), float(a_f[0]), -float(a_f[2])
+                mask = POS_VEL_ACC_YAW_MASK
         self.mav.mav.set_position_target_local_ned_send(
             0, self.mav.target_system, self.mav.target_component,
-            mavutil.mavlink.MAV_FRAME_LOCAL_NED, POS_VEL_ACC_YAW_MASK,
+            mavutil.mavlink.MAV_FRAME_LOCAL_NED, mask,
             x_ned, y_ned, z_ned, vx, vy, vz, ax, ay, az, yaw, 0.0)
         self._sent_positions += 1
         return p_f
 
-    def send_velocity(self, v_f, yaw_rad: float):
-        x_ned, y_ned, z_ned = float(v_f[1]), float(v_f[0]), -float(v_f[2])
-        self.mav.mav.set_position_target_local_ned_send(
-            0, self.mav.target_system, self.mav.target_component,
-            mavutil.mavlink.MAV_FRAME_LOCAL_NED, VEL_YAW_MASK,
-            0.0, 0.0, 0.0, x_ned, y_ned, z_ned, 0.0, 0.0, 0.0, yaw_rad, 0.0)
+    def send_external_nav_l(self, t_us: int, p_l, q_l, v_l, calib):
+        """The LIO's pose in **L**, fed to the FCU in ONE conversion -- the estimator path's L -> wire.
+
+        The counterpart of `send_cmd` on the other side of the bridge: the mission used to do this
+        arithmetic itself (`fsm/mission_fsm.py:465-469`: `p_f = R @ p_l + t`, `q_f = q_from_R(R @ R_from_q(q))`,
+        `v_f = R @ v`) and this method is that same expression, composed here so that NOTHING above the
+        bridge converts a frame any more.  `q_l` is body-FLU -> L (the LIO's own convention);
+        `send_external_nav` then does the wire labelling it always did.
+        """
+        from common import frames
+        p_f = frames.l_to_wire(p_l, calib)
+        q_f = frames.q_from_R(calib.R_WL @ frames.R_from_q(q_l))
+        v_f = None if v_l is None else frames.l_to_wire_velocity(v_l, calib)
+        self.send_external_nav(t_us, p_f, q_f, v_f)
 
     def send_external_nav(self, t_us: int, p_f, q_f, v_f=None):
         """The LIO's pose in F (ENU labels, z up), sent as ODOMETRY in the frame pair the firmware reads.

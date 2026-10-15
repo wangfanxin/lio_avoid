@@ -24,8 +24,14 @@ sys.path.insert(0, "/mnt/d/distill_self/lio_avoid")
 from common import frames               # noqa: E402
 from bridge.base import Mode            # noqa: E402
 from bridge.mavlink_impl import MavlinkBridge   # noqa: E402
+from planner import cmd_stream as _cmd_stream   # noqa: E402
 
 HOME_LAT, HOME_LON, HOME_ALT = -35.363261, 149.165230, 584.0
+
+#: this test's frames coincide: it feeds the FCU from the truth tap, whose frame IS F (= W, the EKF origin
+#: is the pad).  Stated as a calibration rather than hidden, because since F1 the bridge's setpoint entry
+#: point speaks L and nothing above it converts a frame.
+_IDENTITY_CALIB = frames.Calib(R_WL=np.eye(3), t_WL=np.zeros(3))
 
 
 class TapSource:
@@ -112,7 +118,13 @@ def main() -> int:
                 br.send_external_nav(tap.t_us, tap.p, tap.q, tap.v)
                 n += 1
                 if setpoint is not None:
-                    br.send_position(setpoint[0], setpoint[1])
+                    # THE ONE SETPOINT ENTRY POINT (F1 deleted the three F-frame writers).  This bench test
+                    # flies on the TRUTH tap, whose frame IS F (= W), so the frames coincide ON PURPOSE and
+                    # the calibration below is the identity: the L input is the F point, verbatim.
+                    br.send_cmd(_cmd_stream.CmdSample(np.asarray(setpoint, dtype=float),
+                                                      np.zeros(3), np.zeros(3), 0.0, 0.0, 0,
+                                                      _cmd_stream.TRAJECTORY_STATUS_READY),
+                                _IDENTITY_CALIB, fields="pos")
             time.sleep(0.001)
         return n
 

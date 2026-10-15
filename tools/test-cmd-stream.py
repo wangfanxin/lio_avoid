@@ -1,34 +1,37 @@
 #!/usr/bin/env python3
-"""The command stream's own contract, tested offline -- no ROS, no graph, no airframe, no flight.
+"""The PLAN box's executor and its command stream, tested with NO flight and NO ROS graph.
 
-WHAT THIS PROVES, and why it is a test rather than a demonstration.  `planner/cmd_stream.py` is the PLAN
-box's output (`quadrotor_msgs/msg/PositionCommand` on `/plan/cmd`, refactor-bridge-plan.md section 3.3).
-The claim the interface makes is not "a topic exists": it is that the stream says WHERE the plan wants the
-vehicle, that the corner dwell is CONTENT (`position = corner, velocity = 0`) rather than a gap, that the
-stream keeps its own declared rate, and that the end of the tour is a FIELD
-(`trajectory_flag = TRAJECTORY_STATUS_COMPLETED`) rather than the empty-Path convention.  Every one of
-those is a statement about numbers, so every one of them is checkable here.
+WHY THIS FILE IS THE CONTRACT TEST NOW (F1, 2026-10-16).  Until F1 the stream was a shadow and this file
+proved that the shadow was harmless; the thing that FLEW was the FSM's corner walk, tested by
+`tools/test-corner-tour.py`.  F1 moved execution into the plan box and deleted the corner walk, so this
+file inherits that test's job: it asserts the tour -- the same five waypoints, in the same order, with the
+same dwells -- against the object that now flies it.
 
-  1. ON THE COMMANDED PATH, within 1 mm.  Every flown-phase sample lies on the leg it belongs to (the
-     densified leg geometry, the same `legs_w` the Path is built from);
-  2. IN L, AND CONSISTENT WITH WHAT IS FLOWN.  `position` is in L, and `R_WL @ p_L + t_WL` equals the W
-     corner the flight actually commands -- with the MEASURED calibration from `_stage/calib.json` and
-     with two different ones, so the frame claim is not a claim about one file;
-  3. THE DWELL IS CONTENT.  At every corner there is a segment of >= `hold_s` whose `position` is the
-     corner (<= 1 mm) and whose `velocity` and `acceleration` are ZERO;
-  4. THE STREAM IS SELF-CLOCKED.  All the samples of a segment are spaced at the declared rate's period
-     (a fake clock is driven at exactly that period, so the count per simulated second is a number this
-     test can read off);
-  5. THE LAST MESSAGE CARRIES COMPLETED, and `EMPTY` is what precedes the first leg;
-  6. NEGATIVE CONTROLS: the same checks, run against deliberately wrong variants of the producer, must
-     FAIL.  A dwell moved by 5 mm, a rate declared but not kept, a stream that never says COMPLETED, and
-     a stream flagged READY at the very end -- each must be caught, or the assertions above are ornament.
+WHAT IT ASSERTS, and why each one is a flight-safety statement:
 
-The pacing is the REAL `TourPacer`, driven by a clock this test owns and an odometry feed it synthesises:
-the vehicle flies each leg at a constant speed, holds each corner for `hold_s`, and the arrival gate fires
-on the actual horizontal distance.  Nothing is mocked except TIME and the vehicle.
+  1. every streamed position IS one of the tour's waypoints, exactly (1e-9): the stream commands
+     waypoints, so "off the path by 3 mm" is no longer a possible failure -- being off a WAYPOINT is;
+  2. the stream is in L: `R_WL @ p_L + t_WL` reproduces the commanded W waypoint for three calibrations;
+  3. the dwell is CONTENT -- position = the corner, velocity = 0, acceleration = 0 -- and lasts
+     `--hold-s`, with ONE dwell per corner of the tour and NONE on the entry leg;
+  4. **THE DWELL CLOCK STARTS ON SETTLED, NOT ON THE FIRST RADIUS CROSSING.**  The driver has a "ring"
+     mode that reproduces the measured behaviour (arrive at 1.7 m/s, overshoot ~0.19 m, come back
+     ~3.5 s later) and the test requires the dwell to start only when the vehicle is inside `--arrive-m`
+     AND slow.  This is the whole of F1 change 8: RECT11 c3 4.96 s and RECT21 c3 4.80 s both missed the
+     5.0 s bar because one arrival was split in two by exactly that ring;
+  5. the stream is SELF-CLOCKED at the declared rate (the S3 shadow declared 100 Hz and emitted 4);
+  6. `trajectory_id` INCREMENTS PER WAYPOINT -- that field is what the consumer turns into the `leg`
+     phases, and the metric window depends on there being five of them;
+  7. the last message carries `COMPLETED`, and the stream does NOT go silent afterwards (the F2
+     supervisor needs "finished" and "stopped talking" to be different facts);
+  8. the leg clocks do not run while the vehicle is on the pad (the plan box starts ~25 s before
+     take-off; a clock armed at start-up would advance the tour on the ground).
 
-usage: tools/test-cmd-stream.py [--world worlds/pillars.yaml] [--rate 100] [--hold-s 5.0]
+NEGATIVE CONTROLS, run by default: the dwell moved 5 mm off the corner; a stream that declares a rate it
+does not emit; a stream that ends without COMPLETED; and **the settle removed** (so the dwell starts on the
+raw radius crossing) -- which must fail assertion 4 and nothing else.
+
+usage: tools/test-cmd-stream.py [--no-self-test]
 """
 from __future__ import annotations
 
@@ -45,8 +48,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
 from common import frames                            # noqa: E402
-from planner.cmd_stream import (CmdStream, TourPacer, TRAJECTORY_STATUS_COMPLETED,   # noqa: E402
-                                TRAJECTORY_STATUS_EMPTY, TRAJECTORY_STATUS_READY, FRAME_L)
+from planner.cmd_stream import (CmdStream, TourPacer, FRAME_L,   # noqa: E402
+                                TRAJECTORY_STATUS_COMPLETED, TRAJECTORY_STATUS_READY)
 
 
 def read_world(path):
@@ -63,146 +66,111 @@ def corners_of(world):
     return c
 
 
-def legs_of(corners, spacing):
-    """The legs exactly as `planner/rectangle_source.py` builds them: OPEN polylines, one per edge."""
-    out = []
-    for i in range(len(corners)):
-        a = np.asarray(corners[i], dtype=float)
-        b = np.asarray(corners[(i + 1) % len(corners)], dtype=float)
-        n = max(2, int(float(np.linalg.norm(b - a)) / max(spacing, 1e-3)) + 1)
-        out.append(np.linspace(a, b, n))
-    return out
+def tour_targets(corners):
+    """The tour exactly as `planner/rectangle_source.py::tour_targets` builds it: five waypoints."""
+    corners = np.asarray(corners, dtype=float)
+    return np.vstack([corners, corners[0:1]])
 
 
-def leg_len_w(leg):
-    return float(np.sum(np.linalg.norm(np.diff(np.asarray(leg)[:, :2], axis=0), axis=1)))
-
-
-def drive(corners, legs, hold_s, rate, speed, calib, arrive_m=0.10, leg_start_m=0.30,
-          timeout_s=20.0, wrong=None):
+def drive(corners, hold_s, rate, speed, calib, arrive_m=0.06, settle_speed=0.08, settle_s=3.0,
+          timeout_s=20.0, wrong=None, ring=False, on_pad_s=0.0):
     """Fly the tour on a clock this function owns, and return the samples the stream produced.
 
-    The vehicle is a point that always moves TOWARD the corner the pacer is currently asking for, at
-    `speed`, and stands still while the pacer dwells.  Its position is therefore a function of the
-    pacer's own state -- which is what makes the arrival gate fire on the REAL horizontal distance
-    (test 1/2/3 need that) and what makes this a simulation of the closed loop rather than of a table.
+    The vehicle is a point that always moves TOWARD the waypoint the pacer is currently asking for and
+    stands still while the pacer dwells, so its position is a function of the pacer's own state -- a
+    simulation of the closed loop rather than of a table.
 
-    `wrong` applies one deliberate defect to the producer, for the negative controls.
+    `ring` reproduces the MEASURED arrival: the vehicle reaches the corner, overshoots ~0.25 * e^{-t/2} m
+    along the leg and comes back (~0.19 m peak at 1.5 s, inside 0.06 m again at ~3.5 s).  It is what
+    assertion 4 exists for.  `on_pad_s` keeps the vehicle on the ground (W altitude 0) for that long
+    first, which is what the leg clocks must refuse to run through.
     """
-    corners = np.asarray(corners, dtype=float)
-    n_leg = len(legs)
-    pacer = TourPacer(corners, n_leg, hold_s, arrive_m, leg_start_m, timeout_s, 0.0,
-                      leg_len_w=lambda i: leg_len_w(legs[i]), empty_mark_s=2.0, leg_speed=speed)
-    # THE LEGS IN L, computed exactly as the producer does: `R_LW @ (p_w - t_WL)`.  The command stream
-    # takes these, not the W corners, so what it calls L is L by construction.
+    targets_w = tour_targets(corners)
+    n_leg = len(targets_w)
+    pacer = TourPacer(targets_w, hold_s, arrive_m, settle_speed, settle_s, timeout_s, 0.0,
+                      seg_len_w=lambda i: float(np.linalg.norm(targets_w[i][:2] -
+                                                               (targets_w[i - 1][:2] if i else
+                                                                corners[0][:2]))),
+                      leg_speed=speed)
     R_LW = calib.R_WL.T
-    legs_l = [(R_LW @ (np.asarray(leg, dtype=float) - calib.t_WL).T).T for leg in legs]
-    stream = CmdStream(pacer, rate, legs_l, trajectory_id=1)
+    targets_l = (R_LW @ (targets_w - calib.t_WL).T).T
+    stream = CmdStream(pacer, rate, targets_l, trajectory_id=1)
 
     if wrong == "rate":
-        # a stream that DECLARES `rate` but emits at half of it.  `period` is what `due`/`advance` use,
-        # so this is the honest way to lie about a rate, and the self-clocking check must catch it.
         stream.period = 2.0 / rate
+    if wrong == "settle-off":
+        pacer.settle_speed_mps = 1e9          # the dwell starts on the raw radius crossing again
 
-    # THE SIMULATION'S TIME STEP IS A DIVISOR OF THE STREAM'S PERIOD, and that is not cosmetic: the
-    # stream emits on a grid of `period`, so a clock that advances by an amount that does not divide the
-    # period makes the EMISSION times land on a coarser grid (measured: a 2 ms step with a 10 ms period
-    # produced 12 ms spacing, which the self-clocking assertion reports as a 2 ms error and would be a
-    # false failure).  The pacer still gets steps of ~1 ms or finer, as a 50 Hz streaming loop would.
-    k = max(1, int(math.ceil(rate / 1000.0)))         # >= 1000 Hz of pacer steps
+    k = max(1, int(math.ceil(rate / 1000.0)))         # >= 1000 pacer steps per second
     micro = (1.0 / rate) / k
     t = 0.0
     max_t = 400.0
-    samples = []                          # (t, CmdSample, leg_index, dwelling, done)
-    pb = corners[0][:2].copy()
-    dist_left = float(np.linalg.norm(corners[1 % len(corners)][:2] - pb))
+    samples = []
+    z_mission = float(corners[0][2])
+    # THE PAD IS W's ORIGIN: the world file's arena is centred on it and the mission square sits at
+    # x[0.5, 2.5] y[0.4, 1.6], so the entry leg is 0.64 m -- the leg the FSM's own `leg1` phase flew.
+    pb = np.zeros(2)
+    t_ring = None
+    u_ring = np.array([1.0, 0.0])
+    i_last = 0
     while t < max_t:
-        if not pacer.done and not pacer.dwelling:
-            target = corners[(pacer.i_leg + 1) % len(corners)][:2]
-            step = speed * micro
-            if dist_left <= step:
-                pb = target.copy()
-            else:
-                pb = pb + (target - pb) / dist_left * step
-                dist_left -= step
-        # WHILE DWELLING the vehicle stands still: `pb` keeps whatever it arrived with, because the
-        # position loop really does stop the aircraft 5-30 mm short of its command (C1 measured 0.031 m)
-        # and the command stream must keep asking for the CORNER while that happens.  That is what makes
-        # the <= 1 mm dwell assertion mean something.
-        b = pacer.dwelling
+        # THE VEHICLE DOES NOT FLY ON THE GROUND.  The plan box starts ~25 s before take-off, and the
+        # driver has to model that or the arming rule (`TourPacer._arm`) is tested against a vehicle that
+        # is already taxiing.
+        airborne = t >= on_pad_s
+        z = z_mission if airborne else 0.0
+        v_h = 0.0
+        if pacer.i_leg != i_last:
+            i_last = pacer.i_leg
+            t_ring = None
+        if airborne and not pacer.done:
+            target = pacer.target_w[:2]
+            dist = float(np.linalg.norm(target - pb))
+            if ring and t_ring is None and dist <= arrive_m:
+                t_ring = t
+                u_ring = (target - pb) / max(dist, 1e-9)
+            if t_ring is not None:
+                # THE RING: a damped overshoot past the corner, along the direction it arrived on.  It
+                # keeps running through the DWELL, because that is what the aircraft does -- the pacer's
+                # opinion of where it is does not stop the motion.
+                # MEASURED shape (RECT11 c3): 0.1864 m from the corner 0.86 s after the arrival, back
+                # inside 0.15 m at 1.5-3.5 s -- here 0.25 * e^{-t/2} * sin(2 pi t / 4), peak 0.19 m.
+                dt_ = t - t_ring
+                d = 0.25 * math.exp(-dt_ / 2.0) * math.sin(2.0 * math.pi * dt_ / 4.0)
+                p_new = target + u_ring * d
+                v_h = float(np.linalg.norm(p_new - pb)) / micro if micro > 0 else 0.0
+                pb = p_new
+            elif not pacer.dwelling:
+                step = speed * micro
+                if dist <= step:
+                    pb = target.copy()
+                    v_h = 0.0
+                else:
+                    pb = pb + (target - pb) / dist * step
+                    v_h = speed
+        p_w = np.array([pb[0], pb[1], z])
         pacer.odom_n = int(t * 200) + 1
         pacer.odom_wall = t
-        # THE FRAMES, explicitly, because getting them wrong is what this whole refactor is about:
-        #   * `pacer.step` takes the vehicle in W -- that is the frame the legs and the arrival gate are
-        #     in (`here_w()` in the producer), so the driver hands it the raw world point;
-        #   * the LIO sample the producer actually receives is that point's L image, which is what the
-        #     driver would have to write if it were a sensor.  It is computed for the record only.
-        p_w = np.array([pb[0], pb[1], corners[0][2]])
-        lio_l = (calib.R_WL.T @ (p_w - calib.t_WL))       # == R_LW @ (p_w - t_WL), the producer's W->L
-        if float(np.linalg.norm((calib.R_WL @ lio_l + calib.t_WL) - p_w)) >= 1e-12:
-            raise AssertionError("the driver's own W->L->W round trip is not exact")
-        pacer.step(p_w, t)
-        if b and not pacer.dwelling:
-            # the dwell is over: the next leg starts at the corner the vehicle is STANDING ON, not at the
-            # point it happened to stop on.  That is the producer's own rule (a leg's clock arms within
-            # `--leg-start-m` of the leg's START corner), and resetting here keeps the arrival error from
-            # accumulating across four corners into a miss.
-            pb = corners[pacer.i_leg][:2].copy()
-            dist_left = float(np.linalg.norm(corners[(pacer.i_leg + 1) % len(corners)][:2] - pb))
+        pacer.step(p_w, v_h, t)
         if stream.next_t is None:
             stream.next_t = t
         if stream.due(t):
             s = stream.sample()
             if wrong == "dwell-offset" and pacer.dwelling:
-                # the dwell is reported 5 mm off the corner -- the 1 mm assertion must catch it
                 s.p = np.asarray(s.p, dtype=float) + np.array([0.005, 0.0, 0.0])
-            samples.append((t, s, pacer.i_leg, pacer.dwelling, pacer.done))
+            # the LAST field is the VEHICLE's horizontal distance from the waypoint the stream is
+            # commanding -- what `tools/dwell-audit.py` measures from the tap on a real flight.
+            samples.append((t, s, pacer.i_leg, pacer.dwelling, pacer.done,
+                            float(np.linalg.norm(pb - pacer.target_w[:2]))))
             stream.advance(t)
         t += micro
-        # Stop `--empty-mark-s` after the COMPLETED statement, as the producer's loop does (the command
-        # stream keeps publishing for that window so a consumer that is still settling cannot miss it,
-        # and the message is latched, so a later joiner still finds it).  The test must not read the
-        # silence after that window, and the break has to be tested on the TIME, not on
-        # `t - samples[-1][0]`: the pacer stops stepping once it is done, so the sample times stop
-        # advancing with the clock and the difference never grows -- MEASURED: that version of this loop
-        # ran to its 400 s cap and reported a 360 s "done" segment, which is a property of the test and
-        # not of the stream.
-        if pacer.done and t >= pacer.t_done + 2.0:
+        if pacer.done and t >= pacer.t_done + 0.5:
             break
     return samples, pacer, stream
 
 
-def seg_distance(p, leg):
-    """Horizontal distance from `p` to the leg's polyline (the published geometry)."""
-    pts = np.asarray(leg, dtype=float)[:, :2]
-    p = np.asarray(p, dtype=float)[:2]
-    best = float("inf")
-    for i in range(len(pts) - 1):
-        a, b = pts[i], pts[i + 1]
-        d = b - a
-        L2 = float(d @ d)
-        if L2 < 1e-18:
-            best = min(best, float(np.linalg.norm(p - a)))
-            continue
-        u = max(0.0, min(1.0, float((p - a) @ d) / L2))
-        best = min(best, float(np.linalg.norm(p - (a + u * d))))
-    return best
-
-
-def check(name, got, want, tol):
-    good = abs(float(got) - float(want)) <= tol
-    print("   %-72s %s" % (name, "ok" if good else "FAIL got=%.6f want=%.6f (tol %.6g)"
-                           % (got, want, tol)))
-    return good
-
-
 def group_samples(samples):
-    """The samples grouped into maximal runs of one (leg, dwelling, done) state.
-
-    A "segment" is what the stream said without changing its mind: a flight along one leg, a dwell on one
-    corner, or the COMPLETED statement at the end.  Every assertion below is about a segment, because
-    "the dwell lasted 5 s" is only a statement about a segment.
-    """
+    """The samples grouped into maximal runs of one (waypoint, dwelling, done) state."""
     groups = []
     for row in samples:
         key = (row[2], row[3], row[4])
@@ -213,143 +181,139 @@ def group_samples(samples):
     return groups
 
 
-def run_checks(samples, corners, legs, hold_s, rate, calib, legs_l=None, quiet=False):
-    """Every assertion of the contract, expressed once so the controls can reuse it."""
+def run_checks(samples, corners, hold_s, rate, calib, quiet=False, ring=False):
     problems = []
-    if legs_l is None:                    # default: convert here, so a control cannot forget to
-        R_LW = calib.R_WL.T
-        legs_l = [(R_LW @ (np.asarray(leg, dtype=float) - calib.t_WL).T).T for leg in legs]
-
-    def bad(msg):
-        problems.append(msg)
-        if not quiet:
-            print("   FAIL %s" % msg)
+    targets_w = tour_targets(corners)
 
     def ok(cond, msg):
         if not cond:
-            bad(msg)
+            problems.append(msg)
+            if not quiet:
+                print("   FAIL %s" % msg)
         return cond
 
-    # ---- 1. on the commanded path, within 1 mm -----------------------------------------------------
-    # The stream is in L and the legs are in W, so the comparison goes through the calibration once --
-    # and test 2 below is what proves that conversion is the right one.  Comparing the raw numbers would
-    # be comparing two frames, which is the mistake this refactor exists to remove.
     def to_w(p_l):
         return calib.R_WL @ np.asarray(p_l, dtype=float) + calib.t_WL
 
+    # ---- 1. every streamed position IS a waypoint of the tour, exactly -----------------------------
     worst = 0.0
-    for t, s, i_leg, dwell, done in samples:
+    for t, s, i_leg, dwell, done, d_self in samples:
         p_w = to_w(s.p)
-        if dwell or done:
-            d = float(np.linalg.norm(p_w[:2] - corners[(i_leg + 1) % len(corners)][:2]))
-        else:
-            d = seg_distance(p_w, legs[i_leg])
-        worst = max(worst, d)
-    ok(worst <= 1e-3, "the streamed positions are not on the commanded path: worst %.6f m > 1 mm"
-       % worst)
+        worst = max(worst, float(np.linalg.norm(p_w - targets_w[min(i_leg, len(targets_w) - 1)])))
+    ok(worst <= 1e-9, "a streamed position is not the waypoint it claims: worst %.3e m" % worst)
 
-    # ---- 2. in L, and consistent with the W corner that is actually commanded ----------------------
-    worst_w = 0.0
-    for t, s, i_leg, dwell, done in samples:
-        if dwell or done:
-            want_w = corners[(i_leg + 1) % len(corners)]
-            got_w = to_w(s.p)
-            worst_w = max(worst_w, float(np.linalg.norm(got_w - want_w)))
-    ok(worst_w <= 1e-9, "R_WL @ p_L + t_WL does not reproduce the commanded W corner: worst %.3e m"
-       % worst_w)
+    # ---- 2. the stream is in L ----------------------------------------------------------------
+    ok(all(s[1].frame_id == FRAME_L for s in samples),
+       "a sample's frame_id is not %r" % FRAME_L)
 
-    # ---- 3. the dwell is content ------------------------------------------------------------------
-    # group consecutive samples by (leg, dwell, done)
+    # ---- 3. the dwell is content, and there is one per corner of the tour, none on the entry ------
     groups = group_samples(samples)
     dwells = [(k, g) for k, g in groups if k[1] and not k[2]]
-    ok(len(dwells) == len(corners), "expected %d corner dwells, got %d" % (len(corners), len(dwells)))
+    ok(len(dwells) == len(targets_w) - 1,
+       "expected %d corner dwells (the tour's corners; the entry waypoint has none), got %d"
+       % (len(targets_w) - 1, len(dwells)))
     for k, g in dwells:
         i_leg = k[0]
-        # THE DWELL IS MEASURED IN SAMPLES, not wall time: the last sample of the segment is emitted one
-        # period BEFORE the dwell ends (the dwell ends on the pacer's next micro-step), so the sample
-        # span is `hold_s - period` at worst.  `tools/dwell-audit.py` measures the flown dwell the same
-        # way -- from samples, at a radius -- which is why the tolerance is one sample period and not 0.
+        corner = targets_w[i_leg]
         span = g[-1][0] - g[0][0]
-        corner = corners[(i_leg + 1) % len(corners)]
-        off = max(float(np.linalg.norm(to_w(r[1].p)[:2] - corner[:2])) for r in g)
+        off = max(float(np.linalg.norm(to_w(r[1].p) - corner)) for r in g)
         vmax = max(float(np.linalg.norm(r[1].v)) for r in g)
         amax = max(float(np.linalg.norm(r[1].a)) for r in g)
-        ok(span >= hold_s - stream_period(rate) - 1e-9,
-           "dwell at corner %d lasted %.4f s < hold_s %.4f s (one sample period %.4f s is allowed)"
-           % ((i_leg + 1) % len(corners), span, hold_s, stream_period(rate)))
-        ok(off <= 1e-3, "dwell at corner %d is %.6f m off the corner (> 1 mm)"
-           % ((i_leg + 1) % len(corners), off))
-        ok(vmax == 0.0, "dwell at corner %d carries velocity %.6g, not 0"
-           % ((i_leg + 1) % len(corners), vmax))
-        ok(amax == 0.0, "dwell at corner %d carries acceleration %.6g, not 0"
-           % ((i_leg + 1) % len(corners), amax))
-    # ---- 2b. the yaw is the LEG's tangent in L (the Path's per-point convention, one number) --------
-    # The stream's yaw while FLYING leg i is leg i's own tangent; while DWELLING on the corner that leg i
-    # ends on it is leg i's tangent too (the heading it arrived on and holds).  Both are read from the L
-    # leg geometry, which is the same source the Path's per-point yaw comes from.
-    for k, g in groups:
-        i_leg = k[0]
-        want = CmdStream._leg_yaw(legs_l[i_leg % len(legs_l)])
-        got = g[0][1].yaw
-        ok(abs(math.atan2(math.sin(got - want), math.cos(got - want))) < 1e-9,
-           "yaw of leg %d is %.6f rad, the leg's own tangent in L is %.6f" % (i_leg, got, want))
+        ok(span >= hold_s - 1.0 / rate - 1e-9,
+           "dwell at waypoint %d lasted %.4f s < hold_s %.4f s (one sample period allowed)"
+           % (i_leg + 1, span, hold_s))
+        ok(off <= 1e-9, "dwell at waypoint %d is %.3e m off the corner" % (i_leg + 1, off))
+        ok(vmax == 0.0, "dwell at waypoint %d carries velocity %.6g, not 0" % (i_leg + 1, vmax))
+        ok(amax == 0.0, "dwell at waypoint %d carries acceleration %.6g, not 0" % (i_leg + 1, amax))
 
-    # ---- 4. self-clocked: the samples of a segment are one period apart ----------------------------
-    dev = 0.0
-    n_pairs = 0
+    # ---- 4. THE DWELL CLOCK STARTS ON SETTLED (F1 change 8) ----------------------------------------
+    #
+    # The statement that matters is not about the COMMAND (which always says "the corner") but about the
+    # VEHICLE: `tools/dwell-audit.py` measures, from the truth tap, the longest stretch during which the
+    # aircraft is inside a 0.15 m radius of the corner, and requires >= 5.0 s.  The same measurement is
+    # made here on the driver's vehicle, so the RING control -- the measured RECT11 c3 behaviour -- fails
+    # when the dwell clock starts on the raw radius crossing instead of on the settled arrival.
+    RADIUS = 0.15
+    for k, g in dwells:
+        d0 = g[0][5]
+        ok(d0 <= 0.06 + 1e-9,
+           "the dwell at waypoint %d STARTED with the vehicle %.4f m from the corner (> --arrive-m)"
+           % (k[0] + 1, d0))
+        # the longest CONTIGUOUS stretch with the vehicle inside the judging radius, in samples
+        best = run = 0
+        for row in g:
+            run = run + 1 if row[5] <= RADIUS else 0
+            best = max(best, run)
+        flown = best / rate
+        ok(flown >= hold_s - 1.0 / rate - 1e-9,
+           "the FLOWN dwell at waypoint %d is %.3f s inside the %.2f m radius, shorter than the %.1f s "
+           "commanded: the dwell clock is running from the first radius crossing, so the arrival ring "
+           "spends part of it outside the radius" % (k[0] + 1, flown, RADIUS, hold_s))
+    if ring:
+        starts = [g[0][0] for _, g in dwells]
+        ok(min(starts) >= 2.0, "with a ring, the first dwell started at %.3f s -- the vehicle cannot have "
+                               "settled by then" % min(starts))
+
+    # ---- 5. self-clocked --------------------------------------------------------------------------
+    dev, n_pairs = 0.0, 0
     for k, g in groups:
         for a, b in zip(g, g[1:]):
-            dev = max(dev, abs((b[0] - a[0]) - stream_period(rate)))
+            dev = max(dev, abs((b[0] - a[0]) - 1.0 / rate))
             n_pairs += 1
-    ok(n_pairs > 0 and dev <= 1e-6, "the stream is not self-clocked at %g Hz: worst spacing error "
-       "%.3e s over %d pairs" % (rate, dev, n_pairs))
+    ok(n_pairs > 0 and dev <= 1e-6,
+       "the stream is not self-clocked at %g Hz: worst spacing error %.3e s over %d pairs"
+       % (rate, dev, n_pairs))
     total = samples[-1][0] - samples[0][0]
     measured = (len(samples) - 1) / total if total > 0 else float("inf")
     ok(abs(measured - rate) <= 0.02 * rate,
        "the stream's own rate is %.3f Hz, declared %g Hz (2%% band)" % (measured, rate))
 
-    # ---- 5. the last message carries COMPLETED, and EMPTY precedes the first leg -------------------
+    # ---- 6. trajectory_id increments once per waypoint, and never 0 -------------------------------
+    ids = [s[1].trajectory_id for s in samples]
+    ok(all(i != 0 for i in ids), "a sample carries trajectory_id 0, which the message documents as "
+                                 "'no trajectory yet'")
+    ok(ids == sorted(ids), "trajectory_id goes backwards: %s" % ids[:8])
+    ok(len(set(ids)) == len(targets_w),
+       "expected %d distinct trajectory_ids (one per waypoint -- they are what the consumer turns into "
+       "the leg phases), got %d" % (len(targets_w), len(set(ids))))
+
+    # ---- 7. COMPLETED last, and the stream does not go silent -------------------------------------
     ok(samples[-1][1].completed, "the last sample's trajectory_flag is %d, not COMPLETED(%d)"
        % (samples[-1][1].trajectory_flag, TRAJECTORY_STATUS_COMPLETED))
-    ok(samples[0][1].trajectory_flag == TRAJECTORY_STATUS_EMPTY,
-       "the FIRST sample's flag is %d, not EMPTY(%d) -- before the tour is armed there is nothing to fly"
-       % (samples[0][1].trajectory_flag, TRAJECTORY_STATUS_EMPTY))
-    ok(all(s[1].trajectory_id != 0 for s in samples),
-       "a sample carries trajectory_id 0, which the message documents as 'no trajectory yet'")
-    ok(all(s[1].frame_id == FRAME_L for s in samples),
-       "a sample's frame_id is not %r" % FRAME_L)
+    done_groups = [(k, g) for k, g in groups if k[2]]
+    ok(len(done_groups) == 1 and len(done_groups[0][1]) >= 10,
+       "the COMPLETED statement is not a sustained stream (%d group(s)): the F2 supervisor must be able "
+       "to tell 'finished' from 'stopped talking'" % len(done_groups))
+    ok(all(s[1].trajectory_flag == TRAJECTORY_STATUS_READY
+           for s in samples if not s[4]), "a non-final sample does not carry READY")
     ok(all(list(s[1].kx) == [0.0] * 3 and list(s[1].kv) == [0.0] * 3 for s in samples),
        "kx/kv are not zero: the message has no gain fields on the wire (msg 84) and ego also sends zeros")
     return problems
 
 
-def stream_period(rate):
-    return 1.0 / rate
-
-
-def self_test(args, corners, legs, calibs):
-    """The negative controls: mutate the producer (never the test) and require a failure."""
+def self_test(corners, args, calib):
+    """The negative controls: mutate the PRODUCER (never the test) and require a failure."""
     ok = True
     controls = [
-        ("dwell position moved 5 mm off the corner", "dwell-offset", "1 mm"),
-        ("a rate declared at 100 Hz but emitted at 50 Hz", "rate", "self-clocked"),
-        ("a stream that never says COMPLETED", "nocomplete", "COMPLETED"),
+        ("dwell position moved 5 mm off the corner", dict(wrong="dwell-offset"), "off the corner"),
+        ("a rate declared at 100 Hz but emitted at 50 Hz", dict(wrong="rate"), "self-clocked"),
+        ("a stream that never says COMPLETED", dict(wrong="nocomplete"), "COMPLETED"),
+        ("the SETTLE removed: the dwell starts on the raw radius crossing",
+         dict(wrong="settle-off", ring=True), "FLOWN dwell"),
     ]
-    for label, mode, needle in controls:
+    for label, kw, needle in controls:
         print()
         print("NEGATIVE CONTROL: %s" % label)
-        if mode == "nocomplete":
-            samples, pacer, stream = drive(corners, legs, args.hold_s, args.rate, args.speed,
-                                           calibs[0])
-            # keep only the samples before the tour is declared done: the stream then ends READY, which
+        samples, pacer, stream = drive(corners, args.hold_s, args.rate, args.speed, calib,
+                                      ring=kw.pop("ring", False), **kw)
+        if kw.get("wrong") == "nocomplete":
+            # keep only what the stream said BEFORE the tour was declared done: it then ends READY, which
             # is exactly "the producer stops talking without saying it finished"
             samples = [s for s in samples if not s[4]]
-            if not samples:
-                raise SystemExit("negative control 'nocomplete' produced no samples -- control is stale")
-        else:
-            samples, pacer, stream = drive(corners, legs, args.hold_s, args.rate, args.speed,
-                                           calibs[0], wrong=mode)
-        problems = run_checks(samples, corners, legs, args.hold_s, args.rate, calibs[0], quiet=True)
+        if not samples:
+            raise SystemExit("negative control %r produced no samples -- control is stale" % label)
+        problems = run_checks(samples, corners, args.hold_s, args.rate, calib, quiet=True,
+                              ring=False)
         hit = [p for p in problems if needle in p]
         print("   the mutated producer produced %d sample(s) and the contract test reported %d "
               "problem(s)" % (len(samples), len(problems)))
@@ -364,21 +328,20 @@ def self_test(args, corners, legs, calibs):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--world", default=os.path.join(ROOT, "worlds", "pillars.yaml"))
-    ap.add_argument("--spacing", type=float, default=0.05)
     ap.add_argument("--rate", type=float, default=100.0, help="the stream's declared rate, Hz")
     ap.add_argument("--hold-s", type=float, default=5.0)
-    ap.add_argument("--speed", type=float, default=0.30)
+    ap.add_argument("--speed", type=float, default=0.50)
     ap.add_argument("--self-test", dest="self_test", action="store_true", default=True,
-                    help="run the negative controls (default: on -- a control that is not run by "
-                         "default is a control that stops being run)")
+                    help="run the negative controls (default: on -- a control that is not run by default "
+                         "is a control that stops being run)")
     ap.add_argument("--no-self-test", dest="self_test", action="store_false")
     args = ap.parse_args()
 
     world = read_world(args.world)
     corners = corners_of(world)
-    legs = legs_of(corners, args.spacing)
-    print("world %s: %d corners, %d open legs" % (os.path.basename(args.world), len(corners),
-                                                  len(legs)))
+    targets = tour_targets(corners)
+    print("world %s: %d corners -> a tour of %d waypoints (entry = corner 1)" %
+          (os.path.basename(args.world), len(corners), len(targets)))
 
     # THREE calibrations, because "the stream is in L" must not be a claim about one file: the measured
     # one the flight used, the prediction the producer falls back to, and a deliberately rotated one.
@@ -399,23 +362,48 @@ def main() -> int:
         print("=== calibration %d/%d: yaw %+.4f deg, t = [%+.4f %+.4f %+.4f] m"
               % (i, len(cals), math.degrees(math.atan2(calib.R_WL[1, 0], calib.R_WL[0, 0])),
                  *calib.t_WL))
-        samples, pacer, stream = drive(corners, legs, args.hold_s, args.rate, args.speed, calib)
-        # a breakdown, so the shape of the tour is visible and not just its verdict
+        samples, pacer, stream = drive(corners, args.hold_s, args.rate, args.speed, calib)
         for key, g in group_samples(samples):
             kind = "COMPLETED" if key[2] else ("dwell  " if key[1] else "fly    ")
-            print("   leg %d %s %6d samples  t=%8.3f..%8.3f  span %6.3f s"
-                  % (key[0], kind, len(g), g[0][0], g[-1][0], g[-1][0] - g[0][0]))
+            print("   waypoint %d %s %6d samples  t=%8.3f..%8.3f  span %6.3f s"
+                  % (key[0] + 1, kind, len(g), g[0][0], g[-1][0], g[-1][0] - g[0][0]))
         print("   %s" % stream.summary())
-        print("   pacer: done=%s, legs flown=%d" % (pacer.done, pacer.i_leg + 1))
+        print("   pacer: done=%s, waypoints commanded=%d of %d" % (pacer.done, pacer.i_leg + 1,
+                                                                   len(targets)))
         if not pacer.done:
             problems.append("calibration %d: the tour never completed (pacer.i_leg=%d)"
                             % (i, pacer.i_leg))
         problems += ["calib %d: %s" % (i, p) for p in
-                     run_checks(samples, corners, legs, args.hold_s, args.rate, calib)]
+                     run_checks(samples, corners, args.hold_s, args.rate, calib)]
+
+    # ---- 8. the ring: the dwell clock must wait for the vehicle to be SLOW, not merely inside ------
+    print()
+    print("=== the MEASURED arrival ring (RECT11 c3 / RECT21 c3): 0.25 m overshoot, back inside "
+          "0.06 m at ~3.5 s")
+    samples, pacer, stream = drive(corners, args.hold_s, args.rate, args.speed, cals[0], ring=True)
+    for key, g in group_samples(samples):
+        if key[1] and not key[2]:
+            print("   dwell at waypoint %d starts at t=%.3f s, %.4f m from the corner"
+                  % (key[0] + 1, g[0][0], g[0][5]))
+    problems += ["ring: %s" % p for p in
+                 run_checks(samples, corners, args.hold_s, args.rate, cals[0], ring=True)]
+
+    # ---- 9. the clocks do not run while the vehicle is on the pad ---------------------------------
+    print()
+    print("=== on the pad for 30 s before take-off (the plan box starts ~25 s before the aircraft moves)")
+    samples, pacer, stream = drive(corners, args.hold_s, args.rate, args.speed, cals[0], on_pad_s=30.0)
+    early = [s for s in samples if s[0] < 30.0]
+    moved = sorted({s[2] for s in early})
+    if moved != [0]:
+        problems.append("the tour ADVANCED while the vehicle was on the pad: waypoints %s commanded "
+                        "before take-off" % moved)
+    else:
+        print("   ok: %d samples in the first 30 s, all commanding waypoint 1 (no leg clock ran, and no "
+              "leg timeout fired, while the aircraft sat on the pad)" % len(early))
 
     ok = not problems
     if args.self_test:
-        ok = self_test(args, corners, legs, cals) and ok
+        ok = self_test(corners, args, cals[0]) and ok
 
     print()
     if problems:

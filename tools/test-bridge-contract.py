@@ -243,8 +243,10 @@ def check(root, base_path=None, quiet=False):
             params = inspect.signature(impl_attr).parameters
             # the call `self.bridge.f(a, b)` reaches a bound method, so `self` is already supplied:
             # the number of parameters the IMPLEMENTATION requires must be <= 1 (self) + the caller's
-            # positional count.  `mission_fsm.py:391` calls `send_position_velocity(cmd, vel, yaw)`
-            # while `send_position_velocity` declares `a_f=None`, which is why the default is allowed.
+            # positional count.  `bridge/bridge_node.py` calls `send_cmd(s, self.calib, yaw_rad=...,
+            # fields=...)` and `fsm/mission_fsm.py` calls `send_cmd(c, self.calib, yaw_rad=..., ...)`,
+            # i.e. two positional arguments against the four the implementation declares -- which is why
+            # only the REQUIRED parameters are compared and the defaulted ones are allowed to be omitted.
             if len(req) - 1 > _call_arity(rel, lineno, root):
                 problems.append("%s:%d calls bridge.%s with too few arguments: MavlinkBridge requires %s"
                                 % (rel, lineno, name, [p for p in req if p != "self"]))

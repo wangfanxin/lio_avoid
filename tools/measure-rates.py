@@ -41,7 +41,7 @@ def csv_rate(path, tcol_us, label, skip_header=True):
 
 csv_rate(f"{run}/tap.csv", "t_us", "truth tap (UDP -> CSV, NED 1200 Hz)")
 csv_rate(f"{run}/lio.csv", "t_us", "/lio/robo/odom -> lio.csv (L, zero twist)")
-csv_rate(f"{run}/traj.csv", "t_us", "/planner/traj -> traj.csv (L, Path)")
+csv_rate(f"{run}/traj.csv", "t_us", "/plan/cmd -> traj.csv (L, PositionCommand)")
 csv_rate(f"{run}/setpoints.csv", "t_us", "setpoint 84 -> setpoints.csv (F)")
 csv_rate(f"{run}/cloud.csv", "t_us", "/lio/cloud_world -> cloud.csv")
 

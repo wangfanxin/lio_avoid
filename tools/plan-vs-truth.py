@@ -89,7 +89,7 @@ def main() -> int:
     if P.ndim == 0:
         P = P.reshape(1)
     if len(hdr) == 0 or len(P) == 0:
-        print("the recording is empty: no /planner/traj message arrived during the run", file=sys.stderr)
+        print("the recording is empty: no plan message arrived during the run (F1: the plan box publishes /plan/cmd)", file=sys.stderr)
         return 1
     calib = load_calib(args.calib)
     world = yaml.safe_load(open(args.world))

@@ -80,6 +80,19 @@ if [ -n "$EKF_PARM" ]; then
     EKF_ARG=",$EKF_PARM"
     EKF_NAME="$(basename "$EKF_PARM" .parm)"
 fi
+# THE DWELL, AND WHY THE HARNESS SETS IT (F1, 2026-10-16).  The owner's requirement is a hover at every
+# corner, and the number is 5.0 s (`docs/PLAN.md`).  It used to be passed only when the caller exported
+# RECT_HOLD_S; with it unset the producer's `--hold-s -1` read `mission.hold_s` out of the FROZEN world
+# file, which is **3.0** -- and STATUS row 42 is the measured consequence of that value: the default
+# configuration flew one leg and landed.  The default is now the requirement, and which one was used is
+# PRINTED at start-up rather than inferred from the log afterwards.
+if [ -n "${RECT_HOLD_S:-}" ]; then
+    RECT_HOLD_FROM="the CALLER (RECT_HOLD_S=$RECT_HOLD_S)"
+else
+    RECT_HOLD_S=5.0
+    RECT_HOLD_FROM="THE HARNESS DEFAULT (RECT_HOLD_S was not set)"
+fi
+WORLD_HOLD_S="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["mission"].get("hold_s", "unset"))' "$WORLD" 2>/dev/null || echo unreadable)"
 
 set +u
 source /opt/ros/humble/setup.bash
@@ -132,6 +145,8 @@ printf 'model=%s\nfirmware=FRAME_CLASS 1 / FRAME_TYPE 1 (X mixer)\nrule=the SITL
     "$SITL_MODEL" > "$OUT/airframe.txt"
 echo "   sensor    : the SAME world file ($REPO/sim/lidar_imu.py --world \"$WORLD\")"
 echo "   geofence  : $GEOFENCE_M m, take-off altitude $TAKEOFF_ALT m"
+echo "   dwell     : ${RECT_HOLD_S} s at every corner -- from ${RECT_HOLD_FROM}; the world file's"
+echo "               mission.hold_s is ${WORLD_HOLD_S} and is deliberately NOT what a default sortie flies"
 echo "   run dir   : $OUT"
 echo
 
@@ -275,39 +290,31 @@ fi
 # THE PLAN, recorded next to the truth.  Without it "the gate cannot see the truth" is an argument, not a
 # measurement: MEASURED 2026-10-14 the truth spent 55.9 % of a 12-stop flight inside the 0.20 m contract
 # while every published path had been verified clear, and there was no record of those paths to compare
-# against.  tools/record-traj.py writes every Path message plus its own minimum clearance -- and since
-# 2026-10-15 it takes the SAME --calib-file as the FSM and the producer, because the path arrives in L and
+# against.  tools/record-traj.py writes every plan message plus its own minimum clearance -- and since
+# 2026-10-15 it takes the SAME --calib-file as the FSM and the producer, because the plan arrives in L and
 # the world file is in W: without it `clr_m` read -0.2972 m for a plan that is +0.6000 m clear.
-python3 "$REPO/tools/record-traj.py" --topic /planner/traj --csv "$OUT/traj.csv" \
+#
+# F1 (2026-10-16): THE TOPIC MOVED WITH THE INTERFACE, IN THE SAME CHANGE.  The plan box no longer
+# publishes `nav_msgs/Path`; its output is the command stream on /plan/cmd, and this recorder now reads
+# that (`--msg position_cmd`).  Design risk R5 is exactly this line: had the recorder stayed on the Path,
+# every run would have lost its plan-clearance column and nobody would have noticed until an audit.
+python3 "$REPO/tools/record-traj.py" --topic /plan/cmd --msg position_cmd --csv "$OUT/traj.csv" \
     --world "$WORLD" $TRAJ_CALIB_ARG > "$OUT/rectraj.log" 2>&1 &
 RECT_PID=$!
 sleep 3
 
 echo "== flying =="
-# THE TRAJECTORY SOURCE.  `planner/rectangle_source.py` publishes the mission's corners on
-# /planner/traj -- the same interface an external planner used to publish on -- and the FSM does not know
-# or care who produces it.  It is the only source there is: the ego-planner line was dropped on
-# 2026-10-15 and its adapter, its station list and its switches went with it.
-#
-# RECT_HOLD_S=5 -> hover 5 s at every corner.  The producer then publishes ONE LEG PER MESSAGE, ADVANCES ON
-# ARRIVAL (it subscribes /lio/robo/odom and converts L->W with the SAME calibration it publishes with) and
-# holds each corner for that long before it publishes the next leg; the FSM accepts the next leg
-# mid-mission and keeps commanding the corner it is parked on while it waits -- that interval is the hover.
-# 0/unset = one continuous path (the old behaviour, RECT6's configuration).
-#
-# THE TWO CLOCKS ARE ONE NUMBER.  The FSM must not give up on the tour while the producer is legitimately
-# dwelling, so its wait for the next leg is derived from the same RECT_HOLD_S (+10 s of arrival detection
-# and publish slack) instead of being a second default in a second file.
-NEXT_LEG_ARG=""
-if [ -n "${RECT_HOLD_S:-}" ]; then
-    NEXT_LEG_ARG="--next-leg-wait-s $(awk -v h="$RECT_HOLD_S" 'BEGIN{printf "%.1f", h + 10.0}')"
-fi
+# THE TRAJECTORY SOURCE, which since F1 is ALSO THE EXECUTOR: `planner/rectangle_source.py` publishes the
+# mission's five waypoints as a `quadrotor_msgs/PositionCommand` stream on /plan/cmd (100 Hz, its own wall
+# timer), decides ARRIVAL + SETTLE + DWELL itself from `/lio/robo/odom`, and declares the tour complete with
+# `trajectory_flag = COMPLETED`.  `fsm/mission_fsm.py` relays that stream to MAVLink 84 at 50 Hz, owns the
+# preflight/take-off/gates/LAND/abort and windows the metrics with the `leg` phases it reads off the stream.
 python3 "$REPO/planner/rectangle_source.py" --world "$WORLD" $TRAJ_CALIB_ARG \
-    ${RECT_HOLD_S:+--hold-s "$RECT_HOLD_S"} > "$OUT/traj.log" 2>&1 &
+    --hold-s "$RECT_HOLD_S" \
+    ${CMD_ARGS:-} > "$OUT/traj.log" 2>&1 &
 TRAJ_PID=$!
 python3 "$REPO/fsm/mission_fsm.py" --nav-source "$NAV_SOURCE" $CALIB_ARG \
     --tap-port 0 --alt "$TAKEOFF_ALT" --hold 3.0 --geofence-m "$GEOFENCE_M" ${FSM_ARGS:-} \
-    ${NEXT_LEG_ARG} \
     ${YAW_MODE:+--yaw-mode "$YAW_MODE"} \
     --phase-log "$OUT/phase.csv" --setpoint-log "$OUT/setpoints.csv" > "$OUT/fsm.log" 2>&1
 FSM_RC=$?

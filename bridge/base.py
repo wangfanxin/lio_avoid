@@ -24,13 +24,17 @@ not a description of a file.  Writing that file is deliberately NOT part of the 
 (refactor-bridge-plan.md section 8 item 11).  Recorded for the later documentation round in
 `_stage/refactor-S2-findings.txt`.
 
-WHAT THIS FILE IS FOR (and why it was completed on 2026-10-16).  The mission calls three methods that
-this class did not declare -- `send_position_velocity` (`fsm/mission_fsm.py:388`, `:391`),
-`set_ekf_origin` (`:572`), `calibrate_accel_simple` (`:582`) -- and reaches into implementation privates
-for its own final log (`:972-973`, `self.bridge._sent_positions` / `._sent_nav`).  A contract that the
-only caller does not obey is not a contract, so the declarations below were completed and
-`tools/test-bridge-contract.py` now makes the claim enforceable: every `self.bridge.<name>` used anywhere
-in the tree must resolve on `Bridge`, and deleting one declaration fails that test.
+WHAT THIS FILE IS FOR (completed 2026-10-16 in S2, and made SINGLE-CONTRACT in F1).  In S2 the mission
+called three methods this class did not declare -- `send_position_velocity`, `set_ekf_origin`,
+`calibrate_accel_simple` -- and reached into implementation privates for its own final log; the
+declarations were completed and `tools/test-bridge-contract.py` makes the claim enforceable.  F1 then
+removed the reason the setpoint half was ambiguous: there were THREE setpoint writers with TWO frame
+contracts (`send_position`/`send_position_velocity`/`send_velocity` took `F`/`W` numbers, `send_cmd` takes
+`L`), and a caller had to know which it was calling.  All three are DELETED, with their call sites: the
+plan box's command stream reaches the wire through `send_cmd` and nothing else, and the estimator input
+through `send_external_nav_l` (L) or `send_external_nav` (F, the truth-fed calibration flight only).  The
+frame a caller speaks is now part of every method's NAME, which is the only version of this contract that
+a reader cannot get wrong.
 """
 from __future__ import annotations
 
@@ -117,37 +121,40 @@ class Bridge:
         """
         raise NotImplementedError
 
-    def send_position(self, p_f, yaw_rad: float) -> None:
-        """Streamed at 50 Hz by the FSM: LOCAL_NED position + yaw, the two things GUIDED accepts."""
-        raise NotImplementedError
+    def send_external_nav(self, t_us: int, p_f, q_f, v_f=None) -> None:
+        """The LIO's pose in **F** (ENU labels, z up).  This is what makes the EKF work.
 
-    def send_velocity(self, v_f, yaw_rad: float) -> None:
-        raise NotImplementedError
-
-    def send_position_velocity(self, p_f, v_f, yaw_rad: float, a_f=None) -> None:
-        """Position AND velocity (and acceleration when given) in ONE setpoint -- msg 84, `POS_VEL_YAW`
-        or `POS_VEL_ACC_YAW`.  This is the arm of `--setpoint-mode` the mission actually flies
-        (`fsm/mission_fsm.py:388`, `:391`); `a_f=None` means "do not send acceleration", which is not
-        the same as sending zeros (the type mask changes with it).
+        Since F1 the mission feeds this through `send_external_nav_l`; the only caller left that speaks F
+        is the CALIBRATION flight (`--nav-source truth`), whose whole purpose is to measure L -> F and
+        which therefore cannot use the calibration it is measuring.
         """
         raise NotImplementedError
 
-    def send_external_nav(self, t_us: int, p_f, q_f, v_f=None) -> None:
-        """The LIO's pose (and velocity) in F, ENU labels, z up.  This is what makes the EKF work."""
+    def send_external_nav_l(self, t_us: int, p_l, q_l, v_l, calib) -> None:
+        """The LIO's pose in **L**, placed on the wire in ONE conversion (F1).
+
+        `p_f = R_WL @ p_L + t_WL`, `q_f = q_from_R(R_WL @ R_from_q(q_L))`,
+        `v_f = R_WL @ v_L` -- the expression `fsm/mission_fsm.py:465-469` used to compute, in the file
+        whose docstring claims the frame boundary is crossed exactly once.  `q_l` is body-FLU -> L.
+        """
         raise NotImplementedError
 
-    def send_cmd(self, cmd_l, calib, yaw_rad=None):
+    def send_cmd(self, cmd_l, calib, yaw_rad=None, fields="pos"):
         """A command in **L** (`cmd_l.p` / `.v` / `.a` / `.yaw`), placed on the wire in ONE conversion:
         `permute(R_WL @ p_L + t_WL)` for the position, the rotation alone for velocity and acceleration,
-        yaw passed through (L and W share +z).
+        yaw passed through (it is the heading LOCAL_NED reads: 0 = North, +90 deg = East).
 
-        This is the declaration of the crossing the target architecture wants: the PLAN box speaks L
-        (its own frame, the only one a planner can know), and the BRIDGE is the one place the frame
-        boundary is crossed.  `calib` is the SAME `common.frames.Calib` (W <- L) that the plan box and
-        the preflight measurement use; the transport does not own it, it applies it.
+        This is the PLAN box's interface and THE ONLY setpoint entry point since F1: the three F-frame
+        writers that coexisted with it are deleted, so there is nothing left for a caller to choose
+        between.  `calib` is the SAME `common.frames.Calib` (W <- L) that the plan box and the preflight
+        measurement use; the transport does not own it, it applies it.
 
         The assumption this makes explicit is "the EKF origin is the pad" (so `F` is `W` numerically).
         It was inherited silently at `fsm/mission_fsm.py:446-449`; here it is named.
+
+        `fields` selects what the wire carries -- "pos" (the flown default: position + yaw),
+        "posvel" or "posvelacc".  It is the old `--setpoint-mode`, and `mavlink_impl.send_cmd` records the
+        measurement that decides the default.
         """
         raise NotImplementedError
 
