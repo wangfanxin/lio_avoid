@@ -497,3 +497,15 @@ no occurrence of "text" at all (round 59); `self.bridge = MavlinkBridge(...)` at
 class but not its file (round 60); and `class MavlinkBridge` lives in `mavlink_impl.py:60` with its dispatch
 branch at `:148` (round 61).  The line is a DIAGNOSTIC, not production code: the next round can name the field
 once it has seen what it prints.
+
+=== ITEM 2 DONE (round 63): THE PRESERVED PATCH NOW WIRES THE PARAMETERS ITSELF ======================
+Row 116 recorded the three lines that connect the distance cost to the launch parameters; the patch that
+implements the term is reverted (row 115) and preserved in `_stage/apply-distance-field2.py` -- and it still
+emitted the LOCAL CONSTANT, so re-applying it would have reproduced exactly the gap it was meant to close
+(`lambda_collision` and `dist0` multiplying nothing while looking tunable).  The script now adds
+`rclcpp::Node::SharedPtr node_;` beside the members, sets `node_ = node;` where `dist0_` is read in `setParam`,
+and reads `optimization/lambda_collision` through it -- so the next application of this line is parameter-driven
+from the first flight, and `dist0` means what its name says for the first time in this planner.
+
+Nothing in the repo's flight configuration changed: the patch is still NOT applied (the tree carries only the
+instruments, row 115), and this round edited the script that preserves the work.
