@@ -523,10 +523,23 @@ def main() -> int:
     if args.ros and not args.print_only:
         sink = RosSink()
 
+    # THE CSV IS FLUSHED PER ROW, AND THAT IS A CORRECTNESS REQUIREMENT, NOT A PREFERENCE (2026-10-15).
+    # `tools/run-mission.sh` runs `tools/metrics.py` as soon as the FSM exits, while this recorder is still
+    # inside its loop; the writer used to be block-buffered (python's default 8 KiB) and flushed only on
+    # close, so metrics.txt was computed against the file MINUS whatever was still in the buffer.  MEASURED
+    # on all six RECT sorties of 2026-10-15: the committed metrics.txt quotes a tap 0.4-1.3 s SHORTER than
+    # the file now holds -- RECT9 quotes 90294 samples while this process's own truth_report.txt says "of
+    # 94020 seen" (exactly what the closed file holds), and RECT1 62516 vs 65092.  Every acceptance row
+    # (A1/A2/B1/B2/B3/C1/C2) reproduced exactly anyway, because they are computed over the ROUTE window and a
+    # truncated TAIL does not reach it; the run-summary line and A4 -- which a reader does read -- did not.
+    # One flush per sample is one syscall per 0.83 ms at 1200 Hz, beside the `fan.sendto` already happening
+    # every 6th sample.  The tap's CONTENT is unchanged (same rows, same order, same text); only WHEN it
+    # reaches the disk changes, and `--csv -` style stdout is untouched because this is a file only.
     csv = None
     if args.csv:
-        csv = open(args.csv, "w")
+        csv = open(args.csv, "w", buffering=1)
         csv.write("t_us,inst,pn,pe,pd,vn,ve,vd,qw,qx,qy,qz,wx,wy,wz,ax,ay,az\n")
+        csv.flush()
 
     fan = None
     if args.fanout:
@@ -559,6 +572,18 @@ def main() -> int:
                 if wall_timeout > 0 and (now - t_start_wall) > wall_timeout:
                     print("WALL TIMEOUT after %.1f s with %d samples" % (
                         now - t_start_wall, stats.n), flush=True)
+                    break
+                # A STOP REQUEST ARRIVING WHILE THE TAP IS SILENT IS STILL A STOP REQUEST (2026-10-15).
+                # This branch used to `continue` without ever looking at stop["flag"], which is only tested
+                # after a SUCCESSFUL receive (the bottom of this loop).  So once SITL stopped sending, the
+                # process could never leave: the normal end of a sortie is exactly that silence.  MEASURED
+                # on RECT15: SIGTERM arrived, the loop kept taking 0.5 s socket timeouts for the full 10 s
+                # the harness waits, run-mission.sh killed it with SIGKILL and reported "the truth recorder
+                # did not stop within 10 s" -- and truth_report.txt, which is written on the way OUT of the
+                # loop, was never produced.  The data was safe (the per-row flush had already put every
+                # sample on disk), the run's own GATE report was lost.
+                if stop["flag"]:
+                    print("\nstop requested (while the tap was silent)", flush=True)
                     break
                 continue
             s = parse(data.decode("ascii", "replace").strip())

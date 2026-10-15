@@ -1,0 +1,261 @@
+Mission A: the evidence file did not agree with the evidence -- metrics ran against inputs still being
+written.  MEASURED, FIXED, and PROVEN by two control flights.
+date: 2026-10-15
+tools: sim/truth_rx.py (the recorder), tools/run-mission.sh (the ordering), tools/metrics.py (the
+       reader), and the control sorties RECT12 (first attempt), RECT13 (the measurement that found the
+       real cause), RECT14 (the partial fix), RECT15 (the negative control), RECT16 and RECT17 (the fix,
+       flown twice).
+
+================================================================================
+== 1. THE DEFECT, as a number a reader can check in one command
+================================================================================
+Every committed metrics.txt of 2026-10-15 quotes a TAP SHORTER than the tap on disk.  truth_report.txt
+is the recorder's OWN count, written by the process that produced the tap:
+
+   run                        metrics.txt its report   closed tap.csv
+   missionA-RECT1-noego       62516       -            65092
+   missionA-RECT6-clean-square 62721       -            65159
+   missionA-RECT7-hold5       91300       95098        95098
+   missionA-RECT8-nohold-regression 62530       64795        64795
+   missionA-RECT9-hold5       90294       94020        94020
+   missionA-RECT10-hold5      91139       95221        95221
+   missionA-RECT11-hold5      85033       -            88805
+
+For RECT9 the recorder's own report and the closed file agree with each other (94020) and disagree with
+the metrics.txt written by the same run (90294).  NOT ONE ACCEPTANCE ROW MOVED: A1/A2/A3/B1/B2/B3/C1/C2
+are computed over the route window and every missing sample is after it.  What moved is the run-summary
+sample count and the whole A4 block, whose vertical alignment interpolates the tap.
+
+================================================================================
+== 2. WHY: the reader ran while the writers were still writing
+================================================================================
+tools/run-mission.sh stopped the FSM, computed the metrics, and exited -- and only THEN did its EXIT trap
+stop SITL and the recorders.  So tools/metrics.py read tap.csv while sim/truth_rx.py was still in its
+receive loop and while SITL was still appending the FCU's BIN.
+
+A PASSIVE WATCHER MEASURED IT (_stage/s21-watch.py read tap.csv every 100 ms during RECT13-watch and did
+not touch the flight; its whole log is _stage/s21-watch.log):
+   10:40:49.982166  tap  61856 rows   truth_report -        metrics.txt -
+   10:40:50.528632  tap  62516 rows   truth_report -        metrics.txt -
+   10:40:51.488642  tap  63664 rows   truth_report -        metrics.txt WRITTEN
+   10:40:52.601703  tap  64970 rows   truth_report present  metrics.txt WRITTEN
+metrics.txt was written while the tap held ~62500 rows; the recorder went on to write 64970.
+
+================================================================================
+== 3. THE FIRST FIX WAS NECESSARY AND NOT SUFFICIENT -- a measurement, not an opinion
+================================================================================
+The recorder buffered its CSV and flushed on close, so the file was behind by up to a buffer's worth of
+rows at any instant.  sim/truth_rx.py now opens it line-buffered and flushes its header
+().  That it is NECESSARY, on the real process (_stage/s15-flush-burst.py starts the
+recorder, sends 400 tap lines, and reads the file WITHOUT stopping it):
+   PRE-FIX writer  (git show HEAD:sim/truth_rx.py) : rows on disk while running:   0 of 400   FAIL
+   FIXED writer    (working tree)                  : rows on disk while running: 400 of 400   PASS
+
+AND NOT SUFFICIENT, which is why the control flights exist.  RECT12-flush-control was flown with the
+flush in place, and its metrics.txt still quoted a short tap:
+   RECT12 metrics.txt : truth samples 62519 over 52.1 s; delivered-odometry samples 8628 over 43.1 s
+   RECT12 truth_report: fanned out 10810 lines to port 14561 (of 64864 seen)
+Flushing changes WHEN a row reaches the disk; it does not make the recorder STOP, and the recorder is
+what the harness was racing.  The ordering is the fix.
+
+================================================================================
+== 4. A SECOND DEFECT, FOUND WHILE PROVING THE ORDERING: the recorder could not be stopped
+================================================================================
+run-mission.sh sends SIGTERM and waits.  The recorder's loop tested its stop flag only AFTER A SUCCESSFUL
+RECEIVE, and a socket timeout took a 'continue' that skipped the test -- so once SITL went quiet (the
+normal end of a sortie) the process could never leave, the wait expired, and it was SIGKILLed.  RECT15
+printed its own line:
+   WARNING: the truth recorder did not stop within 10 s and was killed -- tap.csv may be short
+and truth_report.txt was never written for that flight.  The data was safe (the per-row flush had already
+put every sample on disk) but the run's own GATE report was lost.
+
+sim/truth_rx.py now also tests the flag in the timeout branch.  _stage/s24-stop-test.py drives the real
+process -- samples, then silence, then SIGTERM -- and times the exit:
+   PRE-FIX recorder (git show HEAD:sim/truth_rx.py) : STILL RUNNING 15 s after SIGTERM; killed          FAIL
+   FIXED recorder   (working tree)                  : exited 0.22 s after SIGTERM, report written      PASS
+These two are ONE commit because the ordering fix is unsound without the stop fix: waiting for a process
+that cannot stop is exactly what produced the WARNING above.
+
+================================================================================
+== 5. THE CONTROL FLIGHTS: two independent sorties, six checks each
+================================================================================
+Standard square, hold OFF, everything as RECT8:
+   ALT_MODE=lio NAV_SOURCE=lio WORLD=worlds/pillars.yaml
+   MISSION_PARM=params/phase_a_mission_fast.parm EKF_PARM=params/ekf_trust_lio.parm
+   TRAJ_SOURCE=rectangle GEOFENCE_M=6.60 RECT_HOLD_S=0
+launchers: _stage/rect16-flush-control-fly.sh and _stage/rect17-flush-control-fly.sh (both idle-waiting;
+neither kills anything to start).  The checks, in order: (1) byte-identical metrics.txt, (2) the count
+equal in three places, (3) truth_report.txt present with its gate, (4) nothing SIGKILLed, (5) the mtimes
+in the right order, (6) the ordinary acceptance rows.
+
+-------- missionA-RECT16-flush-control
+   (1) BYTE-IDENTICAL -- the metrics.txt the RUN ITSELF wrote vs tools/metrics.py recomputed from the
+       frozen inputs:
+       *** BYTE-IDENTICAL ***  (47 lines, no diff output)
+          663d42f52f0995167d8f61b58c704b5b  /home/fanxin/lio_avoid/logs/missionA-RECT16-flush-control/metrics.txt
+          663d42f52f0995167d8f61b58c704b5b  /mnt/d/distill_self/_stage/mv/RECT16-flush-control.recomputed.txt
+   (2) THE COUNT AGREES IN THREE INDEPENDENT PLACES:
+          metrics.txt    : truth samples 61062 over 50.9 s; delivered-odometry samples 8627 over 43.1 s
+          truth_report   : of 61062 seen
+          closed tap.csv : 61062 rows
+   (3) truth_report.txt EXISTS and its gate is intact:
+          ros publishes    4698 (92.5 Hz over the run, 100 Hz requested)
+          kernel UDP drops 0
+          fanned out       10177 lines to port 14561 (of 61062 seen)
+          [PASS] ros odom rate  92.5 Hz (>= 90% of the 100 Hz requested)
+   (4) NOTHING HAD TO BE KILLED.  The run's console was kept (_stage/rect16-run.log,
+       _stage/rect17-run.log); the only lines either log has about stopping or about a problem:
+          (console log not kept for this one)
+   (5) THE MTIMES HAVE THE RIGHT ORDER -- metrics AFTER every file it read:
+          /home/fanxin/lio_avoid/logs/missionA-RECT16-flush-control/tap.csv  2026-10-15 10:57:17.473909402 +0800
+          /home/fanxin/lio_avoid/logs/missionA-RECT16-flush-control/logs/00000001.BIN  2026-10-15 10:57:17.473909402 +0800
+          /home/fanxin/lio_avoid/logs/missionA-RECT16-flush-control/truth_report.txt  2026-10-15 10:57:17.977909462 +0800
+          /home/fanxin/lio_avoid/logs/missionA-RECT16-flush-control/metrics.txt  2026-10-15 10:57:19.193908127 +0800
+   (6) THE FLIGHT'S OWN ACCEPTANCE ROWS (a control is not a new flight result):
+          A1 route horizontal rms      4.52 mm   (target <= 20)
+          A2 route vertical rms        6.25 mm   (target <= 50, mean removed)
+             [PASS] A3
+          A4 FCU estimate vs truth after take-off (264 of 306 samples, vertical alignment residual 97.1 mm):
+             [PASS] A4
+          B1 truth box extents over the route (14.6 s): E 2.145 m  N 1.285 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner arrival)  [FAIL]
+          B4 landing: 'land' in the phase log -> yes
+          C2 obstacle clearance over the whole flight (46 pillars from pillars.yaml): minimum pillar-surface distance 0.552 m;  0 of 28279 samples inside the 0.20 m footprint  [PASS]
+          C1 final point: the aircraft stopped 0.027 m from the last commanded point (0.503, 0.403)  [PASS]
+          A1/A2/B1 FAIL   (A1 4.52 mm <= 20, A2 6.25 mm <= 50, B1 E 2.145 <= 2.10, N 1.285 <= 1.30, aborted False)
+          abort phases: 0
+
+-------- missionA-RECT17-flush-control
+   (1) BYTE-IDENTICAL -- the metrics.txt the RUN ITSELF wrote vs tools/metrics.py recomputed from the
+       frozen inputs:
+       *** BYTE-IDENTICAL ***  (47 lines, no diff output)
+          9462dc83aa954f529e30a4c36b5c935e  /home/fanxin/lio_avoid/logs/missionA-RECT17-flush-control/metrics.txt
+          9462dc83aa954f529e30a4c36b5c935e  /mnt/d/distill_self/_stage/mv/RECT17-flush-control.recomputed.txt
+   (2) THE COUNT AGREES IN THREE INDEPENDENT PLACES:
+          metrics.txt    : truth samples 60963 over 50.8 s; delivered-odometry samples 8627 over 43.1 s
+          truth_report   : of 60963 seen
+          closed tap.csv : 60963 rows
+   (3) truth_report.txt EXISTS and its gate is intact:
+          ros publishes    4690 (92.5 Hz over the run, 100 Hz requested)
+          kernel UDP drops 0
+          fanned out       10160 lines to port 14561 (of 60963 seen)
+          [PASS] ros odom rate  92.5 Hz (>= 90% of the 100 Hz requested)
+   (4) NOTHING HAD TO BE KILLED.  The run's console was kept (_stage/rect16-run.log,
+       _stage/rect17-run.log); the only lines either log has about stopping or about a problem:
+          truth recorder and SITL stopped; tap.csv and the FCU's BIN are complete
+          truth recorder and SITL stopped; tap.csv and the FCU's BIN are complete
+          (grep for WARNING in the whole log: 0 lines)
+   (5) THE MTIMES HAVE THE RIGHT ORDER -- metrics AFTER every file it read:
+          /home/fanxin/lio_avoid/logs/missionA-RECT17-flush-control/tap.csv  2026-10-15 11:46:28.121989234 +0800
+          /home/fanxin/lio_avoid/logs/missionA-RECT17-flush-control/logs/00000001.BIN  2026-10-15 11:46:28.097989242 +0800
+          /home/fanxin/lio_avoid/logs/missionA-RECT17-flush-control/truth_report.txt  2026-10-15 11:46:28.627978249 +0800
+          /home/fanxin/lio_avoid/logs/missionA-RECT17-flush-control/metrics.txt  2026-10-15 11:46:29.825988668 +0800
+   (6) THE FLIGHT'S OWN ACCEPTANCE ROWS (a control is not a new flight result):
+          A1 route horizontal rms      4.52 mm   (target <= 20)
+          A2 route vertical rms        6.06 mm   (target <= 50, mean removed)
+             [PASS] A3
+          A4 FCU estimate vs truth after take-off (266 of 308 samples, vertical alignment residual 98.2 mm):
+             [PASS] A4
+          B1 truth box extents over the route (14.6 s): E 2.142 m  N 1.280 m   (command 2.000 / 1.200; target <= 2.10 / 1.30 = +0.10 on both axes, the same 0.10 m B3 allows for ONE corner arrival)  [FAIL]
+          B4 landing: 'land' in the phase log -> yes
+          C2 obstacle clearance over the whole flight (46 pillars from pillars.yaml): minimum pillar-surface distance 0.559 m;  0 of 28358 samples inside the 0.20 m footprint  [PASS]
+          C1 final point: the aircraft stopped 0.023 m from the last commanded point (0.502, 0.403)  [PASS]
+          A1/A2/B1 FAIL   (A1 4.52 mm <= 20, A2 6.06 mm <= 50, B1 E 2.142 <= 2.10, N 1.280 <= 1.30, aborted False)
+          abort phases: 0
+
+READ: two flights, byte-identical both times, the recorder stopped by its own signal both times (no
+WARNING), and the ordinary acceptance rows unchanged.  The fix is in WHEN the writers stop relative to
+the reader, and nothing about the flight changed.
+
+================================================================================
+== 6. WHAT IS RESTATED, AND EXACTLY WHICH QUANTITY WAS WRONG IN EACH AFFECTED LINE
+================================================================================
+metrics-restated.txt was rewritten NEXT TO every affected sortie's own metrics.txt with the current tool;
+the originals are untouched.  PER RUN, the two quantities that moved and what they were computed from:
+
+   run                        committed report    closed    rows    A4: samples / horizontal rms
+                              (short)   (own)     tap       missing committed -> restated
+   missionA-RECT1-noego       62516     -         65092     2576    279 of 321 / 20.72 -> 21.63 mm
+   missionA-RECT6-clean-square 62721     -         65159     2438    277 of 319 / 21.19 -> 26.36 mm
+   missionA-RECT7-hold5       91300     95098     95098     3798    519 of 561 / 17.92 -> 24.00 mm
+   missionA-RECT8-nohold-regression 62530     64795     64795     2265    277 of 319 / 20.31 -> 20.96 mm
+   missionA-RECT9-hold5       90294     94020     94020     3726    511 of 553 / 16.18 -> 20.33 mm
+   missionA-RECT10-hold5      91139     95221     95221     4082    521 of 564 / 17.43 -> 22.16 mm
+   missionA-RECT11-hold5      85033     -         88805     3772    471 of 513 / 18.32 -> 21.70 mm
+   missionA-RECT14-flush-control 61289     61289     61289     0       280 of 322 / 21.26 -> 28.10 mm
+   missionA-RECT16-flush-control 61062     61062     61062     0       264 of 306 / 20.51 -> 20.51 mm
+   missionA-RECT17-flush-control 60963     60963     60963     0       266 of 308 / 20.30 -> 20.30 mm
+
+   ('-' in the report column means THAT FLIGHT's truth_report.txt does not exist: RECT1, RECT6 and
+    RECT11 were flown before the stop fix of section 4, the recorder was SIGKILLed at the end of each,
+    and the report is written on the way out of its loop.  For those three the CLOSED TAP is the
+    reference, and it is the recorder's own data either way -- only the summary line it would have
+    printed is missing.)
+
+READ THE TABLE AS THE DEFECT, LINE BY LINE.  In every pre-fix sortie (all but RECT16/RECT17):
+  * the RUN-SUMMARY truth-sample count was computed against a tap that was STILL GROWING -- it quotes
+    the rows that existed when the reader ran, not the rows the flight produced.  RECT9 is the
+    clearest: 90294 quoted, and the recorder's own report and the closed file both say 94020, i.e.
+    3726 rows of a flight went unmeasured by the line that reports how much was measured.
+  * the A4 block read THE SAME truncated tap for its vertical profile alignment, and that is why its
+    sample count (RECT7 519 of 561 -> 548 of 590), its horizontal rms (17.92 -> 24.00 mm), its
+    vertical rms (29.04 -> 35.99) and its removed datum all moved together.  A4 PASSES in both
+    versions, so no verdict turned on it: the row was simply reporting a different flight length.
+  * RECT14 separates the two causes by itself: it was flown with the flush AND the tap-wait in place
+    but NOT the SITL wait, so its tap is complete (61062 = 61062) and its BIN was still open.  Its 8
+    changed lines are the A4 block ONLY -- the summary line does not move.
+  * RECT16 and RECT17 have 0 changed lines each.  That is the fix, and the md5s above are the proof:
+    the file written during the flight and the file recomputed afterwards are the same 47 lines.
+
+EVERY OTHER LINE REPRODUCES VERBATIM, and that is measured, not asserted.  metrics.py as of HEAD and
+metrics.py as modified were both run on the same current inputs for RECT1/RECT6/RECT7 (_stage/mv):
+every line of A1/A2/A3/B1/B2/B3/C1/C2 -- numbers AND text -- is byte-identical between the two, so the
+B1 restatement in the previous commit changes no number anywhere.  For RECT9/10/11 the restated file
+produced by this round is byte-identical to the one the earlier round wrote.  The changed-line counts,
+from _stage/s27-restate.sh (whose full log is _stage/s27-restate.log):
+   RECT1 19, RECT6 19, RECT7 14, RECT8 14, RECT9 12, RECT10 14, RECT11 14, RECT14 8, RECT16 0,
+   RECT17 0.  The RECT1/RECT6 counts include A3's window line, because those two files predate that
+   change as well; groups: the run-summary count, the A4 block, A3's window.  No acceptance row moved.
+
+SO: the run-summary line and the A4 block of every pre-fix sortie's committed metrics.txt were computed
+against a tap that was still being written (and RECT14's A4 against an unclosed BIN besides).  Their
+acceptance rows stand exactly as written.  The restated files are the same flights measured on the
+complete recordings.
+
+================================================================================
+== 7. THE TWO DEFECTS ARE INDEPENDENT -- which fix addresses which symptom
+================================================================================
+They were found in this order, and the first one's fix is what EXPOSED the second.  A reader who wants
+to know whether a symptom is still possible needs them apart:
+
+DEFECT (a) -- THE WRAP-UP ORDERING in tools/run-mission.sh.
+   SYMPTOM: metrics.txt quotes a tap shorter than the flight's own truth_report.txt, and its A4 block is
+            computed from that shortened tap.  The acceptance rows are unaffected.
+   CAUSE:   metrics ran while sim/truth_rx.py was still in its receive loop and SITL was still writing
+            the FCU's BIN; the EXIT trap stopped them only after metrics had finished.
+   PROOF IT IS THE ORDERING AND NOT THE BUFFER: RECT12 was flown with the per-row flush already in
+            place and still truncated (62519 vs 64864), and the RECT13 watcher caught metrics.txt being
+            written 1.1 s before the tap stopped growing.
+   FIX:     tools/run-mission.sh::stop_stack -- SIGTERM the FSM/planner/LIO/sensor, SIGTERM SITL and
+            WAIT for it, SIGTERM the recorder and WAIT for it, and only then run metrics.  After that
+            tap.csv, lio.csv and the BIN are frozen before the reader opens them.
+   STILL POSSIBLE IF: a future writer is added to the run and is not in stop_stack's list -- the list is
+            the contract.
+
+DEFECT (b) -- THE RECORDER COULD NOT BE STOPPED while the tap was quiet.
+   SYMPTOM: 'WARNING: the truth recorder did not stop within 10 s and was killed', and NO
+            truth_report.txt for that flight.  The TAP is complete (the per-row flush had already put
+            every sample on disk); what is lost is the run's own GATE report.
+   CAUSE:   sim/truth_rx.py tested its stop flag only AFTER A SUCCESSFUL RECEIVE.  A socket timeout took
+            a 'continue' that skipped the test, and a silent tap is exactly what the end of a sortie
+            looks like once SITL stops -- so the loop could not leave and had to be SIGKILLed.
+   PROOF:   RECT15 printed the warning and has no truth_report.txt; _stage/s24-stop-test.py on the real
+            process: PRE-FIX 'STILL RUNNING 15 s after SIGTERM', FIXED 'exited 0.22 s after SIGTERM,
+            report written'.
+   FIX:     sim/truth_rx.py tests the flag in the socket-timeout branch as well.
+   THE PER-ROW FLUSH () IS A SEPARATE, NECESSARY PIECE: it is what makes the tap complete
+            up to the instant the recorder dies, and it is what the burst test measures (PRE-FIX 0 of
+            400 rows on disk while running, FIXED 400 of 400).  It is not the ordering fix and the
+            ordering fix is not it -- RECT12 is the flight that proves the difference.
+   STILL POSSIBLE IF: the recorder grows another blocking call that does not check the flag.  The
+            contract is 'the stop flag is tested on every pass of the loop', and the harness's WARNING
+            line is the detector.

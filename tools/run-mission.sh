@@ -143,18 +143,74 @@ setsid nohup env LIO_TRUTH_TAP=$TAP "$BIN" --model "$SITL_MODEL" --speedup 1 -I0
 SITL=$!
 cd - > /dev/null
 
-cleanup() {
-    for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RX_PID:-}" "${REC_PID:-}" \
-             "${RECC_PID:-}" "${RECT_PID:-}"; do
+# STOP THE FLIGHT STACK, AND WAIT FOR THE TWO PROCESSES THAT *WRITE EVIDENCE* TO FINISH WRITING IT.
+#
+# THE ORDERING IS THE ROW (MEASURED 2026-10-15).  `tools/metrics.py` used to run while `truth_rx.py` was
+# still in its receive loop and while SITL was still appending the FCU's BIN, so metrics.txt was computed
+# against inputs that were still growing: the run-summary sample count and the whole A4 block were quoted
+# from a TRUNCATED tap and a SHORT BIN.  Every acceptance row reproduced anyway -- A1/A2/B1/B2/B3/C1/C2 are
+# computed over the route window and the missing tail is after it -- but those two lines are read by a
+# human, and "the evidence file does not agree with the evidence" is the failure mode this project treats
+# as the worst one.
+#
+# MEASURED, on 7 committed sorties: metrics.txt quotes 2.9-3.6 s less tap than the file now holds (RECT9
+# 90294 vs its own truth_report.txt's "of 94020 seen"; RECT1 62516 vs 65092).  A per-row flush in the
+# recorder is NECESSARY BUT NOT SUFFICIENT, and that was measured too: with `buffering=1` in place, a
+# passive watcher on a real sortie caught metrics.txt being written 1.1 s BEFORE the tap stopped growing
+# (RECT13).  The recorder stops when SITL stops sending, so the stop must come first.  RECT14 proves the
+# result: summary 61289 = truth_report's "of 61289 seen" = the closed tap's own row count, and metrics.txt
+# mtime AFTER tap.csv instead of before it (this function's A4 row needed the same treatment for the BIN).
+stop_stack() {
+    for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RECT_PID:-}"; do
         [ -n "$p" ] && kill "$p" 2>/dev/null
     done
-    kill "$SITL" 2>/dev/null
-    sleep 1
-    for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RX_PID:-}" "${REC_PID:-}" \
-             "${RECC_PID:-}" "${RECT_PID:-}"; do
+    kill "$REC_PID" 2>/dev/null
+    kill "$RECC_PID" 2>/dev/null
+    # SITL is stopped BEFORE the tap recorder is waited for, because the recorder's own stop condition is
+    # "SITL has stopped sending"; and its BIN must be closed before A4 reads it, which is why it is waited
+    # for in its own right.  5 s is ~5x what SITL's clean exit has been measured to take; the SIGKILL below
+    # is the backstop, not the plan.
+    if [ -n "${SITL:-}" ]; then
+        kill "$SITL" 2>/dev/null
+        for _ in $(seq 1 50); do
+            kill -0 "$SITL" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$SITL" 2>/dev/null; then
+            kill -9 "$SITL" 2>/dev/null
+            echo "WARNING: SITL did not stop within 5 s and was killed -- the FCU's BIN may be short"
+        fi
+    fi
+    # SIGTERM is handled gracefully by the recorder (`_install_stop_handler` sets a flag; the loop then
+    # closes the CSV and writes truth_report.txt), so no sample is lost to a signal -- and if it does not
+    # stop, this says so instead of silently truncating the tap.  MEASURED (s26-stop-ab): with the silent-tap
+    # stop check in sim/truth_rx.py the recorder leaves 0.22 s after SIGTERM and writes its report; without
+    # it, it was still running 15 s later -- which is why the check had to be fixed in the same round as
+    # this ordering, and why the two are one commit.
+    if [ -n "${RX_PID:-}" ]; then
+        kill "$RX_PID" 2>/dev/null
+        for _ in $(seq 1 50); do
+            kill -0 "$RX_PID" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$RX_PID" 2>/dev/null; then
+            kill -9 "$RX_PID" 2>/dev/null
+            echo "WARNING: the truth recorder did not stop within 5 s and was killed -- tap.csv may be short"
+        else
+            echo "truth recorder and SITL stopped; tap.csv and the FCU's BIN are complete"
+        fi
+    fi
+    # anything that ignored SIGTERM gets SIGKILL; `cleanup` repeats this on the way out, so nothing is left
+    # behind whether the script is exiting normally or not.
+    for p in "${FSM_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${SITL:-}" "${RX_PID:-}" \
+             "${REC_PID:-}" "${RECC_PID:-}" "${RECT_PID:-}"; do
         [ -n "$p" ] && kill -9 "$p" 2>/dev/null
     done
-    kill -9 "$SITL" 2>/dev/null
+    return 0
+}
+
+cleanup() {
+    stop_stack
     # F2: AND ANYTHING ELSE THIS SORTIE LEFT IN ITS OWN PROCESS GROUP.  `ap6-fly.sh` starts this script with
     # `setsid`, so `pgrep -g $$` is exactly "the processes this sortie started" -- no name matching, and no
     # reach into another sortie's group.  A killed sortie therefore cannot leave an adapter behind publishing
@@ -257,10 +313,10 @@ python3 "$REPO/fsm/mission_fsm.py" --nav-source "$NAV_SOURCE" $CALIB_ARG \
 FSM_RC=$?
 cat "$OUT/fsm.log"
 
-kill "$REC_PID" 2>/dev/null
-kill "$RECC_PID" 2>/dev/null
-kill "$RECT_PID" 2>/dev/null
-sleep 1
+# ALL THREE PRODUCER PROCESSES ARE STOPPED AND WAITED FOR BEFORE THE METRICS RUN (see stop_stack above).
+# This is the whole fix: after it, tap.csv, the FCU's BIN and lio.csv are FROZEN, so the file this script
+# writes and the file a reader can re-run against are the same file.
+stop_stack
 echo
 echo "== metrics =="
 BINFILE=$(ls "$OUT"/logs/*.BIN 2>/dev/null | tail -1)
