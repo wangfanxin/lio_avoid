@@ -40,6 +40,16 @@ Two rules that are not negotiable, because the supervisor is built on them:
    is still flying one leg, you have told the consumer the tour advanced and the phase log, and every
    metric windowed on it, will say so.
 
+**AND THE RULE IS IMPLEMENTED TWICE, IN TWO PROCESSES — deliberately, and both copies are checked.**  The
+BRIDGE has its own liveness rule (`src/bridge/bridge_node.py`, `CmdRelay.stalled_reason`) and the SUPERVISOR
+has its own plan-silence gate and its own COMPLETED test (`src/supervisor/supervisor.py:281-288`, `:552`),
+reading `/plan/cmd` on its own subscription (`:164-176`).  The supervisor must not depend on the bridge's
+health to decide whether the mission is over, so the duplication IS the design — but a rule written twice
+can be written differently twice, which is why `src/tools/test-planner-swap.py` drives **both**
+implementations with all three planners: each sees the COMPLETED statement, neither aborts a stream that is
+still talking, and each fires its OWN named abort on a truncated stream and on silence after COMPLETED.  A
+swap that satisfied only one of them would be a planner that half the stack believes.
+
 One rule that is a *courtesy* to the evidence: publish at a steady rate.  A stream that declares 100 Hz and
 emits 4 Hz was this project's S3 defect; `src/tools/measure-rates.py` measures the achieved rate on the
 recorded stream, and every sortie's `traj.log` prints declared vs achieved.

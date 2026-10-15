@@ -1,5 +1,5 @@
-PLANNER SWAP -- one contract, three planners -- evidence, 2026-10-15 13:52:08Z
-HEAD at the time of the run: d7ceb19  (this round is not committed yet)
+PLANNER SWAP -- one contract, three planners -- evidence, 2026-10-15 14:08:23Z
+HEAD at the time of the run: a48155f  (this round is not committed yet)
 
 WHAT IS CLAIMED.  That /plan/cmd is the planner contract and not a description of ONE planner:
 three different producers -- our TourPacer+CmdStream, a minimal third-party-style planner, and the
@@ -39,6 +39,29 @@ C: the ego adapter (ego_source.py)
    ends with COMPLETED sustained over the last 10 samples: True
    the stall gate after the end: does NOT fire
 
+THE SUPERVISOR'S OWN IMPLEMENTATION OF THE SAME RULE (a second process, a second copy of the rule)
+
+A: the Mission A tour (ours)
+   the supervisor saw 1423 message(s), last trajectory_id 5, last flag 3, silence 0.000 s
+   its COMPLETED rule (the same field the bridge read): the plan box DECLARED THE TOUR COMPLETE
+   its silence gate on a stream that is STILL TALKING: no abort
+
+B: a minimal third-party planner
+   the supervisor saw 675 message(s), last trajectory_id 4, last flag 3, silence 0.000 s
+   its COMPLETED rule (the same field the bridge read): the plan box DECLARED THE TOUR COMPLETE
+   its silence gate on a stream that is STILL TALKING: no abort
+
+C: the ego adapter (ego_source.py)
+   the supervisor saw 860 message(s), last trajectory_id 3, last flag 3, silence 0.000 s
+   its COMPLETED rule (the same field the bridge read): the plan box DECLARED THE TOUR COMPLETE
+   its silence gate on a stream that is STILL TALKING: no abort
+
+S1  the supervisor, on a stream truncated before COMPLETED, then 10 s of silence
+    its gate: THE PLAN BOX HAS STOPPED TALKING: nothing on /plan/cmd for 10.0 s (limit 3.0 s) after 337 messages, trajectory_id 3 -- a plan box that is DONE says so
+
+S2  the supervisor, on COMPLETED followed by silence -- the case the bridge gate also fires on
+    its gate: THE PLAN BOX HAS STOPPED TALKING: nothing on /plan/cmd for 10.0 s (limit 3.0 s) after 6 messages, trajectory_id 4 -- a plan box that is DONE says so i
+
 NEGATIVE CONTROLS (each must FAIL in exactly one way)
 
 N1  truncated before COMPLETED, then 10 s of silence
@@ -64,27 +87,18 @@ rc=0
 
 === the gate battery, all offline gates ===========================================
 ### HEAD
-d7ceb19
+a48155f
 ### working tree
- M docs/PLAN.md
+ M docs/PLANNERS.md
  M docs/STATUS.md
- M src/tools/docs-budget.py
- M src/tools/run-mission.sh
-?? docs/PLANNERS.md
-?? docs/figures/archive/traj-xyzt-RECT48-accept-planner-knob.png
-?? docs/figures/traj-xy-PLANSWAP-contract.png
-?? docs/figures/traj-xy-RECT48-accept-planner-knob.png
-?? docs/metrics/planner-swap-20261016.txt
-?? src/planner/bspline.py
-?? src/planner/ego_source.py
-?? src/tools/check-doc-citations.py
-?? src/tools/test-bspline-mutations.py
-?? src/tools/test-planner-knob.py
-?? src/tools/test-planner-swap.py
+ M docs/metrics/planner-swap-20261016.txt
+ M src/supervisor/supervisor.py
+ M src/tools/test-planner-swap.py
+?? docs/figures/traj-xy-RECT48-ego-cloud-box.png
 
 python3 src/tools/frozen-check.py              rc=0  frozen set: 53 of 53 files unchanged
 python3 src/tools/docs-budget.py               rc=0  documentation budget: 5 of 5 used
-python3 src/tools/check-doc-citations.py --quiet rc=0  DOC CITATION CHECK PASSED: 44 citation(s) across 5 document(s) resolve to real lines (33 by basename; 30 had more than one candidate and were checked against all of them)
+python3 src/tools/check-doc-citations.py --quiet rc=0  DOC CITATION CHECK PASSED: 47 citation(s) across 5 document(s) resolve to real lines (34 by basename; 31 had more than one candidate and were checked against all of them)
 python3 src/tools/test-layout.py               rc=0  LAYOUT TEST PASSED: the code root, the project root and every tool agree
 python3 src/tools/test-cmd-stream.py           rc=0  CMD-STREAM TEST PASSED
 python3 src/tools/test-stall-gate.py           rc=0  stall-gate test: PASS
@@ -94,16 +108,24 @@ python3 src/tools/test-s4-l-to-wire.py         rc=0  S4 L->WIRE A/B PASSED
 python3 src/tools/test-planner-swap.py         rc=0  PLANNER SWAP TEST PASSED: 3 planners, one contract, the consumer's rules hold for all of them
 python3 src/tools/test-planner-knob.py         rc=0  PLANNER-KNOB TEST PASSED: the default is the flown planner with the flown argv, ego selects the adapter, and every wrong name is refused before anything starts
 python3 src/tools/test-bspline-mutations.py    rc=0  BSPLINE MUTATION TEST PASSED: 9 of 9 defects caught, and the unmutated source passes
+python3 src/tools/install-ego-launch.py --static rc=0  EGO LAUNCH INSTALL PASSED: copied, built into the workspace, syntax-checked, and every parameter name is one the node declares
 python3 src/planner/bspline.py                 rc=0  BSPLINE SELFTEST PASSED: two cases, three references (hand-known line, central difference, Cox-de Boor)
 python3 src/planner/ego_source.py --selftest   rc=0  EGO SOURCE SELFTEST PASSED: the contract, from ego's spline, with no ego and no ROS
+python3 src/planner/cloud_relay.py --selftest  rc=0  CLOUD RELAY SELFTEST PASSED: one point per 0.10 m cell, idempotent, ego's box respected
 python3 src/common/frames.py                   rc=0  selftest: PASS
 
 ### failures: 0
 
-=== the figure ====================================================================
+=== the figures ===================================================================
 docs/figures/traj-xy-PLANSWAP-contract.png -- three panels, top view in L, drawn by importing
 the three builders FROM the test (a figure drawn from a copy drifts from the test).
 sha256: 90121d05bbe8bb7b79c29a63dc68ec30f631030a835c701cca8e3cf07a0aee4e
+
+docs/figures/traj-xy-RECT48-ego-cloud-box.png -- RECT48's THREE REAL recorded scans (top view in L)
+against ego's fixed 16 x 16 m map box and its +-5.5 m per-point acceptance window.  Measured:
+1461 of 1461 recorded points (100.0%) already lie inside the window -- which is why the relay
+DECIMATES onto the 0.10 m lattice the map stores anyway instead of cropping.
+sha256: 9a337638329f06e7b8f94531e63306cebf51ecd251ae1a3d50c7b48dcd8087d6
 
 === the sortie that went through the selector =====================================
 docs/figures/traj-xy-RECT48-accept-planner-knob.png -- the flown default, launched through

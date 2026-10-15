@@ -39,6 +39,7 @@ usage: tools/test-planner-swap.py            (exit 0 = the contract is planner-i
 from __future__ import annotations
 
 import importlib.util
+import argparse
 import math
 import os
 import subprocess
@@ -53,7 +54,9 @@ from bridge.bridge_node import CmdRelay                                  # noqa:
 from common import frames                                                # noqa: E402
 from planner.cmd_stream import (CmdSample, CmdStream, TourPacer, FRAME_L,  # noqa: E402
                                 TRAJECTORY_STATUS_COMPLETED, TRAJECTORY_STATUS_READY)
+from supervisor.supervisor import Supervisor                              # noqa: E402
 
+CMD_TOPIC = "/plan/cmd"
 MSGS = []
 
 
@@ -264,6 +267,82 @@ def main() -> int:
         if relay.n_sent == 0:
             bad.append("%s: nothing reached the wire" % name)
         print()
+
+    # ---------------------------------------------------------------- the SUPERVISOR's own rule
+    #
+    # THE RULE EXISTS TWICE, IN TWO PROCESSES, AND THAT IS DELIBERATE.  The bridge has `CmdRelay.stalled_reason`
+    # (`bridge/bridge_node.py:228-244`) and the supervisor has its OWN plan-silence gate and its own COMPLETED
+    # test (`supervisor/supervisor.py:281-288`, `:552`), reading `/plan/cmd` on its own subscription
+    # (`:164-176`).  The supervisor must not depend on the bridge's health to decide whether the mission is
+    # over, so the duplication is the design -- and it means a swap has to be checked against BOTH, because a
+    # rule that is written twice can be written differently twice.  Nothing below shares code with the bridge
+    # section above: this constructs the REAL `Supervisor` (whose `__init__` touches neither ROS nor MAVLink)
+    # and drives its REAL `on_cmd` and `check_gates`.
+    print("THE SUPERVISOR'S OWN IMPLEMENTATION OF THE SAME RULE (a second process, a second copy of the rule)\n")
+
+    def supervisor_for(flag_after=None):
+        s = Supervisor(argparse.Namespace(geofence_m=6.60, nav_floor_hz=30.0, plan_silence_s=3.0,
+                                          cmd_topic=CMD_TOPIC, stall_abort_s=3.0, stall_topic="/planner/stalled",
+                                          plan_wait_s=30.0))
+        s.calib = CALIB
+        s.bridge = types.SimpleNamespace(state=lambda: types.SimpleNamespace(armed=False, mode="GUIDED",
+                                                                            messages=[]))
+        # THE SCENARIO IS A ROUTE IN PROGRESS: the silence gate only applies once the plan box has started
+        # talking (`supervisor.py:281`), which is what `route()` sets.  Until this round the attribute was
+        # born in `run()` and constructing a Supervisor without it raised AttributeError; it is initialised in
+        # `__init__` now (`supervisor.py:109-117`) and the state for a route is set here.
+        s.route_started = True
+        return s
+
+    for name, make, rate in planners:
+        samples = make()
+        sup = supervisor_for()
+        for s in samples:
+            sup.on_cmd(msg(s))
+        quiet = time.monotonic() - sup.plan["last_wall"]
+        sup.check_gates()
+        print("%s" % name)
+        print("   the supervisor saw %d message(s), last trajectory_id %s, last flag %s, silence %.3f s"
+              % (sup.plan["n"], sup.plan["last_tid"], sup.plan["flag"], quiet))
+        print("   its COMPLETED rule (the same field the bridge read): %s"
+              % ("the plan box DECLARED THE TOUR COMPLETE"
+                 if sup.plan["flag"] == TRAJECTORY_STATUS_COMPLETED else "*** NOT SEEN ***"))
+        print("   its silence gate on a stream that is STILL TALKING: %s"
+              % (sup.abort_reason or "no abort"))
+        ids = sup.plan["ids"]
+        if sup.plan["flag"] != TRAJECTORY_STATUS_COMPLETED:
+            bad.append("%s: the SUPERVISOR never saw COMPLETED (flag %s) -- its completion rule and the "
+                       "bridge's disagree about this planner" % (name, sup.plan["flag"]))
+        if any(b < a for a, b in zip(ids, ids[1:])):
+            bad.append("%s: the supervisor's trajectory_id list DECREASED: %s" % (name, ids))
+        if sup.abort_reason:
+            bad.append("%s: the supervisor aborted a stream that was still talking: %s"
+                       % (name, sup.abort_reason))
+        print()
+
+    # the two controls, on the SUPERVISOR, and they must agree with the bridge's answers above
+    sup = supervisor_for()
+    for s in planner_b()[:len(planner_b()) // 2]:
+        sup.on_cmd(msg(s))
+    sup.plan["last_wall"] = time.monotonic() - 10.0        # 10 s of silence, on the clock it reads
+    sup.check_gates()
+    print("S1  the supervisor, on a stream truncated before COMPLETED, then 10 s of silence")
+    print("    its gate: %s" % ((sup.abort_reason or "DID NOT FIRE -- the control is dead")[:150]))
+    if not sup.abort_reason or "STOPPED TALKING" not in sup.abort_reason:
+        bad.append("S1: the supervisor's silence gate must fire on a truncated stream")
+    print()
+
+    sup = supervisor_for()
+    for s in [x for x in planner_b() if x.trajectory_flag == TRAJECTORY_STATUS_COMPLETED][:6]:
+        sup.on_cmd(msg(s))
+    sup.plan["last_wall"] = time.monotonic() - 10.0
+    sup.check_gates()
+    print("S2  the supervisor, on COMPLETED followed by silence -- the case the bridge gate also fires on")
+    print("    its gate: %s" % ((sup.abort_reason or "does NOT fire")[:150]))
+    if not sup.abort_reason or "STOPPED TALKING" not in sup.abort_reason:
+        bad.append("S2: the supervisor must ALSO treat silence after COMPLETED as an abort -- if this fails "
+                   "while the bridge's N3 passes, the two copies of the rule have drifted apart")
+    print()
 
     # ---------------------------------------------------------------- negative controls
     print("NEGATIVE CONTROLS (each must FAIL in exactly one way)\n")

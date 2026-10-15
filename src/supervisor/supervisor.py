@@ -105,6 +105,15 @@ class Supervisor:
         #: that is read before it exists is an AttributeError on a code path nothing tests (MEASURED: the
         #: first version of this fix put it in `run` and `tools/test-stall-gate.py` failed).
         self.gates_armed = True
+        #: AND THE SAME ARGUMENT APPLIES TO `route_started`, which `check_gates` also reads (`:281`) and which
+        #: used to be born in `run()` (`:592`).  `check_gates` is reachable from `preflight` through `pump`,
+        #: so an object built WITHOUT `run()` -- which is how `tools/test-stall-gate.py` and
+        #: `tools/test-planner-swap.py` drive these gates, with no ROS and no MAVLink -- hit an
+        #: AttributeError on the very gate it was about to check.  MEASURED: writing the supervisor half of
+        #: the planner-swap test crashed on exactly this line, the second time this file has been bitten by
+        #: state born in the wrong place.  `run()` still sets it False before preflight; this only makes the
+        #: object usable without it.
+        self.route_started = False
 
     def log(self, msg):
         print("[%7.2f] %s" % (time.monotonic() - self.t_wall0, msg), flush=True)
