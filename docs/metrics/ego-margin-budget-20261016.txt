@@ -363,3 +363,34 @@ source pair, refusing to apply twice), so the next round can reproduce it before
 result does establish is that the mechanism is not obviously wrong: the search still finds corridors, the
 mission is flown no more slowly, and the worst excursion got smaller.  Figure
 `docs/figures/traj-xy-DIAG18-clearance1.png`, sha256 39d9783fb4a6bf757db14ee32475268542015c8ece7c29d6c44fea23a217c8e2.
+
+=== PATCH CLEARANCE/1 IS REFUTED BY ITS OWN REPRODUCTION (`DIAG19-clearance1-repro`) =====================
+The patch was applied again, built again (`path_searching` 9.0 s) and flown on the same mission.  It flew a
+DIFFERENT mission in every sense that matters:
+
+    run                          truth min     inside 0.20 m     route box        C1            outcome
+    DIAG18-clearance1            -0.057 m      3001 of  46190    E 3.05/N 3.01    0.004 m PASS  rc=0
+    **DIAG19-clearance1-repro**  **-0.276 m**  **39124 of 138136**  E 4.64/N 4.67  **4096 m FAIL**  **rc=1, ABORT**
+
+    [ 172.04] phase -> abort
+    [ 172.04] ABORT: geofence: truth at [-6.62 +0.41]
+    [ 217.09] the FCU's last words: Potential Thrust Loss (4) | Potential Thrust Loss (1) | EKF Failsafe ...
+
+The aircraft left the 6.60 m geofence, the supervisor aborted by name, and the localisation diverged with it
+(A1 route rms 942 753 mm against a 20 mm bound -- a kilometre-scale disagreement, i.e. the LIO and the truth
+parted company, not a tracking error).  13.9% of the samples are inside the C2 footprint, the worst of any
+crossing, and the truth's worst approach is -0.276 m.
+
+SO THE PATCH IS NOT PROMOTED.  Two runs, one of them the best crossing this project has recorded for penetration
+(-0.057 m) and the other a geofence abort with a diverged estimator -- which is the same lesson the relay window
+and `lambda_fitness` taught, now for the third time: **on this mission the run-to-run variation dominates every
+effect that has been tried, parameters and code alike** (STATUS row 85: sd 0.143 m against a C2 target 2.1 sd
+out).  The patch is REVERTED and the library rebuilt, so the flight tree matches the documented configuration.
+
+WHAT THIS DOES AND DOES NOT SAY.  It does NOT establish that the clearance cost caused the geofence excursion --
+the divergence means the run's own state estimates are not trustworthy, and a single catastrophic run cannot be
+attributed without a third flight.  What it DOES establish is the operational fact that matters: **the patch
+cannot be promoted on this evidence**, and a reproduction that ends in an abort is not a reproduction.  If the
+idea is to be pursued it needs a controlled comparison (several runs per arm, or an instrumented A* that reports
+the path's own clearance before and after), and that is a bigger piece of work than a parameter or a one-line
+cost term.
