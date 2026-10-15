@@ -64,3 +64,37 @@ still spends that knowledge on a smoother B-spline.
 === FILES =====================================================================================
   reading `_stage/plan-vs-truth-clearance.py` (this round's instrument), `_stage/inflation-budget.py` (round 7)
   runs    logs/missionA-DIAG12-inflate020 (refuted), DIAG8/9/10 (re-read)
+
+=== CORRECTION, ADDED THE NEXT ROUND: DIAG12 WAS NOT A CLOSED CHANNEL, AND THE BUDGET IS NOT EXHAUSTED =
+The section above explains DIAG12's 1 030 645 `a star error` as "two cells closes this field for ego's search".
+THAT EXPLANATION IS REFUTED BY MEASUREMENT, and the correction matters because it reopens the lever it closed.
+
+  * **THE CHANNEL WAS FREE.**  Measured from DIAG12's own DIAG/2 slices (`_stage/channel-width.py`), along the
+    segment joining each pair of adjacent pillar centres -- the saddle a plan must use -- the corridor is
+    **median 41 of 41 samples free** (0.82 m), with **6% of saddles closed (fewer than 0.10 m)**.  DIAG9 at one
+    cell measures **the same 41 of 41 and the same 6%**.  The channel did not close; the two runs' free space is
+    indistinguishable by this measurement.
+  * **THE RELAY DID NOT CRASH.**  `ego_relay.log` ends with a traceback in every run, including the ones that
+    worked (`DIAG8`, `DIAG9`): it is `rclpy.executors.ExternalShutdownException` at shutdown.  DIAG12's relay
+    published throughout -- **1544 scans, 23.7 M -> 11.1 M points, union 1.40x the newest scan**.
+  * **WHAT ACTUALLY HAPPENED.**  The vehicle reached **0.579 m** at t=40.8 s, 1.8 m from the pad, and came down;
+    from t~83 s it sat at L(-1.40, +1.10) at **z = -0.02 m for the remaining 370 s**.  The DIAG/2 slices at that
+    position are **10201 of 10201 cells '?' -- the entire window is OUTSIDE the map box**, with occasional
+    slices just inside as z crossed the boundary.  The map's z origin IS `grid_map/ground_height = -0.02`, so
+    `isInMap` fails there; `getInflateOccupancy` returns **-1**; and `check_collision_and_rebound` reads -1 as
+    **OCCUPIED** (`bool occ = grid_map_->getInflateOccupancy(...)`, `bspline_optimizer.cpp:1329`).  Hence
+    **1 058 710** `the drone is in obstacle. This should not happen.` and an FSM that never planned again:
+    `GEN_NEW_TRAJ` **19 049** against `EXEC_TRAJ` **207**.  A landed vehicle is outside its own map, and its own
+    position then reads as an obstacle -- a deadlock, and nothing to do with inflation.
+  * **WHAT IS WITHDRAWN**: "two cells collapses the search", "two cells is worse than three because the window
+    thickens the map", and the conclusion "there is no value between 1 and 2 cells, so the map cannot supply the
+    C2 footprint".  One cell is measured to work and two cells is measured not to, but the reason is a
+    z-boundary deadlock, so **the inflation budget is NOT established as exhausted** -- only as untested above
+    one cell under conditions where the vehicle stays airborne.
+  * **WHAT IS NOT EXPLAINED**: why the vehicle descended in the first place.  It flew 1.8 m to within 0.10 m of
+    a pillar SURFACE and then lost its trajectory; whether the two-cell map made the first plan take it there,
+    or the adapter's behaviour after a plan it could not extend brought it down, is not measured.
+  * **AND A STANDING DEFECT FOR THE WHOLE STACK**: `getInflateOccupancy` returning -1 outside the map, read as
+    `true` by the collision check, means any ego sortie in which the vehicle touches down with the planner
+    running can deadlock this way.  Figure `docs/figures/traj-xy-DIAG12-inflate020.png`.
+
