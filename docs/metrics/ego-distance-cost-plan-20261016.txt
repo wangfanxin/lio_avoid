@@ -188,3 +188,34 @@ THE FIRST THREE MEASUREMENTS TO MAKE, in order, before any flight: (a) the build
 calls occupied has distance 0 in the other) on a sample of points, printed once; (c) the cost's value on a
 straight-line trajectory in a known corridor is roughly `lambda_collision * (dist0 - clearance)^2` -- a number
 that can be checked by hand, which is how this investigation has caught every silent instrument fault.
+
+=== PIECES (1)-(3) ARE WRITTEN, APPLIED AND BUILT (rounds 47-48) =====================================
+`_stage/apply-distance-field1.py` carries PATCH DISTANCE-FIELD/1: the buffer (`grid_map.h`, beside the two
+occupancy vectors whose own comment already promised a distance), the two-sweep 3-4-5 chamfer build at the end of
+`cloudCallback`'s marking loop, and a DIAG/3 print that compares the field against `getInflateOccupancy` once a
+second.  **There is NO consumer yet**, deliberately: this investigation has repeatedly paid for consuming a
+silenly-wrong instrument, so the field must be shown to agree with the query the rest of the planner already
+trusts before anything reads it.
+
+Two things the build loop produced, both worth keeping:
+  * the first run was REFUSED by the anchor check -- `min_x = min(min_x, md_.camera_pos_(0));` occurs in BOTH
+    `cloudCallback` and `clearAndInflateLocalMap`, and the script refuses rather than guess.  The tree was
+    untouched.  It now takes the LAST occurrence (cloudCallback is defined further down) and prints the line it
+    used: **915**.
+  * the first build FAILED with `cannot bind non-const lvalue reference of type 'int&' to an rvalue of type
+    'int'` (x8): `toAddress` has an overload taking its three coordinates by non-const reference.  Fixed by a
+    lambda that takes them by value and calls the `Eigen::Vector3i` overload the header itself uses.  **The build
+    script reverted the patch automatically on that failure and rebuilt the original**, so the tree was never
+    left in a half-applied state.
+  * after the fix: `plan_env` 44.6 s, `ego_planner` 42.2 s, rc=0.
+
+**THE FLIGHT TREE'S STATE HAS THEREFORE CHANGED**, and any earlier note saying it carries "only the instruments
+DIAG/1 and DIAG/2" is superseded: it now also carries PATCH DISTANCE-FIELD/1, BUILT but UNFLOWN.  That is a
+deliberate, documented state rather than an accident, and it is one command from the documented configuration:
+    python3 _stage/apply-distance-field1.py --revert && (cd planner_ws && colcon build --symlink-install
+    --packages-select plan_env)
+
+NEXT, in order: (a) a PARKED run and read DIAG/3 -- the field must agree with `getInflateOccupancy`, and a cell
+the query calls occupied must read 0 in the field; (b) only then piece (4), feeding `cps_.base_point` /
+`direction` / `clearance` from the field's gradient so `calcDistanceCostRebound` (`bspline_optimizer.cpp:962`,
+called at `:1841`) multiplies a real term; (c) the flight, against the prediction and refutation already recorded.
