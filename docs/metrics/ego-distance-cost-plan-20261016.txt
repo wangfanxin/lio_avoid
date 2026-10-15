@@ -305,3 +305,24 @@ THE HONEST POSITION AFTER 29 SORTIES: every parameter this planner exposes, thre
 longer "which knob" but whether the term needs a weight the launch file can set (one member added), whether the
 rc=1 is the term destabilising the optimiser, and whether this mission's 0.20 m footprint is the right bar for
 this planner at all.
+
+=== DISPOSITION (round 52): THE FIELD PATCHES ARE REVERTED AND THE TREE IS BACK AT THE DOCUMENTED CONFIGURATION =
+The experiment is finished and refuted, so it comes out of the flight tree -- the same rule this project applied
+to the A* clearance cost and the collision-coverage patch.  What was reverted: PATCH DISTANCE-FIELD/2 (the
+optimiser's new cost term and the `evaluateEDT` query) and PATCH DISTANCE-FIELD/1 (the buffer, the build and the
+DIAG/3 print).  All four files restored from their `.pre-distance1` / `.pre-distance2` copies, the three packages
+rebuilt, and the markers verified absent afterwards.  The patches themselves live on in
+`_stage/apply-distance-field1.py` and `_stage/apply-distance-field2.py` -- idempotent, anchor-checked, and
+reversible -- so the line can be picked up again without re-deriving anything.
+
+WHAT IS LEFT IN THE TREE: only the instruments (DIAG/1 and DIAG/2), exactly as before this line of work started.
+
+WHERE THE LINE STANDS, for whoever picks it up:
+  * the FIELD works and is verified against `getInflateOccupancy` while parked (one sample -- a stronger
+    assertion is written into the plan);
+  * the TERM compiles and flies, and with the weights it was given (0.5 / 0.5, mirrored as a local constant
+    because the node handle is a parameter of `setParam`, not a member) it did not improve the crossing
+    (row 114: -0.225 m, 24% inside, rc=1);
+  * the THREE QUESTIONS left are named: wire the weight to the launch parameter (one member added), examine
+    whether the rc=1 was the term destabilising the optimiser, and decide whether 0.20 m is the right bar for
+    this planner on this mission.
