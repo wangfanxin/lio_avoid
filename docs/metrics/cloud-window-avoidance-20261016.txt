@@ -78,3 +78,28 @@ an obstacle seen from an earlier viewpoint stays in the map through the moment t
           src/tools/run-mission.sh (`EGO_CLOUD_WINDOW`, passed to the relay, printed in the banner)
   reading `_stage/map-vs-distance.py`, `_stage/slice-worst.py`, `_stage/slice-analysis.py`,
           `_stage/rebound-census.py`; flight `_stage/run-diag9.sh`
+
+=== REPRODUCTION, ADDED AFTER THE RUN, AND IT IS NOT AS CLEAN AS THE FIRST (DIAG10) =============
+The paragraph above said "one A/B is not a distribution", so the same flag was flown again on the same mission
+(`logs/missionA-DIAG10-window3-repro`, `EGO_CLOUD_WINDOW=3.0`, HEAD b634876):
+
+                                        DIAG8 (0 s)     DIAG9 (3 s)     DIAG10 (3 s, reproduc.)
+    closest approach to a pillar surface  -0.164 m        +0.150 m        **+0.056 m**
+    samples inside a pillar               2056            0               0
+    the C2 row's own count                5356/48943      2108/53753      8985/58963
+    sortie                                rc=0            rc=0            rc=0, no hang
+
+WHAT REPRODUCES: **no penetration** -- 0 samples inside a pillar surface, twice out of two -- against **six of
+six** ego crossings at window 0 that all penetrated (DIAG2 -0.279, DIAG3 -0.169, DIAG4 -0.071, DIAG5 -0.277,
+DIAG6 -0.129, DIAG8 -0.164 m; the rectangle control DIAG1 -0.299 m is a different planner and is not counted).
+
+WHAT DOES NOT: the MARGIN.  +0.150 m in DIAG9 against +0.056 m here, and the C2 count is four times larger.
+The honest statement is therefore "the window removes the penetration and leaves a clearance that varies by
+about 0.1 m between runs", not "the window gives 0.15 m".  One visible difference between the two runs points at
+where that variance lives: DIAG10's own tracking was worse throughout (A4-v the FCU's EKF 48.70 mm/s against
+29.82, the velocity it was fed 136.46 against 83.92, and B1's box 2.947/3.121 against 3.097/3.024), so part of
+the margin difference is the vehicle flying the same plan less tightly, not the planner choosing worse.
+
+So C2 remains FAILED in every ego crossing so far, and the next lever is no longer the map: it is the margin the
+plan itself keeps, now that the map can hold the obstacle through the approach.
+
