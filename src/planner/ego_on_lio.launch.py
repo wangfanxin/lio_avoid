@@ -109,7 +109,20 @@ def generate_launch_description():
         'grid_map/local_update_range_x': 5.5,
         'grid_map/local_update_range_y': 5.5,
         'grid_map/local_update_range_z': 4.5,
-        'grid_map/obstacles_inflation': 0.099,   # THE hard margin, and it is small
+        'grid_map/obstacles_inflation': 0.099,   # ONE VOXEL, and it is UPSTREAM'S OWN VALUE, not a shortcut of
+                                                # ours: `advanced_param.launch.py:148` sets exactly 0.099.  So
+                                                # this is the number ego-planner-swarm was designed around, and
+                                                # the obstacle standoff is meant to come from somewhere else --
+                                                # `check_collision_and_rebound()` re-routing a colliding
+                                                # B-spline through A* with a 0.5 m (`optimization/dist0`)
+                                                # standoff.  Row 74 tried 0.30 instead, on the arithmetic that
+                                                # a channel of face-to-face gap g is g - 2*inflation wide and
+                                                # this field's narrowest gap is 0.814 m (so 0.30 leaves 0.214 m
+                                                # and 0.40 closes it).  IT FAILED: 2789 rebound A* errors in
+                                                # one crossing, the trailing 2/3 of the trajectory never
+                                                # replanned (316 670 'terminal point in obstacle'), and the
+                                                # vehicle flew through the field to a 0.1 m altitude.  Inflation
+                                                # is NOT the lever here; see STATUS rows 74-75.
         'grid_map/local_map_margin': 10,
         'grid_map/ground_height': LaunchConfiguration('ground_height'),
         'grid_map/virtual_ceil_height': LaunchConfiguration('virtual_ceil_height'),

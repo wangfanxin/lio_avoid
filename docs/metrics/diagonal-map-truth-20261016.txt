@@ -1,0 +1,140 @@
+WHAT EGO'S OWN MAP CONTAINED WHILE IT FLEW THROUGH TWO PILLARS
+2026-10-16   repo HEAD a088371 + PATCH DIAG/1 and DIAG/2 applied in-tree to the ego checkout
+             (the patches are instruments, not part of this repo; `_stage/apply-diag2.py` re-applies them)
+
+=== THE QUESTION, AND WHY NO EARLIER ROUND COULD ANSWER IT =====================================
+The goal's criterion 3 names it exactly: "whether ego's own map saw the pillars via
+`grid_map/occupancy_inflate`".  Three earlier rounds tried to answer it from OUTSIDE the planner and got it
+wrong twice:
+
+  * rows 68-71 inferred the map from the topic `/grid_map/occupancy_inflate`.  That topic is a truncated
+    VISUALISATION (`grid_map.cpp:971` skips cells above `visualization_truncate_height`, 1.8 m here);
+    the planner reads `md_.occupancy_buffer_inflate_` IN PROCESS and never reads that topic.  Finding
+    WITHDRAWN.
+  * rows 68-70 compared MAP cells (frame L) against `world["pillars"]` (frame W) without converting.  The
+    field is symmetric under 180 deg (44 of 46) so the mistake produced plausible numbers.  Finding
+    WITHDRAWN.
+  * row 73 read the plan's own `clr_m` column, which is real and frame-correct, and settled that the PLAN
+    contains points 0.14-0.28 m inside a pillar surface.  That is what made this round possible: it said
+    the failure is upstream of tracking, and it left "the map never had it" and "the planner ignored it"
+    as the only two candidates.
+
+=== THE INSTRUMENT (PATCH DIAG/2) ==============================================================
+Two additions, both inside ego's own code, both compiled into the planner that flew:
+
+  1. A MAP SLICE.  Once a second, `occupancy_buffer_inflate_` -- the array A* and the collision check
+     actually read -- is sampled on a 0.10 m lattice over +-5.0 m around the vehicle at the height it is
+     flying, and printed as 101 rows of 0/1, with the lattice origin in the header.  It is the map's own
+     answer, not a topic.
+  2. A REBOUND CENSUS.  Counters in `check_collision_and_rebound()`: calls, how many found a collision,
+     how many of its A* searches succeeded.
+
+The second one exists because "zero 'a star error' lines" has two readings -- "the hard check never fired"
+and "the check never ran" -- and DIAG2/3/5/6 all showed zero, which is what made this round necessary.
+
+=== THE REFUTED HYPOTHESIS FIRST: RAISING `obstacles_inflation` (DIAG7) =========================
+Row 73 proposed 0.30 m on arithmetic (a channel of face-to-face gap g is g - 2*inflation wide; this field's
+narrowest gap is 0.814 m, so 0.30 leaves 0.214 m).  FLOWN, AND REFUTED:
+
+    run              truth min clearance   inside 0.20 m    rebound A* errors   outcome
+    DIAG2 (0.099)         -0.279 m         13.9%                   0            completed
+    DIAG6 (0.099)         -0.129 m         11.6%                   0            completed
+    DIAG7 (0.300)         -0.262 m          4.8%                2789            HUNG, rc=143, watchdog at 420 s
+
+  * DIAG7's log: **2789** 'a star error' spanning 341.7 s, **316 670** 'terminal point of the current
+    trajectory is in obstacle', **191 838** 'the drone is in obstacle', **2399** 'Failed to generate
+    direction' -- against **0** of each in every 0.099 m crossing.
+  * The vehicle never completed the mission (0 of the mission's corners, ended at 0.1 m altitude).
+  * So 0.30 m inflation closes this field for ego's search.  Inflation is NOT the lever, and
+  * the value in our launch file was never a shortcut of ours: `advanced_param.launch.py:148` sets
+    `grid_map/obstacles_inflation: 0.099` -- THE SAME NUMBER.  Reverted to 0.099 (row 74).
+
+=== THE MAP'S OWN ANSWER (DIAG8, inflation 0.099, rc=0, no hang) ================================
+Mission: `worlds/diagonal.yaml`, both legs chosen to pass through a pillar CENTRE (leg clearance -0.300 m).
+Everything below is measured, not inferred.
+
+1. THE REBOUND IS ALIVE AND IS NOT WHAT FAILED.
+       DIAG/2 rebound: calls=19864 collided=43 astar_ok=43 astar_fail=0
+   19 864 hard `getInflateOccupancy` sweeps along the trajectories, 43 collisions found, and **every one**
+   of the 43 A* rebounds succeeded.  The recovery machinery worked every time it was asked.
+
+2. THE TRUTH WENT THROUGH PILLARS ANYWAY.
+       2056 of 94124 truth samples inside a pillar (2.18%), in TWO incidents:
+         pillar #16  1245 samples, deepest -0.123 m
+         pillar #11   811 samples, deepest -0.164 m
+
+3. AND THE MAP SAID 'FREE' WHERE THE VEHICLE WAS.
+       of the 2056 in-pillar samples, the map's own buffer read OCCUPIED for 34  (1.7%)
+       of all 94124 samples, it read occupied for 358  (0.38%)
+   At the moment of each incident the slice nearest in time held **0% of that pillar's surface** and the
+   vehicle's own cell read free -- while, in the same slice, pillars #6, #12 and #16 at 1.09-1.61 m from the
+   vehicle were held with **31, 39 and 39 cells**.  The map was not blind; it was blind to the one obstacle
+   the vehicle was touching.
+
+4. REPRESENTATION AS A FUNCTION OF DISTANCE (all 63 slices, 1757 pillar-slice observations).
+   Marked cells within 0.45 m of a pillar's centre (its face plus the one inflated cell):
+       centre distance     n     median cells    % of observations with ZERO
+       0.00-0.50 m         4          0                    100%
+       0.50-0.75 m        36         17                     44%
+       0.75-1.00 m        16          3                     44%
+       1.00-1.50 m        46         28                     24%
+       1.50-2.00 m       197         18                     39%
+       2.00-3.00 m       434          0                     50%
+       3.00-4.90 m      1024          0                     54%
+   The near band is empty EVERY time.  (The far bands' zeros are occlusion and perspective: from 3 m a
+   pillar is usually behind another, and the slice samples one z layer -- the honest reading of this table is
+   the NEAR end, where the pillar is unarguably in view.)
+   The two pillars the vehicle hit, as the map saw them while it closed in:
+       #16:  0.29 m:0  0.41 m:0  0.50 m:0  0.50 m:0  0.63 m:0  0.64 m:0  0.64 m:0  0.67 m:0  0.67 m:0  0.70 m:17
+       #11:  0.41 m:0  0.50 m:26  0.78 m:12  0.82 m:0  0.85 m:15  0.86 m:22  1.04 m:0
+
+5. WHY THE MAP CANNOT HOLD A PILLAR YOU ARE ABOUT TO TOUCH -- read from the source, then confirmed above.
+   `GridMap::cloudCallback` (`plan_env/src/grid_map.cpp:815`) does, in this order:
+       this->resetBuffer(camera_pos_ - local_update_range_, camera_pos_ + local_update_range_);   // :835-836
+       ... for every accepted point, for the 3x3x3 inflated neighbourhood:
+       md_.occupancy_buffer_inflate_[idx_inf] = 1;                                                 // :910
+   **A DIRECT WRITE, NOT AN ACCUMULATOR.**  There is no probability, no hit/miss update, no ESDF and no
+   ray-casting in this variant (`grep -rn 'updateESDF3D|evaluateEDTWithGrad|distance_buffer_'` over the whole
+   planner tree returns NOTHING), and `grid_map/p_hit`, `p_occ`, `p_min`, `p_max` -- all set in our launch
+   file -- are read by nothing on this path.  The buffer is cleared and rebuilt from the CURRENT message
+   alone, so **the map is a single-scan shell**: an obstacle exists in it only while this scan sees it, and
+   `inf_step = ceil(0.099/0.1) = 1` cell of inflation (`:841`) is the whole of its thickness.
+   The one other writer, `GridMap::clearAndInflateLocalMap()` (`:578`, writing the same array at `:686`), has
+   the identical clear-then-write shape -- there is no second, accumulating path anywhere in the file.
+   That is also why the optimiser's distance cost is inert for one drone: `calcDistanceCostRebound`
+   (`bspline_opt/src/bspline_optimizer.cpp:962-1001`) measures `cps_.clearance - dist` against
+   `cps_.base_point[i][j]`/`cps_.direction[i][j]`, which in this SWARM variant are OTHER DRONES' points --
+   empty for a single vehicle -- so `optimization/lambda_collision: 0.5` and `optimization/dist0: 0.5`
+   multiply nothing until a rebound has populated them.
+
+=== WHAT IS RULED OUT, AND BY WHAT =============================================================
+  * THE SENSOR'S VIEW -- full 360 deg, no blind sector, and 341 cloud points inside 1 m of the sensor in the
+    recorded scan (azimuth histogram over 24 bins, none empty; elevation -23..+88 deg).  Not the limit.
+  * THE CLOUD BEING TOO SPARSE -- the map receives ~24 000 points/s (median 23 871 over 62 logged seconds,
+    max 42 810) and **accepts 100% of them: rejected x/y/z = 0/0/0** across 1.5 M points.
+  * OUR RELAY -- 198 scans: 3 790 364 -> 1 326 956 points, 35.0% kept by 0.10 m voxel decimation (exactly
+    the map's own cell size), only 72 861 cropped away (1.9%).  The relay builds no geometry and applies no
+    near-field filter; `cloud_relay.py` was read line by line for this round.
+  * THE ACCEPTANCE BOX -- row 71 already loaded the live parameters (5.5/5.5/4.5 m) and row 72 counted the
+    rejections (zero).
+  * RAISING INFLATION -- refuted above, with numbers.
+  * A MISSING THRESHOLD -- there is no threshold to miss: the write is unconditional per accepted point.
+
+=== WHAT THIS DOES NOT ESTABLISH ==============================================================
+Why a pillar goes UNMARKED below ~0.5 m when the cloud still carries near-field points.  Three candidates
+remain, and none is measured:
+  a. the LIO's registered cloud drops or displaces returns from a surface it is nearly touching;
+  b. the single-scan reset destroys a pillar that is only intermittently seen as the vehicle closes on it
+    (the same mechanism, seen from the map's side);
+  c. something in the 0.10 m voxel decimation at very short range.
+The fix does not have to wait for the answer: if the map cannot remember, the RELAY can -- forwarding a
+short sliding-window union of recent scans would give the shell the persistence the planner needs, entirely
+inside our own code, and DIAG/2 measures the result the same way.
+
+=== THE FILES ==================================================================================
+  figure   docs/figures/round8/map-representation-vs-distance.png
+           sha256 6f1d048e2c08a34563019d9b1c7438e6f6d9590d82c8641732f8705368ccbeaf
+  slices   logs/missionA-DIAG8-map-slice/ego_planner.log  (63 slices, 101x101 each, 1 Hz)
+  readings run by `_stage/slice-analysis.py`, `slice-worst.py`, `slice-audit.py`, `blob-check.py`,
+           `map-vs-distance.py`, `why-map-blind.sh`, `rebound-census.py`
+  refuted  logs/missionA-DIAG7-inflate-030/  (the inflation experiment)
