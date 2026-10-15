@@ -1,0 +1,80 @@
+THE VELOCITY STAIRCASE, MEASURED FROM THE FCU'S OWN LOG
+=========================================================================
+Written 2026-10-16.  This settles the SIZE and the SHAPE of the external-nav velocity the EKF is fed; it
+does NOT yet change `VISO_VEL_M_NSE` and it does NOT re-measure the FCU's velocity estimate -- both of
+those need a flight, and section 4 says exactly what that flight has to compare.
+
+
+1. WHAT THE EKF IS FED, FROM THE WITNESS THAT CANNOT BE ARGUED WITH
+-------------------------------------------------------------------
+`/lio/odom` carries the LIO's linear velocity and is published at ~10 Hz (`STATUS` row 22: 10.02 Hz);
+`bridge/bridge_node.py` samples the newest message every tick and writes class-331 ODOMETRY at ~48 Hz.  The
+FCU logs the velocity it received as **VISV**, so `_stage/extnav-stair.py` reads the stair out of the
+flight's own BIN.  Two sorties, both on the owner's profile:
+
+  sortie            VISV msgs   span      rate      spacing median/p05/p95   DISTINCT velocities
+  RECT39-shaping      2910      61.93 s   46.97 Hz  22.49 / 17.49 / 24.99 ms  620 in 61.93 s = 10.01 Hz
+  RECT34-accept       2988      63.61 s   46.96 Hz  22.49 / 17.49 / 24.99 ms  637 in 63.61 s = 10.01 Hz
+  RECT26-accept       2496      52.96 s   47.11 Hz  22.49 / 17.49 / 24.99 ms  530 in 52.96 s = 10.01 Hz
+
+  THE STAIR, |dv| between consecutive samples (mm/s), BOTH CONDITIONINGS -- because the earlier record
+  (`docs/metrics/ekf-tight-20261015.txt` section 5: median 10.41, p90 134.73, max 287.28) quotes the second
+  one, and a reader has to be able to see that the two are the SAME measurement:
+                    every sample            the samples where the value MOVES
+    sortie          p90     p99     max     p50     p90     p99     max
+    RECT39-shaping   10.9   166.3   271.6     9.2   125.7   234.8   271.6
+    RECT34-accept    14.1   181.0   274.3    12.6   138.8   238.2   274.3
+    RECT26-accept    12.3   186.7   282.2    11.2   125.7   244.9   282.2
+      steps > 0.1 mm/s: 619 of 2909 (21.3 %), 636 of 2987 (21.3 %), 529 of 2495 (21.2 %);
+      the other ~79 % of the samples are HELD values, and the hold is
+      **median 5 samples = 112.5 ms** (p90 5, max 6-7) in all three.
+
+  So the stream carries **10.01 Hz of real information at 47 Hz**: 79 % of the messages the EKF consumes
+  repeat the previous velocity exactly, and the value changes every 112.5 ms -- the LIO's own publication
+  period.  The step RATE (|dv| / dt where it moves) is p50 428-587 mm/s, p90 5977-6768 mm/s, max 15528 mm/s,
+  i.e. a 0.13 m/s jump inside one 22 ms interval is an apparent 6 m/s^2 of acceleration that no vehicle
+  produced.
+
+
+2. WHY THAT IS A NOISE-MODEL QUESTION AND NOT A COSMETIC ONE
+------------------------------------------------------------
+`VISO_VEL_M_NSE` is the standard deviation the EKF is TOLD the external velocity measurement has
+(`AP_VisualOdom`; the mission's parameter files set it to **0.0300 m/s**).  A zero-order hold at 47 Hz
+presents the SAME 10 Hz sample five times as five independent measurements: the filter's information about
+velocity is inflated by roughly sqrt(5) while the errors in those five samples are perfectly correlated, so
+the covariance it keeps is optimistic in a way the parameter cannot express.  The measured step at p90
+(126-139 mm/s) and the max (272-282 mm/s) are the sizes of the error the hold actually injects, and a
+135 mm/s step declared as 30 mm/s of noise is a ~4.5 sigma innovation every 100 ms.
+
+AND THERE IS NO COVARIANCE PATH FOR THE VELOCITY: `GCS_MAVLINK::handle_odometry` (`GCS_Common.cpp:4052`)
+reads `pose_covariance` for posErr/angErr but calls `handle_vision_speed_estimate(...)` with the SPEED
+estimate, and EKF3 takes the velocity noise from `_frontend.get_vel_noise()` (`AP_VisualOdom_MAV.cpp:79`).
+The source cannot declare its own velocity accuracy, so the parameter or the source RATE is the only lever
+(measured and recorded in `docs/metrics/ekf-tight-20261015.txt` section 5, which left the parameter alone on
+purpose so that its own result stayed attributable -- and the same run read the FCU's velocity estimate
+getting worse, N 13.66 -> 36.76 mm/s, which is consistent with the staircase and not with its position
+change).
+
+
+3. WHAT IS NOT MEASURED HERE
+----------------------------
+The FCU's own velocity error against the truth (the quantity a noise parameter is supposed to bound) needs
+the tap and the BIN on one clock.  `tools/metrics.py`'s A4 already does that alignment for POSITION by
+fitting the take-off ramp -- RECT21's A4 block reads the FCU's velocity estimate as **N 36.76 mm/s** -- and
+the same fit is what a velocity comparison has to use.  Nothing in this file claims the EKF's velocity
+estimate is wrong, only that the input it is computed from is a 10 Hz stair and that the parameter does not
+say so.
+
+
+4. WHAT THE NEXT FLIGHT MUST COMPARE (the honest version of "fix the rate or set the parameter")
+------------------------------------------------------------------------------------------------
+  * (a) SET `VISO_VEL_M_NSE` FROM THE MEASUREMENT, not from taste: the candidate is the measured rms of
+        (fed velocity - truth velocity) over the route window, and the file must state the number and the
+        window.  The stair's own p99 step (166 mm/s) is the upper bound of what a hold can inject.
+  * (b) OR MAKE THE INFORMATION RATE HONEST (publish `/lio/odom` at the rate its consumers use, or relay
+        the newest sample with the age it has, so the filter can discount a stale repeat).  This is a change
+        in `super_lio`'s publication or in the bridge's relay rule, and it belongs to the LIO line, which is
+        pinned to `f89f48d`.
+  * Either way the SAME sortie must be flown twice, once per configuration, and A1/A2/A4 compared with the
+    denominators this project always uses; A4's velocity half has to be added to `tools/metrics.py` first,
+    because today A4 reports positions only.

@@ -204,6 +204,22 @@ pitch must be ~0, never ~45 deg**, and the two are measured side by side (`body 
 * **T6 — a frame error can survive a small number.** A1/A2 (LIO vs truth) are computed with a fitted
   rotation, so they are *blind* to a wrong constant: the fit absorbs it.  A4 (the FCU's own estimate vs
   the truth) is not, which is why it exists, and why the round trip is printed at publish time.
+* **T7 — a ROW of a log can mix frames, and one of ours does.**  `phase.csv` (the supervisor's phase log)
+  carries `cmd_x/cmd_y/cmd_z` in **W** and `lio_x/lio_y/lio_z` in **L** on the SAME row, and the `cmd_*`
+  values are the last sample the supervisor saw, so at a phase transition they can be **one poll stale**
+  — MEASURED 2026-10-16 on `RECT34-accept`: the row that opens the `leg2` phase still says
+  `cmd=(0, 0, 2.5)`, the climb leg's target, while the plan had already advanced to corner 1
+  (`traj.csv.cmd.csv` puts the switch at the same instant).  A reader who takes `cmd_*` as "the target of
+  this phase" is off by one leg at every boundary.  The authoritative command record is
+  `traj.csv.cmd.csv` (every `/plan/cmd` message, in L) and `wire.csv` (every class-84 sample, L input, W
+  output, NED z, mask); `phase.csv` is the supervisor's own timeline, not a command stream.
+* **T8 — the intended-versus-commanded tool refuses to print a metre-scale number when the convention
+  shifts.**  `tools/command-vs-intended.py` compares what the plan asked for with what the world file
+  commands, corner by corner, and it DETECTS the phase-row convention above: with a climb leg in the tour,
+  the phase rows' `cmd_*` shift by one leg, and the naive comparison reports a metre-scale "error" that is
+  a row-index mismatch rather than a frame error.  It refuses that reading and says so, because the two
+  failures look identical in the output and only one of them is a frame defect.  The same rule as T6, one
+  level up: a number that CAN be a bookkeeping artefact must not be quoted as a frame measurement.
 
 ## 4. The tests that must pass
 
