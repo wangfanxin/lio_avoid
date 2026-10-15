@@ -409,3 +409,24 @@ Recorded verbatim rather than paraphrased, because the next step (if this line i
 the mode change came from a failsafe this project can name or from something the harness itself did.  What is
 already established and unchanged: the aircraft reached 508 m and 245 m out, the FCU was in LAND with the bridge
 reporting `armed=1`, and the plan box was still publishing under a single trajectory id (row 117).
+
+=== WHERE A FAILSAFE'S TRACE WOULD HAVE TO GO (round 58): A REFUSED PATCH AND A POINTER ==============
+Item 4 of the handoff says a failsafe must leave a trace WHEN IT HAPPENS -- DIAG29's entire cause survived only
+as one teardown line that my own grep had truncated.  `_stage/trace-statustext.py` was written to add one
+timestamped log line at the FCU-text site, with the same refuse-unless-certain rule the field patches used, and
+**it refused and changed nothing** -- correctly, because the guess was wrong about the mechanism:
+
+    grep -n 'STATUSTEXT|statustext|text' src/supervisor/supervisor.py
+      17:  * its OWN endpoint -- heartbeat/position age, armed, mode, landed_state, statustext.
+     436/464:  return "arming refused: %s" % _texts(self.bridge.state())
+     676:  self.log("the FCU's last words: %s" % _texts(st))
+     684:  def _texts(st):
+
+There is **no literal STATUSTEXT site in the supervisor**: the FCU's text is carried inside the BRIDGE's state
+(`self.bridge.state()`), accumulated, and printed only at teardown through `_texts(st)`.  So the instrumentation
+belongs one layer down -- where the bridge appends to that state as MAVLink STATUSTEXT messages arrive -- and the
+supervisor's `:676` is the consumer, not the source.
+
+WHAT THIS ROUND LEAVES: no change to any file (the script's refusal is the record), a pointer to the right layer
+for item 4, and one more instance of the pattern this project has used to avoid half-applied work: **a patch
+script that refuses when its assumption is not confirmed by the file itself**.
