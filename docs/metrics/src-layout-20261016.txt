@@ -1,0 +1,73 @@
+THE CODE MOVED UNDER `src/`, AND THE MOVED TREE FLEW
+================================================================================
+Written 2026-10-16, at the owner's instruction: "git上和本地的代码太乱了，我希望是一个干净的文件夹，所有代码
+子文件都放在一个src里".  Commit `c37d84e` is the move; the sortie that proves it is `RECT47-accept-src-layout`.
+
+
+1. WHAT MOVED, AND WHAT DELIBERATELY DID NOT
+--------------------------------------------
+    before (18 entries at the top)                 after
+    bridge common lio planner sim supervisor tools  ->  src/<the same eight>
+    patches/                                        ->  src/patches/
+    ros_ws/src/quadrotor_msgs/                      ->  src/quadrotor_msgs/   (ros_ws/ then removed)
+    src/lio-fork-local/                             ->  unchanged (already vendored under src/)
+    docs/ frozen/ params/ rviz/ worlds/ firmware/   ->  UNCHANGED, and they must stay: `frozen/
+                                                        mission_a.manifest` pins 53 artifacts by SHA-256
+                                                        at these exact paths
+    README.md .gitignore env.sh                     ->  unchanged (the front door and the shell env)
+
+Top level now: `.gitignore  README.md  docs  env.sh  firmware  frozen  params  rviz  src  worlds`.
+
+
+2. THE DISTINCTION THE MOVE INTRODUCED, AND THE GATE THAT KEEPS IT
+------------------------------------------------------------------
+A tool now needs TWO roots: the **code root** (`<repo>/src`, what it imports) and the **project root**
+(`<repo>`, what it reads: worlds/, params/, docs/, frozen/, rviz/).  Every python tool derives a root from
+`__file__`, and after the move that value IS the code root -- right for `sys.path.insert`, wrong for the
+data joins.  So the 12 tools that join a data directory now compute `PROJ = abspath(join(ROOT, ".."))` and
+join that, and the nine shell scripts that had one `$REPO` doing both jobs say `ROOT=` and `REPO="$ROOT/src"`.
+
+THE CASUALTY THAT PROVES THE NEED: `src/tools/frozen-check.py` found its manifest through the project root
+and then resolved every ENTRY against the code root, and printed
+`FROZEN SET BROKEN: 0 changed, 53 missing`.  Fixed; `frozen-check` reads 53 of 53 again.
+
+`src/tools/test-layout.py` is the new gate (offline, seconds): both roots and the directories on each side;
+every module under `src/` imported; every tool answering `--help`; every tracked code file grepped for the
+pre-move layout (`sys.path.insert` of the repository root, `$REPO/params`, a data join on `ROOT`); and then
+`frozen-check` and `docs-budget` run -- the two tools whose whole job is the project side, i.e. the ones a
+layout mistake breaks first.  Two modules and three tools are allowlisted WITH their reasons (they read
+`sys.argv` at import time, or treat `argv[1]` as data before argparse runs).
+MEASURED: 59 modules imported (0 failures), 42 of 45 tools answer `--help`, 68 code files scanned with 0
+stale references, frozen-check rc=0, docs-budget rc=0.  `LAYOUT TEST PASSED`.
+
+Also removed from the tree: `src/sim/debug_selftest.py` (a one-off probe referenced NOWHERE, hard-coding the
+old runtime path `/home/fanxin/lio_avoid/sim` and calling an API `src/sim/raycast.py` no longer has), and the
+untracked byproducts of flying with the repository as the working directory (`fsm/` holding only
+`__pycache__`, `terrain/`, `eeprom.bin`) -- moved OUT to `_keep/stale-runtime-20261016/`, nothing deleted.
+
+The frozen tag `mission-a-rect46` still points at the PRE-move tree, so the frozen version stays exactly
+rollback-able; inside frozen artifacts (and inside the evidence files under `docs/metrics/`) the paths quoted
+are the paths of their time, on purpose.
+
+
+3. THE MOVED TREE FLEW: `RECT47-accept-src-layout`
+--------------------------------------------------
+The offline gate cannot see the paths the harness SPAWNS processes with, so the move was verified by flying
+the frozen configuration ONCE through the restructured tree (`src/tools/run-mission.sh`):
+
+    phases      preflight takeoff hold leg1 leg2 leg3 leg4 leg5 leg6 land done   (11, no abort, no timeout)
+    A1 3.55 mm      A2 1.65 mm      A4 8.91 mm (lag +80 ms)      A4-v 25.09 mm/s (own lag -12 ms)
+    B1 E 2.092 m  N 1.246 m   [PASS]
+    B2 6 of 6 legs (worst perpendicular 3.6-30.8 mm)      B3 5 of 5 corners (0.2-10.4 mm)
+    B4 'land' -> yes      C2 minimum pillar-surface 0.562 m, 0 of 61056 samples inside 0.20 m
+    dwell 4 of 4 corners >= 5.0 s strict (airborne > 0.5 m): 9.00 / 8.49 / 6.34 / 9.19 s
+    no ABORT, no leg timeout, no EKF failsafe; the FCU's take-off shape as in every promoted sortie.
+
+**AND B1 PASSED FOR THE FIRST TIME ON THIS ARM -- WHICH IS A DATUM, NOT A CLAIM.**  E is 2.092 m against the
+2.10 m bound, the lowest ever recorded, but the same configuration has produced **2.092-2.128 m over five
+sorties** (RECT43 2.116, RECT44 2.117, RECT45 2.128, RECT46 2.113, this one 2.092) and the older
+configuration 2.110-2.170 m over twelve.  One sortie at the edge of a distribution does not move the
+distribution, the bound did not change, and this release does not claim B1 is fixed: the mechanism (the
+position loop's ring at every corner arrival, `docs/metrics/b1-approach-shaping-20261016.txt`) is untouched
+by a code move.  What the pass does prove is that the move changed NOTHING about how the stack flies: every
+other row is identical in kind to RECT43-46, and B1's value sits where the distribution says it should.
