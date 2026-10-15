@@ -126,3 +126,21 @@ implementer should confirm it in the file rather than trusting this line, and th
 unchanged: the field must be built from `occupancy_buffer_inflate_` (what the collision check and A*
 read), not from the raw buffer, or the optimiser and the check will disagree silently.
 
+
+=== PLAN STEP 2 CLOSED (round 41): WHEN THE HOOK RUNS, READ FROM THE FILE =================
+Generated from the source, not written in advance.  Call sites of `clearAndInflateLocalMap()`:
+
+    578:void GridMap::clearAndInflateLocalMap()
+    740:    clearAndInflateLocalMap();
+
+the timer(s) the map sets up:
+
+reading: the function is NOT called from `cloudCallback` (which owns the per-message reset at :835 and
+the marking loop), so a distance field rebuilt inside it would be rebuilt on whatever timer drives it --
+and would be STALE against the array the collision check reads for as long as that period lasts.  THE
+CONSEQUENCE FOR THE IMPLEMENTATION, stated so it is not discovered in flight: the field belongs at the
+END of `cloudCallback`'s marking loop (after :910's writes and before the next consumer), NOT in
+`clearAndInflateLocalMap()`; or, if the timer is fast enough to be indistinguishable, that must be
+MEASURED and recorded rather than assumed.  A field that lags the map is exactly the species of silent
+disagreement this plan's step 2 warns about.
+
