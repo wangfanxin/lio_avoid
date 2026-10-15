@@ -244,3 +244,30 @@ distrust.
 NEXT: piece (4), the feed -- fill `cps_.base_point` / `cps_.direction` / `cps_.clearance = dist0_` from the
 field's gradient once per optimisation, so `calcDistanceCostRebound` (`bspline_optimizer.cpp:962`, called at
 `:1841`) multiplies a real term; then the flight, against the prediction and refutation already written down.
+
+=== PIECE (4) IS WRITTEN, APPLIED AND BUILT (round 50): THE OPTIMISER HAS A REAL DISTANCE TERM ==========
+`_stage/apply-distance-field2.py` adds, and the build accepts (`plan_env` 45.9 s, `bspline_opt` 17.6 s,
+`ego_planner` 42.1 s, rc=0):
+
+  * `GridMap::evaluateEDT(pos, dist, grad)` -- nearest-cell distance from `distance_buffer_`, central differences
+    for the gradient, and **outside the map reads as FAR, not occupied** (the -1 convention is what deadlocked a
+    whole sortie);
+  * `BsplineOptimizer::calcFieldDistanceCost(q, cost, gradient)` -- `lambda_collision * max(0, dist0 - d)^2` per
+    control point, the same quadratic shape the classic ego-planner used.  What was missing here was never the
+    shape but the field.
+  * one ADDITIVE call beside the existing `calcDistanceCostRebound` at `:1841`.  It deliberately does NOT write
+    into `cps_.base_point` / `cps_.direction`, which `check_collision_and_rebound()` owns and overwrites, so
+    nothing that already works was modified and the term can be switched off by deleting one line.
+
+TWO BUILD FAILURES, BOTH CAUGHT BY THE HARNESS AND AUTO-REVERTED, and each taught something:
+  * the method was first APPENDED to the end of `bspline_optimizer.cpp`, i.e. outside the namespace -- the build
+    said `'BsplineOptimizer' has not been declared` and the tree was reverted and rebuilt clean;
+  * then `node` was not in scope: the node handle is a PARAMETER of `setParam(rclcpp::Node::SharedPtr node)`
+    (`bspline_optimizer.h:95`), not a member.  This first version therefore mirrors
+    `optimization/lambda_collision` as a local constant, and **wiring it to the launch parameter needs one member
+    added** -- recorded here rather than left as a surprise.
+
+**THE FLIGHT TREE NOW CARRIES THE COMPLETE IMPLEMENTATION** -- PATCH DISTANCE-FIELD/1 and /2, built, UNFLOWN.
+The next single action is the flight at window 8, against the prediction recorded at the top of this plan
+(the plan's own minimum clearance rising from its measured +0.040..+0.126 m toward `dist0`; refutation: no
+change).  Revert is two commands, one per patch, both named in the build scripts.
