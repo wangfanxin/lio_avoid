@@ -125,6 +125,15 @@ def main() -> int:
     ap.add_argument("--vertical-hold-s", type=float, default=3.0,
                     help="how long to HOLD the vertical first target (the A4 window).  Only used with "
                          "--vertical-first-m; 3.0 s is the F1/F2 take-off hold")
+    ap.add_argument("--approach-shaping-m", type=float, default=0.0,
+                    help="APPROACH SHAPING (B1's remedy, 2026-10-15): insert ONE waypoint this far before "
+                         "each tour corner, ON the leg, with NO dwell of its own -- the vehicle must come to "
+                         "a SETTLED stop there (the settle gate is unchanged), so the final approach into "
+                         "the corner starts from REST instead of braking from 1.7 m/s.  WHY: B1's box is "
+                         "made by the under-damped ring that braking excites -- measured 35-93 mm past each "
+                         "wall with both extremes at ~0 m/s (docs/metrics/b1-mechanism-20261016.txt) -- and "
+                         "the one leg this mission already flies from rest (the 0.64 m entry from the pad) "
+                         "overshoots 2-6 mm.  Default 0.0 = OFF: the mission as every earlier sortie flew it")
     ap.add_argument("--spacing", type=float, default=0.05,
                     help="kept for the tour's own geometry print and the tests; nothing publishes a "
                          "polyline any more")
@@ -209,6 +218,44 @@ def main() -> int:
     print("   the tour is %d WAYPOINTS (entry = corner 1, then the four square legs); dwell %.1f s at "
           "each corner of the tour, none on the entry" % (len(targets_w), hold_s))
 
+    # ---- APPROACH SHAPING (B1's remedy).  The plan commands ONE point at a time, so the FCU's position
+    # loop owns the whole approach; MEASURED, it brakes from 1.26-1.75 m/s into a corner and that braking
+    # excites an under-damped ring whose outer swing is 35-93 mm PAST the wall with the extreme at ~0 m/s
+    # (`docs/metrics/b1-mechanism-20261016.txt`, all four extremes of nine sorties).  B1's box is that
+    # swing.  Shaping inserts one extra waypoint `--approach-shaping-m` SHORT of each corner, ON the leg:
+    # the vehicle must come to a settled stop there (the settle gate is untouched), so the last approach
+    # into the corner starts from rest -- and the one leg this mission already flies from rest, the 0.64 m
+    # entry from the pad, overshoots 2-6 mm.
+    #
+    # WHICH LEGS: only those longer than THREE times the shaping distance, so the 0.64 m pad->corner-1
+    # transit keeps its geometry (it is already the from-rest case) and only the 1.2 m and 2.0 m legs are
+    # split.  The inserted waypoint gets a dwell of ZERO: it must be STOPPED AT, not held -- the tour's
+    # dwells belong to the tour's corners.
+    holds = None
+    if args.approach_shaping_m > 0.0:
+        d = float(args.approach_shaping_m)
+        shaped, hs, inserted = [], [], []
+        for i, b in enumerate(targets_w):
+            if i > 0:
+                a_ = targets_w[i - 1]
+                seg = np.asarray(b[:2], float) - np.asarray(a_[:2], float)
+                L = float(np.linalg.norm(seg))
+                if L > 3.0 * d:
+                    u = seg / L
+                    q = np.array([b[0] - u[0] * d, b[1] - u[1] * d, b[2]])
+                    shaped.append(q)
+                    hs.append(0.0)
+                    inserted.append((len(shaped), q, L))
+            shaped.append(np.asarray(b, float))
+            hs.append(0.0 if i == 0 else hold_s)
+        targets_w = np.array(shaped)
+        holds = np.array(hs, float)
+        print("   APPROACH SHAPING: %.3f m before every tour leg longer than %.3f m -- %d waypoints added "
+              "(dwell 0.0 at each: stopped at, not held), tour now %d waypoints"
+              % (d, 3.0 * d, len(inserted), len(targets_w)))
+        for k, q, L in inserted:
+            print("      w%d: %.3f m before the corner, on a %.3f m leg" % (k, d, L))
+
     # W -> L.  MEASURED 2026-10-13, and it cost 51 mm: this node used the PREDICTED transform while the
     # FSM converted L->F with the MEASURED one, and the two disagree in t (predicted t_N = +50 mm, from
     # the sensor's 0.05 m lever arm, against a measured t_N = -4 mm).  The commanded corners therefore
@@ -228,6 +275,9 @@ def main() -> int:
     if args.vertical_first_m is not None:
         vert = np.array([[0.0, 0.0, float(args.vertical_first_m)]])
         targets_w = np.vstack([vert, targets_w])
+        if holds is not None:
+            # the climb takes the A4 hold, and every shaped waypoint keeps the dwell it was built with
+            holds = np.concatenate([[float(args.vertical_hold_s)], holds])
         print("   VERTICAL FIRST TARGET: straight up from the pad to U %+.3f m, held %.1f s, THEN the tour"
               % (args.vertical_first_m, args.vertical_hold_s))
         print("      (this is the setpoint-driven take-off's climb leg: leg1 = the climb, leg2..leg%d = the "
@@ -355,7 +405,10 @@ def main() -> int:
                                  # gets a real dwell (the default entry_hold_s is 0.0 because the tour's
                                  # dwells belong to the tour's corners -- true before this leg existed).
                                  entry_hold_s=(args.vertical_hold_s
-                                               if args.vertical_first_m is not None else 0.0))
+                                               if args.vertical_first_m is not None else 0.0),
+                                 # APPROACH SHAPING's per-waypoint dwells (None when shaping is off, and
+                                 # then `hold_for` is exactly the entry/corner rule it always was)
+                                 holds=holds)
 
     def step(now):
         """One pacing tick, from the odometry stream.  Keeps a W sample of the leg's start in L for the

@@ -105,6 +105,17 @@ WORLD_HOLD_S="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv
 TAKEOFF_COMMAND_M="${TAKEOFF_COMMAND_M:-0.2}"
 VERTICAL_FIRST="${VERTICAL_FIRST:-1}"
 VERTICAL_HOLD_S="${VERTICAL_HOLD_S:-3.0}"
+# APPROACH SHAPING (the B1 remedy, 2026-10-15): 0.0 = off, the mission as it has always been flown.  A
+# positive value inserts ONE extra waypoint that far before each tour corner, ON the leg, with no dwell of
+# its own -- the vehicle must come to a SETTLED stop there (the settle gate is unchanged), so the final
+# approach into the corner starts from rest instead of braking from 1.7 m/s.  WHY: B1's box is made by the
+# under-damped ring that braking excites, measured at 35-93 mm past each wall with the extremes at ~0 m/s
+# (`docs/metrics/b1-mechanism-20261016.txt`).
+SHAPING_M="${SHAPING_M:-0.0}"
+SHAPING_ARG=""
+if awk "BEGIN{exit !($SHAPING_M > 0)}"; then
+    SHAPING_ARG="--approach-shaping-m $SHAPING_M"
+fi
 if awk "BEGIN{exit !($TAKEOFF_COMMAND_M == $TAKEOFF_ALT)}"; then
     TAKEOFF_PROFILE="FCU-TARGET -- packet.z = ${TAKEOFF_COMMAND_M} m VERBATIM, the FCU's own take-off controller flies the whole climb"
     VERTICAL_ARG=""
@@ -357,7 +368,7 @@ echo "== flying =="
 # decides ARRIVAL + SETTLE + DWELL itself from `/lio/robo/odom`, and declares the tour complete with
 # `trajectory_flag = COMPLETED`.
 python3 "$REPO/planner/rectangle_source.py" --world "$WORLD" $TRAJ_CALIB_ARG \
-    --hold-s "$RECT_HOLD_S" $VERTICAL_ARG \
+    --hold-s "$RECT_HOLD_S" $VERTICAL_ARG $SHAPING_ARG \
     ${CMD_ARGS:-} > "$OUT/traj.log" 2>&1 &
 TRAJ_PID=$!
 

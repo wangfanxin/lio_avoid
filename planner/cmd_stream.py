@@ -158,7 +158,7 @@ class TourPacer:
     def __init__(self, targets_w, hold_s, arrive_m, settle_speed_mps, settle_s, leg_timeout_s, now,
                  log=None, seg_len_w=None, odom_label="", leg_speed=0.30, entry_hold_s=0.0,
                  arm_above_m=0.50, arm_move_m=0.50, arm_near_m=0.30, warn_period_s=15.0,
-                 vertical_arrive_slack_m=0.20):
+                 vertical_arrive_slack_m=0.20, holds=None):
         self.targets_w = np.asarray(targets_w, dtype=float)
         self.n_leg = int(len(self.targets_w))
         self.hold_s = float(hold_s)
@@ -169,6 +169,8 @@ class TourPacer:
         #: extra gate for a VERTICAL leg only -- see the arrival block in `step`.  0.20 m covers this stack's
         #: measured ~0.1 m altitude-datum term with room to spare, and it is applied to NO other leg.
         self.vertical_arrive_slack_m = float(vertical_arrive_slack_m)
+        #: per-waypoint dwells, or None for "entry_hold_s at the entry, hold_s at every other waypoint"
+        self.holds = None if holds is None else [float(h) for h in holds]
         self.leg_timeout_s = float(leg_timeout_s)
         self.arm_above_m = float(arm_above_m)
         self.arm_move_m = float(arm_move_m)
@@ -211,7 +213,15 @@ class TourPacer:
         return np.asarray(self.targets_w[self.i_leg], dtype=float)
 
     def hold_for(self, i):
-        """The dwell required after arriving at waypoint `i`."""
+        """The dwell required after arriving at waypoint `i`.
+
+        `holds`, when the caller gives one, is a per-waypoint dwell in the order of `targets_w`.  It exists
+        for APPROACH SHAPING (2026-10-15): an inserted waypoint short of a corner must be STOPPED AT but not
+        HELD (the tour's dwells belong to the tour's corners), and the entry leg keeps its own 0.0.  Without
+        `holds` this is exactly the two-value rule it always was.
+        """
+        if self.holds is not None and 0 <= i < len(self.holds):
+            return self.holds[i]
         return self.entry_hold_s if i == 0 else self.hold_s
 
     def leg_start_w(self):
