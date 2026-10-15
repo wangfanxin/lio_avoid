@@ -1,0 +1,1142 @@
+B1's box growth attributed to walls, corners and legs: an ARRIVAL RING of the position loop
+date: 2026-10-16   tool: tools/b1-edge-budget.py (new in this round; re-runnable on any run dir)
+data: each run's OWN tap.csv (1200 Hz truth), phase.csv (the phase log), setpoints.csv (the bridge's
+      50 Hz record of the commanded point, the FCU's own estimate and the LIO) and lio.csv
+window: tools/metrics.py's rule as of 2026-10-15 -- the window opens at the FIRST LEG PHASE whose own
+      recorded truth position is within 0.15 m of corner 1, and closes at the `land` phase entry.  The
+      old index rule (the second leg phase) is printed beside it whenever the two differ; it is what
+      reads E 2.584 / N 1.651 on RECT34-accept, whose setpoint-driven take-off put a climb leg in front
+      of the tour.  Every number below uses the NEW rule.
+nothing here re-derives what is already settled: the pad is not in the window and the entry leg is not
+      the cause (docs/metrics/B1-adjudication-20261015.txt sections 1-2), and the bound is not touched.
+
+================================================================================
+== 0. THE ROW, AND THE FOUR NUMBERS IT IS MADE OF
+================================================================================
+tools/metrics.py prints one number per axis, and that number factorises EXACTLY:
+
+    growth_E = max(0, x0 - min E) + max(0, max E - x1)        (the two E walls)
+    growth_N = max(0, y0 - min N) + max(0, max N - y1)        (the two N walls)
+
+so B1's 110 mm of E over RECT26 is TWO numbers, and this file is the story of those two numbers.  The
+tool checks the identity on every run; the residual is printed and is 0.000 mm everywhere (the extremes
+are inside the window, so the identity is exact by construction, not by luck).
+
+================================================================================
+== 1. THE ATTRIBUTION: WHICH WALL, WHICH CORNER, HOW MANY MILLIMETRES
+================================================================================
+Table 1 (the tool's SUMMARY, mm past each wall; the two E walls add to growthE, the two N walls to
+growthN).  Ten sorties: the three the brief asks for, the four pre-F1 ones, the two newest acceptance
+sorties, and the SLOW-ARM control (logs/missionA-stepB10-01-*, params/phase_a_mission.parm, WP_SPD 0.25):
+
+   run                        E-min   E-max   N-min   N-max | growthE growthN | B1   owner corners
+   RECT34-accept              +69.9   +92.8   +54.6   +49.1 |  +162.7  +103.7 | FAIL c4 c2 c1 c3
+   RECT33-accept              +65.6   +49.3   +71.4   +32.0 |  +114.9  +103.4 | FAIL c4 c2 c1 c3
+   RECT26-accept              +75.3   +35.1   +42.2   +45.9 |  +110.4   +88.1 | FAIL c4 c2 c1 c3
+   RECT23-plan-cmd            +85.4   +73.4   +60.7   +36.9 |  +158.8   +97.7 | FAIL c4 c2 c1 c3
+   RECT24-plan-cmd            +88.2   +81.6   +56.9   +42.9 |  +169.8   +99.8 | FAIL c4 c2 c1 c3
+   RECT7-hold5                +80.5   +73.4   +51.1   +36.0 |  +153.9   +87.2 | FAIL c4 c2 c1 c3
+   RECT9-hold5                +69.2   +73.7   +58.8   +38.6 |  +142.9   +97.4 | FAIL c4 c2 c1 c3
+   RECT10-hold5               +81.7   +72.8   +57.4   +31.9 |  +154.5   +89.4 | FAIL c4 c2 c1 c3
+   RECT11-hold5               +61.0   +75.7   +60.4   +64.0 |  +136.7  +124.4 | FAIL c4 c2 c1 c3
+   stepB10-01 (SLOW arm)      +24.2   +14.2   +97.2   -42.2 |   +38.4   +55.0 | PASS -- (no cmd stream)
+
+READ IT: the ownership is the same on nine of the nine FAILing sorties and it does not wander:
+
+  * E-min  (E = 0.500): always corner 4, the arrival of leg 4 (the 2.0 m leg that flies -E along N=1.6).
+  * E-max  (E = 2.500): always corner 2, the arrival of leg 2 (the 2.0 m leg that flies +E along N=0.4).
+  * N-min  (N = 0.400): always corner 1, the CLOSING arrival of leg 5 (flying -N along E=0.5).
+  * N-max  (N = 1.600): always corner 3, the arrival of leg 3 (the 1.2 m leg that flies +N along E=2.5).
+
+The two long legs (2.0 m) own the E growth and two of the four N walls' worth; each corner's contribution
+is the excursion PAST the wall the arriving leg runs along, i.e. there is no mid-leg component at all in
+nine of the ten sorts.  The one exception is the pre-F1/F1 N-min wall, where the largest outward point is
+NOT at a corner but 0.33-0.48 m out of corner 1, at 1.5 m/s: the DEPARTURE dip (see section 4c).  It is
+distinguishable in the tool's own output by its speed column -- 1.5 m/s against 0.001-0.012 m/s for every
+corner event.
+
+For RECT26, the brief's row, in full (the tool's TABLE A):
+
+    E-min  +75.3 mm at t 56.32 s, phase leg4, v 0.004 m/s, at (E 0.4247, N 1.5953), 0.075 m from c4
+    E-max  +35.1 mm at t 39.40 s, phase leg2, v 0.012 m/s, at (E 2.5351, N 0.3988), 0.035 m from c2
+    N-min  +42.2 mm at t 67.44 s, phase leg5, v 0.002 m/s, at (E 0.5084, N 0.3578), 0.043 m from c1
+    N-max  +45.9 mm at t 49.26 s, phase leg3, v 0.007 m/s, at (E 2.4972, N 1.6459), 0.046 m from c3
+    sum:   75.3 + 35.1 = 110.4 mm = B1's E growth (2.1104 - 2.000) -- residual 0.000 mm
+           42.2 + 45.9 =  88.1 mm = B1's N growth (1.2881 - 1.200) -- residual 0.000 mm
+
+Every one of the four extremes is a point 35-75 mm from its commanded corner (i.e. ON the corner, inside
+the 0.10 m B3 gate) with a truth speed of 2-12 mm/s: the aircraft is STOPPED out there when the box is
+measured.  This agrees with what the parent unit measured independently on RECT33/RECT34 (0.00-0.01 m/s
+at all four extremes) and with the LIO agreeing with the truth to a few mm there -- so the box is not an
+estimator excursion and not a fly-through.
+
+WHERE INSIDE THE VISIT (the tool's TABLE B, RECT26; 'since dw' = seconds from the dwell clock start):
+
+    wall   visit  corner  out      since the closest approach   since dw    when
+    E-min  4      c4      +75.3    +0.91 s                      -0.54 s     settling (command held, not yet parked)
+    E-max  2      c2      +35.1    +0.83 s                      +0.73 s     while parked (dwell clock running)
+    N-max  3      c3      +45.9    +0.80 s                      +3.39 s     while parked (dwell clock running)
+    N-min  5      c1      +42.2    +0.91 s                      +3.44 s     while parked (dwell clock running)
+
+i.e. NONE of them is on the leg and none is during the departure: three happen with the dwell clock
+already running, the fourth 0.5 s before it starts.  Across the ten sorties the same rows read
+"-0.44 s .. +3.46 s from the dwell clock" -- the excursion is always at the corner, in the arrival/settle
+window, never on the way there.
+
+================================================================================
+== 2. THE MECHANISM, NAMED: A STEP COMMAND AND AN UNDER-DAMPED ARRIVAL RING
+================================================================================
+Two measured facts, then the mechanism.
+
+(a) THE COMMAND IS A STEP.  Every setpoint in every one of these runs carries position only:
+      RECT26 setpoints.csv, all 1925 rows: max |commanded velocity| = 0.0000 m/s, max |commanded
+      acceleration| = 0.0000 m/s^2; and on the wire the recorded `fields` column is 'pos' for all 1925
+      rows (wire.csv) with v_l = 0.0000 m/s.  The same is true of RECT23 (2048 rows) and RECT7 (2994).
+    So each leg is a 1.2-2.0 m position step presented to the FCU's PSC, with no velocity or acceleration
+    feed-forward: the aircraft accelerates to 1.3-1.7 m/s, brakes into the corner and then has nothing
+    but its own position loop to settle on.  This is the plan box's design (planner/cmd_stream.py: "the
+    dwell is CONTENT: position = the waypoint, velocity = 0"), and it is measured here from the runs'
+    own recordings rather than quoted from the design.
+
+(b) THE BRAKING ENTRY SPEED DID NOT CHANGE, so the arrival ring did not either.  The peak speed within
+    1 m of each corner (the same quantity tools/metrics.py prints in its B1 REPORTED line) is, per run:
+      RECT26: c2 1.73, c3 1.29, c4 1.69, closing c1 1.26 m/s
+      RECT23: c2 1.75, c3 1.28, c4 1.70, closing c1 1.28 m/s
+      RECT24: c2 1.74, c3 1.28, ...
+    while the speed AT the closest approach (what the F2 settle gate actually sees) is 0.083-0.151 m/s on
+    RECT26.  That is the reconciliation of the two refuted hypotheses: the F2 dwell rule ("the clock
+    starts on the SETTLED arrival") cut the speed the GATE crosses at by ~10x, but it did not touch the
+    braking from 1.3-1.7 m/s that excites the loop, which is why B1 moved only 2.154 -> 2.110 m.
+
+(c) THE RING ITSELF, measured in the frame of the leg that arrives (the tool's TABLE E: the truth's
+    position relative to the commanded corner, projected on the direction of travel 'along' and across
+    it, in a window from 2 s before to 3 s after the corner pass):
+
+      RECT26  corner  pass        short (inside)        past (outside)      delay   half-period  peak-to-peak
+      c2              2.9 mm      -101.2 mm @37.15 v0.016  +35.1 mm @39.40 v0.012  0.83 s   2.25 s      136 mm
+      c3              5.3 mm      -133.7 mm @47.10 v0.008  +45.9 mm @49.26 v0.007  0.80 s   2.16 s      180 mm
+      c4              0.0 mm      -141.5 mm @54.20 v0.007  +75.3 mm @56.32 v0.004  0.91 s   2.11 s      217 mm
+      closing c1      0.1 mm       -99.4 mm @65.15 v0.002  +42.2 mm @67.44 v0.002  0.91 s   2.29 s      142 mm
+
+    THE MECHANISM: the aircraft flies THROUGH the commanded corner (0-5 mm from it), swings back to
+    100-142 mm INSIDE the rectangle, comes forward again and overshoots 35-75 mm PAST the corner, and only
+    then settles -- with the truth speed essentially ZERO at both extremes (2-16 mm/s).  The two extremes
+    are 2.1-2.3 s apart, i.e. the half-period of a ~4.3 s oscillation: this is an under-damped position
+    loop ring, and the outer half of it, at each of the four corners, is exactly what B1's box is made of.
+    Consistency check on the shape: an overshoot that peaks a quarter-period after the pass should peak
+    0.80-0.91 s after it, and it does (the 'delay' column) -- the excursion is not an offset that the
+    dwell holds, it is the outer turning point of a ring that decays through the dwell (the parent unit's
+    independent measurement of RECT34 c2 -- peak +92.8 mm, settled +6.7 mm -- is that same decay).
+
+    The pre-F1 sorties show the same ring with a larger envelope (RECT7 c4: short -252.1 mm, past +83.3 mm,
+    delay 0.91 s, half-period 2.33 s, p-p 335 mm; RECT7 closing c1: -81.6 / +43.4 mm), and so do F1's
+    RECT23/24.  The ring is therefore a property of the plant + the FCU's position loop, not of F1, F2 or
+    of any phase-log rule.
+
+(d) WHY THE TWO LONG LEGS AND NOT THE SHORT ONES: the outward half of the ring is 35-93 mm on every
+    corner, but only the two 2.0 m legs have enough braking to make it large in E (their entry speed is
+    1.69-1.75 m/s against 1.26-1.30 m/s on the 1.2 m legs), and only the legs whose travel direction is
+    PERPENDICULAR to a wall can push the truth past it.  The four walls that carry the growth are exactly
+    the four the arriving legs run along.
+
+================================================================================
+== 3. THE FCU'S OWN CONTRIBUTION (measurement, then inference -- kept apart)
+================================================================================
+MEASURED (setpoints.csv, 50 Hz, in W; truth - command is the B1 quantity, FCU est - command is what the
+FCU's own loop still sees left to correct, truth - FCU est is the FCU's estimate error):
+
+  RECT26, at the four wall extremes (E/N components, mm):
+      wall    truth-cmd        FCU est-cmd      truth-FCU est     |v_fcu|
+      E-min   -75.3   -4.7     -84.9   -5.9      +9.6   +1.2       0.005
+      E-max   +35.1   -1.2     +38.6   +3.6      -3.5   -4.9       0.013
+      N-min    +8.4  -42.2      +7.1  -45.6      +1.3   +3.4       0.005
+      N-max    -2.8  +45.9      -6.3  +53.7      +3.4   -7.8       0.022
+  i.e. AT THE EXTREMES the FCU's own estimate shows the same excursion, 3.5-9.6 mm away from the truth:
+  the FCU knows it is 39-85 mm past the waypoint and is not there yet.  The excursion is therefore the
+  position loop's own residual, NOT an estimator bias.
+
+  RECT26, over the window: truth - command over the DWELL windows only (the instants at which the command
+  is a fixed corner) rms 45.06 mm, worst 133.67 mm at t 47.10 s (that worst is the ring's INNER swing);
+  truth - FCU est over the WHOLE window rms 21.43 mm, p95 49.92 mm, max 102.81 mm at t 52.27 s.  A4's
+  whole-flight number for the same difference is ~15 mm rms (metrics.txt), so the FCU's estimate error has
+  a TAIL of 50-100 mm made at the corner arrivals -- it is not the bulk of the excursion, but it is not
+  nothing either: it moves where the loop's zero is, by up to a few tens of mm, while the loop rings.
+
+INFERENCE (stated as such, and only here): the arrival gate is ESTIMATE-ONLY (0.060 m and 0.080 m/s, on
+the LIO pose converted L->W -- planner/cmd_stream.py), so a dwell can be declared while the truth is still
+moving; the runs show it: the E-min extreme on RECT26 happens 0.54 s BEFORE the reconstructed dwell start
+and the other three 0.73-3.44 s after it.  The DWELL WINDOWS themselves are the tool's one inferred
+quantity: [next command - hold_s, next command], hold_s read from the run's own traj.log.  It is not used
+to compute any millimetre of the growth, only to say WHEN an extreme happened.
+
+================================================================================
+== 4. THE CROSS-CHECK AGAINST B2: SOMETIMES THE SAME EVENT, USUALLY NOT
+================================================================================
+B2 and this file measure different things from the same truth: B2 is the worst perpendicular deviation
+from the line through that leg phase's OWN endpoints (so it is blind to a uniform stand-off of the whole
+leg, and it cannot see an overshoot along the direction of travel at all), while B1's growth is measured
+against the COMMANDED walls.  The tool re-derives B2 with tools/metrics.py's own formula and prints, per
+leg, the wall that leg runs along and the largest excursion past it, with a same/different verdict on the
+timestamps (|dt| <= 0.3 s):
+
+  RECT26 (the brief's "leg 2 41.3 mm" is RECT23's number; RECT26's leg 2 is 24.0 mm -- all three below):
+      leg 2 (N=0.4 wall):  B2 24.0 mm at t 35.95   wall-out +29.4 mm at t 33.71   DIFFERENT
+      leg 3 (E=2.5 wall):  B2 12.4 mm at t 48.28   wall-out +10.4 mm at t 45.53   DIFFERENT
+      leg 4 (N=1.6 wall):  B2 22.2 mm at t 53.64   wall-out +19.1 mm at t 53.63   SAME EVENT
+      leg 5 (E=0.5 wall):  B2 11.2 mm at t 67.49   wall-out  +8.2 mm at t 64.66   DIFFERENT
+  RECT23:
+      leg 2 (N=0.4 wall):  B2 41.3 mm at t 30.36   wall-out +60.7 mm at t 30.26   SAME EVENT (the departure dip)
+      leg 4 (N=1.6 wall):  B2 16.2 mm at t 49.83   wall-out +19.4 mm at t 49.85   SAME EVENT
+  RECT24: leg 2 B2 41.4 mm / wall-out +56.9 mm at t 30.45 SAME; leg 4 B2 13.0 mm / +42.9 mm different.
+
+  SO: the B2 numbers are NOT the B1 growth, and on RECT26 they are mostly a different event -- B2's leg 2
+  (24.0 mm) is a bulge 24 mm INSIDE the N-min wall at t 35.95, which cannot make B1 grow at all, while the
+  E-max growth (35.1 mm) that B1 fails on is invisible to B2's perpendicular formula (it lies along the
+  line).  Where they DO coincide is (i) the corner-arrival bulge seen across the leg's line -- RECT26 leg 4
+  22.2 mm = the +19.1 mm past the N-max wall at c4 -- and (ii) the DEPARTURE DIP on RECT23/24/RECT7/9/10/11
+  leg 2, where B2's 41.3/41.4 mm IS the outward dip (60.7/56.9 mm past the N-min wall) that the aircraft
+  makes after leaving corner 1 at 1.5 m/s.  The departure dip is the one leg-side contributor to B1 in
+  these sorties, and it is worth 29-61 mm on N-min depending on the run (RECT26: only ~29 mm, at the visit
+  start; its N-min wall is instead owned by the closing corner 1 at 42.2 mm).
+
+================================================================================
+== 5. THE SLOW-ARM CONTROL: REMOVE THE BRAKING AND THE RING GOES AWAY
+================================================================================
+The same square, the same estimator, the same world, flown with params/phase_a_mission.parm (WP_SPD 0.25,
+LOOP_ACC 0.3) as logs/missionA-stepB10-01-20261013_232331: B1 PASSES, growth E +38.4 mm and N +55.0 mm,
+and its four wall extremes are no longer corner events at all -- they are mid-leg (0.065, 0.586, 0.203,
+0.771 m from the nearest corner) at 0.043-0.315 m/s, and the N-max wall is never crossed (it reads
+-42.2 mm, i.e. 42 mm INSIDE).  Ten of ten slow-arm sorties pass (docs/metrics/B1-adjudication-20261015.txt
+section 4).  The ring is speed-dependent, which is what a position-loop ring is.
+
+================================================================================
+== 6. REFUTED, WITH THE NUMBERS THAT REFUTE THEM
+================================================================================
+  * the PAD / the entry leg: not in the window (section 0's rule opens at the arrival at corner 1), and
+    the tool prints the entry visit separately, marked "BEFORE the B1 window".  On RECT26 the entry visit's
+    own extreme is 500.4 mm of E at the pad -- i.e. if the entry leg WERE in the window the number would
+    be ~2.5 m, not 2.110.
+  * the FAST CORNER ARRIVAL as the F2 change defined it: the gate's crossing speed is now 0.083-0.151 m/s
+    (measured at the closest approach) yet the ring's p-p is 136-217 mm and B1 barely moved.  What the F2
+    change did not touch is the 1.26-1.75 m/s braking one metre out (section 2b) -- so the excitation
+    survived the fix, and the 44 mm it did move is the part of the excursion that lived in the gate's own
+    timing.
+  * an ESTIMATOR excursion: at all four extremes the FCU's own estimate is 3.5-9.6 mm from the truth and
+    the LIO is closer still (the parent unit measured 2-7 mm on RECT33/34); the FCU reports the same
+    35-85 mm residual against its own commanded point.
+  * a FLY-THROUGH: at all four extremes the truth speed is 0.002-0.012 m/s.  The aircraft stops out there.
+  * B2 / straightness on the legs: a different quantity and, on RECT26, mostly a different event
+    (section 4).
+  * a STATIC OFFSET that waiting would remove: the settled position is within 5-18 mm of the commanded
+    corner (the parent unit's RECT34 c2: peak +92.8 mm, settled +6.7 mm), while the ring's inner extreme
+    is 99-142 mm on the other side.  Waiting does remove it; the 5 s dwell is simply not long enough for a
+    ~4.3 s ring.
+
+================================================================================
+== 7. THE TWO CANDIDATE FIXES, WITH THEIR EXPECTED EFFECT AND THEIR COST
+================================================================================
+Both are OUTSIDE this round's authority (no flight, no bound change, no shared-file edit); they are listed
+with the millimetres that support them and what each would cost to prove.
+
+  (1) PLAN-SIDE APPROACH SHAPING -- do not present a 2.0 m position STEP to the FCU.  Split each leg into
+      a cruise segment and a short final approach whose setpoint MOVES (or carry a velocity
+      feed-forward), so the vehicle arrives at the corner with a deceleration profile instead of a step
+      response.  Expected effect from section 2: the ring's excitation is the 1.26-1.75 m/s braking, so
+      the E walls' 35-93 mm and the N walls' 32-71 mm should fall to the slow arm's scale (+24.2/+14.2 on
+      E, i.e. -74 and -78 % on RECT26's growth); the FCU estimate's own 50-100 mm arrival tail would not
+      be removed by this, so the honest expectation is "B1 passes with margin", not "zero".
+      Cost: it changes what the plan box publishes, so every B1/B2/B3 number and the F1/F2 acceptance
+      re-verification have to be re-run (RECT23/24/26/33/34 and the two kill-plan sorties), plus new unit
+      tests for the stream's shape (tools/test-cmd-stream.py).
+
+  (2) FCU-SIDE POSITION-LOOP GAINS -- damping the ring at the plant, with no plan change: PSC_XY/VELXY
+      gains (nothing in params/ overrides them today; params/phase_a_mission*.parm only set WP_*/LOIT_*/
+      PSC_ACCZ_P) and/or the LOIT_* limits, which is exactly the knob the slow arm turns from the other
+      end (LOIT_SPEED_MS 2.0 -> 0.25, LOIT_ACC_MAX_M 3.0 -> 0.3: B1 goes from FAIL to +38.4/+55.0 mm).
+      Expected effect: a ring of 136-217 mm p-p at ~0.23 Hz implies a loop that is under-damped at that
+      frequency; raising the velocity-loop damping (or lowering the position-loop bandwidth) trades
+      settling speed for overshoot directly, and the ring's outer half is the entire B1 growth.
+      Cost: it is a FLIGHT-CONTROLLER change, so it needs a bench/step-response measurement before any
+      sortie (the project's own rule: a gain change must be shown on a step response, not inferred from a
+      mission metric), plus a re-run of A1-A4 and B3 to show the tracking accuracy did not regress.  It
+      also changes a parameter file that every existing number in docs/ was measured with, so the frozen
+      mission-A set and the parameter provenance lines in docs/ have to be updated deliberately.
+
+  A third, cheaper, PLAN-side variant is already supported by the data but is NOT a fix for B1: shortening
+  the dwell would not help (the ring decays through it), and enlarging the corner tolerance would only
+  move where the ring is centred.
+
+================================================================================
+== 8. PROVENANCE
+================================================================================
+tools/b1-edge-budget.py is new in this round and is the only tool that produced the numbers above; it
+reads nothing but the run directories named on its command line, and every table it prints is reproduced
+in section 9 verbatim.  Command:
+
+  python3 tools/b1-edge-budget.py <run-dir> ... [--csv out.csv] [--figure docs/figures/b1-mechanism.png]
+                                 [--focus <run>] [--hold-s 5.0] [--near-m 0.30]
+
+The runs: missionA-{RECT34,RECT33,RECT26}-accept, missionA-{RECT23,RECT24}-plan-cmd,
+missionA-{RECT7,RECT9,RECT10,RECT11}-hold5, missionA-stepB10-01-20261013_232331 (the slow-arm control).
+The figure is docs/figures/b1-mechanism.png, drawn by the same tool from the same numbers:
+  (a) the per-wall outward excursion of all ten sorties against the +100 mm bound,
+  (b) RECT26's truth path in the B1 window with the four wall extremes,
+  (c) RECT26's deviation from the command over the whole window with the dwell bands shaded, and
+  (d) the ring at RECT26's corner 4: truth, the FCU's own estimate, and the command.
+The 41.3 mm the brief quotes for RECT26's leg 2 is RECT23's leg 2 (RECT24 41.4, RECT26 24.0); this tool
+re-derives all of them and section 4 says which of them are the same event as B1's growth.
+
+================================================================================
+== 9. THE TOOL'S OWN OUTPUT, VERBATIM, OVER THE TEN SORTIES
+================================================================================
+====================================================================================================
+run missionA-RECT34-accept   /home/fanxin/lio_avoid/logs/missionA-RECT34-accept
+   truth tap 105632 samples over 88.0 s;  command rectangle E [0.500, 2.500] N [0.400, 1.600] (2.000 x 1.200 m);  dwell 5.0 s (--hold-s default)
+   command/FCU channels: setpoints.csv 2478 rows at 66.4 Hz;  command check (the commanded point during a dwell vs the corner): 0.00 mm
+   B1 window [the first leg phase whose truth is at corner 1, the land entry] = phase leg3, sim 43.51 .. 80.83 s = 37.32 s, 44799 truth samples
+   the OLD index rule (the second leg phase) would open at sim 36.21 s and read E 2.584 / N 1.651 m  [REPORTED: it counts the pad/climb]
+   B1 extents  E 2.1627 m  N 1.3037 m   =>  growth E +162.7 mm  N +103.7 mm   bound +100/+100 mm   [FAIL]
+   IDENTITY    E: E-min out + E-max out = 69.9 + 92.8 = 162.7 mm vs growth 162.7 mm (resid -0.000 mm)
+               N: N-min out + N-max out = 54.6 + 49.1 = 103.7 mm vs growth 103.7 mm (resid 0.000 mm)
+
+   TABLE A -- the four walls: what makes the growth (global extremes over the B1 window)
+     wall   at         out (mm)    t (s) phase       v  where                nearest corner |    out|on    t (s) |     in|on    t (s)
+     E-min  E=0.500       +69.9    68.03 leg5    0.005  (E +0.4301, N +1.5929) c4  0.070 m   |     +69.9    68.03 |      +4.8    43.80
+     E-max  E=2.500       +92.8    49.31 leg3    0.003  (E +2.5928, N +0.4053) c2  0.093 m   |     +92.8    49.31 |     +13.0    62.79
+     N-min  N=0.400       +54.6    75.66 leg6    0.002  (E +0.5028, N +0.3454) c1  0.055 m   |     +54.6    75.66 |      +5.6    44.81
+     N-max  N=1.600       +49.1    60.74 leg4    0.007  (E +2.4954, N +1.6491) c3  0.049 m   |     +49.1    60.74 |     +13.0    62.79
+     'out' = how far past that wall the truth reaches (positive = OUTSIDE the rectangle, this is
+     the growth); 'in|on' = the largest stand-off INSIDE on the samples whose nearest wall is
+     this one (a leg flown 20 mm inside its wall shows up here, and cannot make B1 grow).
+     the same four peak samples, decomposed (all from setpoints.csv at 50 Hz):
+        wall    truth-cmd E/N    fcu-cmd E/N  truth-fcu E/N        |v_fcu|
+        E-min    -69.9   -7.1   -79.2   -6.2    +9.3   -0.9       0.015
+        E-max    +92.8   +5.3   +86.5   +5.1    +6.3   +0.2       0.004
+        N-min     +2.8  -54.6    +1.1  -84.4    +1.7  +29.8       0.059
+        N-max     -4.6  +49.1    -7.9  +56.6    +3.3   -7.4       0.021
+
+   TABLE C -- per leg, B2's own number next to the wall the leg runs along
+     leg  phase       n  len(m)  B2 perp     at t      side wall    wall-out     at t    out<2 s    same?
+     1    leg1     2354   0.136     1.0 mm    34.93        -1 N-min    +410.6 mm    34.93    +410.6     SAME
+     2    leg2     8763   0.867     9.0 mm    40.74        -1 --       (no wall)       --         -- different
+     3    leg3    14054   2.000    13.3 mm    52.27        -1 N-min      +7.6 mm    52.26      +0.6     SAME
+     4    leg4     8633   1.179    12.0 mm    60.37        +1 E-max      +6.0 mm    62.22      +4.6 different
+     5    leg5    13456   2.011    16.6 mm    68.25        +1 N-max     +21.5 mm    65.08     +16.9 different
+     6    leg6     8659   1.204    11.4 mm    75.50        +1 E-min     +10.3 mm    80.13      +5.1 different
+     'side' = the sign of the worst B2 sample against the leg's own direction; 'wall-out' = the
+     largest excursion past the wall this leg runs along, inside the SAME leg phase; 'same?'
+     says whether those two are the same instant (|dt| <= 0.3 s) or two different events.
+
+   TABLE E -- per corner: the RING the arrival excites, in the frame of the leg that arrives
+              (ring window = 2 s before to 3 s after the corner pass; the pass is the truth's
+              closest approach to the corner; 'along' = the direction of travel, positive =
+              PAST the commanded corner)
+     vis  corner           pass            short(mm)        t        v  past(mm)        t        v    delay half-T |   cross-   cross+      p-p when the 'past' extreme happens
+     1    (E +0.5000, N +0.4000)   5.8mm@43.40      -1.2    43.40    0.003     +16.7    41.41    0.008    -1.99 -1.99 |     +5.6    +10.0     17.9 while parked (dwell clock running)   <-- entry leg, BEFORE the B1 window
+     2    (E +2.5000, N +0.4000)   1.3mm@48.40    -308.7    46.91    0.002     +92.8    49.31    0.003     0.91  2.40 |     -4.0     +5.7    401.5 settling (command held, dwell clock not yet started)
+     3    (E +2.5000, N +1.6000)   4.1mm@57.51   -1184.7    55.51    0.119     +45.1    60.51    0.036     3.00  5.00 |     -4.6     +5.9   1229.8 while parked (dwell clock running)
+     4    (E +0.5000, N +1.6000)   2.5mm@69.52      -5.3    69.94    0.007     +69.9    68.03    0.005    -1.49 -1.91 |     -9.1     +7.7     75.2 settling (command held, dwell clock not yet started)
+     5    (E +0.5000, N +0.4000)   2.0mm@76.18   -1106.5    74.18    0.619     +54.6    75.66    0.002    -0.51  1.49 |     -7.3     +3.0   1161.1 settling (command held, dwell clock not yet started)
+     'short'/'past' = how far the truth gets on the two sides of the commanded corner along
+     the direction of travel inside that window: a position loop that rings shows BOTH,
+     seconds apart, with the aircraft nearly stationary (v) at each extreme.  'delay' =
+     seconds from the corner pass to the 'past' extreme; 'half-T' = the interval between the
+     two extremes (half a period if it is one oscillation).  'cross-/cross+' is the lateral
+     component on the two sides of the leg's own line; 'p-p' is the along peak-to-peak.
+
+   (TABLES B and D of this run are omitted here to keep the file readable; the
+    tool prints them for every run dir named on its command line.)
+
+run missionA-RECT33-accept   /home/fanxin/lio_avoid/logs/missionA-RECT33-accept
+   truth tap 97542 samples over 81.3 s;  command rectangle E [0.500, 2.500] N [0.400, 1.600] (2.000 x 1.200 m);  dwell 5.0 s (--hold-s default)
+   command/FCU channels: setpoints.csv 2169 rows at 53.7 Hz;  command check (the commanded point during a dwell vs the corner): 0.00 mm
+   B1 window [the first leg phase whose truth is at corner 1, the land entry] = phase leg2, sim 33.32 .. 73.75 s = 40.42 s, 48530 truth samples
+   the OLD index rule (the second leg phase) would open at sim 38.40 s and read E 2.115 / N 1.303 m  [REPORTED: it counts the pad/climb]
+   B1 extents  E 2.1149 m  N 1.3034 m   =>  growth E +114.9 mm  N +103.4 mm   bound +100/+100 mm   [FAIL]
+   IDENTITY    E: E-min out + E-max out = 65.6 + 49.3 = 114.9 mm vs growth 114.9 mm (resid -0.000 mm)
+               N: N-min out + N-max out = 71.4 + 32.0 = 103.4 mm vs growth 103.4 mm (resid 0.000 mm)
+
+   TABLE A -- the four walls: what makes the growth (global extremes over the B1 window)
+     wall   at         out (mm)    t (s) phase       v  where                nearest corner |    out|on    t (s) |     in|on    t (s)
+     E-min  E=0.500       +65.6    61.81 leg5    0.005  (E +0.4344, N +1.5949) c4  0.066 m   |     +65.6    61.81 |     +16.8    70.30
+     E-max  E=2.500       +49.3    44.12 leg3    0.005  (E +2.5493, N +0.3978) c2  0.049 m   |     +49.3    44.12 |      +5.9    56.44
+     N-min  N=0.400       +71.4    71.93 leg6    0.011  (E +0.4952, N +0.3286) c1  0.072 m   |     +57.9    71.56 |     +18.3    36.46
+     N-max  N=1.600       +32.0    54.48 leg4    0.004  (E +2.4985, N +1.6320) c3  0.032 m   |     +32.0    54.48 |      +5.9    56.44
+     'out' = how far past that wall the truth reaches (positive = OUTSIDE the rectangle, this is
+     the growth); 'in|on' = the largest stand-off INSIDE on the samples whose nearest wall is
+     this one (a leg flown 20 mm inside its wall shows up here, and cannot make B1 grow).
+     the same four peak samples, decomposed (all from setpoints.csv at 50 Hz):
+        wall    truth-cmd E/N    fcu-cmd E/N  truth-fcu E/N        |v_fcu|
+        E-min    -65.6   -5.1   -75.3   -2.4    +9.6   -2.7       0.016
+        E-max    +49.3   -2.2   +55.4   +2.7    -6.1   -4.9       0.020
+        N-min     -4.8  -71.4    -5.0  -68.0    +0.2   -3.3       0.007
+        N-max     -1.5  +32.0    -4.4  +40.3    +2.8   -8.3       0.013
+
+   TABLE C -- per leg, B2's own number next to the wall the leg runs along
+     leg  phase       n  len(m)  B2 perp     at t      side wall    wall-out     at t    out<2 s    same?
+     1    leg2     6098   0.051     8.0 mm    34.28        -1 --       (no wall)       --         -- different
+     2    leg3    12624   2.005    11.3 mm    45.56        -1 N-min      +9.4 mm    45.56      +6.6     SAME
+     3    leg4     8646   1.190     9.9 mm    53.50        +1 E-max      +9.0 mm    50.65      +9.0 different
+     4    leg5    12572   2.018    12.6 mm    62.39        +1 N-max     +14.6 mm    58.72     +12.3 different
+     5    leg6     8594   1.200    24.8 mm    70.27        +1 E-min     +12.5 mm    66.59     +12.5 different
+     'side' = the sign of the worst B2 sample against the leg's own direction; 'wall-out' = the
+     largest excursion past the wall this leg runs along, inside the SAME leg phase; 'same?'
+     says whether those two are the same instant (|dt| <= 0.3 s) or two different events.
+
+   TABLE E -- per corner: the RING the arrival excites, in the frame of the leg that arrives
+              (ring window = 2 s before to 3 s after the corner pass; the pass is the truth's
+              closest approach to the corner; 'along' = the direction of travel, positive =
+              PAST the commanded corner)
+     vis  corner           pass            short(mm)        t        v  past(mm)        t        v    delay half-T |   cross-   cross+      p-p when the 'past' extreme happens
+     1    (E +0.5000, N +0.4000)   2.0mm@38.04      -2.4    38.29    0.005     +22.0    36.31    0.006    -1.73 -1.98 |     -0.7    +18.3     24.4 while parked (dwell clock running)   <-- entry leg, BEFORE the B1 window
+     2    (E +2.5000, N +0.4000)   3.3mm@43.33    -148.6    41.88    0.003     +49.3    44.12    0.005     0.79  2.24 |     -9.4     -0.8    197.9 while parked (dwell clock running)
+     3    (E +2.5000, N +1.6000)   3.8mm@55.56      -8.9    53.56    0.080     +32.0    54.48    0.004    -1.08  0.92 |     -5.2     +4.5     40.9 while parked (dwell clock running)
+     4    (E +0.5000, N +1.6000)   0.6mm@63.93      -1.6    63.70    0.006     +64.5    61.93    0.020    -2.00 -1.77 |     -5.6     +7.0     66.1 while parked (dwell clock running)
+     5    (E +0.5000, N +0.4000)   7.4mm@71.12    -237.2    69.77    0.018     +71.4    71.93    0.011     0.82  2.16 |     -8.9    +16.8    308.6 while parked (dwell clock running)
+     'short'/'past' = how far the truth gets on the two sides of the commanded corner along
+     the direction of travel inside that window: a position loop that rings shows BOTH,
+     seconds apart, with the aircraft nearly stationary (v) at each extreme.  'delay' =
+     seconds from the corner pass to the 'past' extreme; 'half-T' = the interval between the
+     two extremes (half a period if it is one oscillation).  'cross-/cross+' is the lateral
+     component on the two sides of the leg's own line; 'p-p' is the along peak-to-peak.
+
+   (TABLES B and D of this run are omitted here to keep the file readable; the
+    tool prints them for every run dir named on its command line.)
+
+run missionA-RECT26-accept   /home/fanxin/lio_avoid/logs/missionA-RECT26-accept
+   truth tap 91768 samples over 76.4 s;  command rectangle E [0.500, 2.500] N [0.400, 1.600] (2.000 x 1.200 m);  dwell 5.0 s (--hold-s default)
+   command/FCU channels: setpoints.csv 1925 rows at 54.3 Hz;  command check (the commanded point during a dwell vs the corner): 0.00 mm
+   B1 window [the first leg phase whose truth is at corner 1, the land entry] = phase leg2, sim 33.71 .. 69.14 s = 35.43 s, 42537 truth samples
+   B1 extents  E 2.1104 m  N 1.2881 m   =>  growth E +110.4 mm  N +88.1 mm   bound +100/+100 mm   [FAIL]
+   IDENTITY    E: E-min out + E-max out = 75.3 + 35.1 = 110.4 mm vs growth 110.4 mm (resid -0.000 mm)
+               N: N-min out + N-max out = 42.2 + 45.9 = 88.1 mm vs growth 88.1 mm (resid 0.000 mm)
+
+   TABLE A -- the four walls: what makes the growth (global extremes over the B1 window)
+     wall   at         out (mm)    t (s) phase       v  where                nearest corner |    out|on    t (s) |     in|on    t (s)
+     E-min  E=0.500       +75.3    56.32 leg4    0.004  (E +0.4247, N +1.5953) c4  0.075 m   |     +75.3    56.32 |      +3.5    61.82
+     E-max  E=2.500       +35.1    39.40 leg2    0.012  (E +2.5351, N +0.3988) c2  0.035 m   |     +35.1    39.40 |      +6.6    51.32
+     N-min  N=0.400       +42.2    67.44 leg5    0.002  (E +0.5084, N +0.3578) c1  0.043 m   |     +42.2    67.44 |     +24.2    36.03
+     N-max  N=1.600       +45.9    49.26 leg3    0.007  (E +2.4972, N +1.6459) c3  0.046 m   |     +45.9    49.26 |      +6.5    51.32
+     'out' = how far past that wall the truth reaches (positive = OUTSIDE the rectangle, this is
+     the growth); 'in|on' = the largest stand-off INSIDE on the samples whose nearest wall is
+     this one (a leg flown 20 mm inside its wall shows up here, and cannot make B1 grow).
+     the same four peak samples, decomposed (all from setpoints.csv at 50 Hz):
+        wall    truth-cmd E/N    fcu-cmd E/N  truth-fcu E/N        |v_fcu|
+        E-min    -75.3   -4.7   -84.9   -5.9    +9.6   +1.2       0.005
+        E-max    +35.1   -1.2   +38.6   +3.6    -3.5   -4.9       0.013
+        N-min     +8.4  -42.2    +7.1  -45.6    +1.3   +3.4       0.005
+        N-max     -2.8  +45.9    -6.3  +53.7    +3.4   -7.8       0.022
+
+   TABLE B -- the corner visits: which visit owns the wall extreme, and WHEN inside it
+     vis  commanded corner wall     cmd t0  dwell t0 closest      out (mm)    t (s) since c/a since dw | truth-cmd   fcu-cmd truth-fcu
+     1    (E +0.5000, N +0.4000) E-min     30.56      --   57.3 mm @ 33.01   +500.4    30.67    -2.34     --  |    +500.4    +499.1      +1.3   <-- BEFORE the B1 window (the entry leg)
+     1    (E +0.5000, N +0.4000) N-min     30.56      --   57.3 mm @ 33.01   +413.9    30.56    -2.45     --  |    +413.9    +418.1      -4.2   <-- BEFORE the B1 window (the entry leg)
+     2    (E +2.5000, N +0.4000) E-max     33.66     38.67 2.9 mm @ 38.57    +35.1    39.40     0.83    0.73 |     +35.1     +38.6      -3.5
+     2    (E +2.5000, N +0.4000) N-min     33.66     38.67 2.9 mm @ 38.57    +30.0    33.66    -4.91   -5.01 |     +30.0     +29.2      +0.9
+     3    (E +2.5000, N +1.6000) E-max     43.72     45.87 5.3 mm @ 48.46    +10.4    45.53    -2.93   -0.34 |     +10.4      +8.0      +2.4
+     3    (E +2.5000, N +1.6000) N-max     43.72     45.87 5.3 mm @ 48.46    +45.9    49.26     0.80    3.39 |     +45.9     +53.7      -7.8
+     4    (E +0.5000, N +1.6000) E-min     50.93     56.85 0.0 mm @ 55.41    +75.3    56.32     0.91   -0.54 |     +75.3     +84.9      -9.6
+     4    (E +0.5000, N +1.6000) N-max     50.93     56.85 0.0 mm @ 55.41    +19.1    53.63    -1.78   -3.23 |     +19.1     +14.5      +4.6
+     5    (E +0.5000, N +0.4000) E-min     61.87     64.00 0.1 mm @ 66.53     +8.2    64.66    -1.87    0.66 |      +8.2      +7.4      +0.7
+     5    (E +0.5000, N +0.4000) N-min     61.87     64.00 0.1 mm @ 66.53    +42.2    67.44     0.91    3.44 |     +42.2     +45.6      -3.4
+     a visit = one commanded corner: from the moment the plan box commands it to the moment it
+     commands the next one (the dwell is the last hold_s of it).  'since c/a' = seconds after
+     the truth's closest approach to that corner; 'since dw' = seconds after the dwell clock
+     starts (negative = the aircraft is ALREADY outside when the park begins).  The last three
+     columns are the signed deviation past the wall from the command, from the FCU's own
+     estimate and the FCU's own error, in mm.
+
+   TABLE C -- per leg, B2's own number next to the wall the leg runs along
+     leg  phase       n  len(m)  B2 perp     at t      side wall    wall-out     at t    out<2 s    same?
+     1    leg1     3797   0.678     4.4 mm    31.67        +1 --       (no wall)       --         -- different
+     2    leg2    12091   2.051    24.0 mm    35.95        +1 N-min     +29.4 mm    33.71     +29.4 different
+     3    leg3     8659   1.190    12.4 mm    48.28        +1 E-max     +10.4 mm    45.53     +10.4 different
+     4    leg4    13118   2.005    22.2 mm    53.64        -1 N-max     +19.1 mm    53.63     +16.2     SAME
+     5    leg5     8672   1.197    11.2 mm    67.49        +1 E-min      +8.2 mm    64.66      +6.4 different
+     'side' = the sign of the worst B2 sample against the leg's own direction; 'wall-out' = the
+     largest excursion past the wall this leg runs along, inside the SAME leg phase; 'same?'
+     says whether those two are the same instant (|dt| <= 0.3 s) or two different events.
+
+   TABLE E -- per corner: the RING the arrival excites, in the frame of the leg that arrives
+              (ring window = 2 s before to 3 s after the corner pass; the pass is the truth's
+              closest approach to the corner; 'along' = the direction of travel, positive =
+              PAST the commanded corner)
+     vis  corner           pass            short(mm)        t        v  past(mm)        t        v    delay half-T |   cross-   cross+      p-p when the 'past' extreme happens
+     1    (E +0.5000, N +0.4000)  57.3mm@33.01    -483.6    31.01    0.212     -48.7    33.61    0.018     0.60  2.60 |   -395.7    -28.3    434.9 while parked (dwell clock running)   <-- entry leg, BEFORE the B1 window
+     2    (E +2.5000, N +0.4000)   2.9mm@38.57    -101.2    37.15    0.016     +35.1    39.40    0.012     0.83  2.25 |    -10.2    +19.8    136.3 while parked (dwell clock running)
+     3    (E +2.5000, N +1.6000)   5.3mm@48.46    -133.7    47.10    0.008     +45.9    49.26    0.007     0.80  2.16 |     -7.5     +5.4    179.6 while parked (dwell clock running)
+     4    (E +0.5000, N +1.6000)   0.0mm@55.41    -141.5    54.20    0.007     +75.3    56.32    0.004     0.91  2.11 |    -19.1     +5.0    216.9 settling (command held, dwell clock not yet started)
+     5    (E +0.5000, N +0.4000)   0.1mm@66.53     -99.4    65.15    0.002     +42.2    67.44    0.002     0.91  2.29 |     -8.2     +8.4    141.6 while parked (dwell clock running)
+     'short'/'past' = how far the truth gets on the two sides of the commanded corner along
+     the direction of travel inside that window: a position loop that rings shows BOTH,
+     seconds apart, with the aircraft nearly stationary (v) at each extreme.  'delay' =
+     seconds from the corner pass to the 'past' extreme; 'half-T' = the interval between the
+     two extremes (half a period if it is one oscillation).  'cross-/cross+' is the lateral
+     component on the two sides of the leg's own line; 'p-p' is the along peak-to-peak.
+
+   TABLE D -- the FCU's own contribution (measured from setpoints.csv at 50 Hz)
+     over the DWELL windows only (24012 of 42537 window samples -- the instants at which the commanded
+     point is a FIXED corner and 'truth - command' is a parking error, not the intended travel):
+        truth - command  rms  45.06 mm, worst 133.67 mm at t 47.10 s
+     over the WHOLE B1 window:  truth - FCU est  rms  21.43 mm, p95  49.92 mm, max 102.81 mm at t 52.27 s
+     (A4 reports the same difference over the whole flight as ~15 mm rms: the tail ABOVE it
+      is made at the corner arrivals, and the four wall peaks in TABLE A carry its value.)
+
+   the arrivals (the peak speed within 1 m of each commanded corner, truth-only):
+     (E +0.5000, N +0.4000) closest   57.3 mm at t   33.01 (v 0.003 m/s),  peak within 1 m  0.57 m/s,  median v within 0.15 m 0.018 m/s
+     (E +2.5000, N +0.4000) closest    2.9 mm at t   38.57 (v 0.083 m/s),  peak within 1 m  1.73 m/s,  median v within 0.15 m 0.022 m/s
+     (E +2.5000, N +1.6000) closest    5.3 mm at t   48.46 (v 0.104 m/s),  peak within 1 m  1.29 m/s,  median v within 0.15 m 0.068 m/s
+     (E +0.5000, N +1.6000) closest    0.0 mm at t   55.41 (v 0.151 m/s),  peak within 1 m  1.69 m/s,  median v within 0.15 m 0.023 m/s
+     (E +0.5000, N +0.4000) closest    0.1 mm at t   66.53 (v 0.090 m/s),  peak within 1 m  1.26 m/s,  median v within 0.15 m 0.045 m/s
+
+run missionA-RECT23-plan-cmd   /home/fanxin/lio_avoid/logs/missionA-RECT23-plan-cmd
+   truth tap 88537 samples over 73.8 s;  command rectangle E [0.500, 2.500] N [0.400, 1.600] (2.000 x 1.200 m);  dwell 5.0 s (--hold-s default)
+   command/FCU channels: setpoints.csv 2048 rows at 55.2 Hz;  command check (the commanded point during a dwell vs the corner): 0.00 mm
+   B1 window [the first leg phase whose truth is at corner 1, the land entry] = phase leg2, sim 29.25 .. 66.35 s = 37.10 s, 44539 truth samples
+   B1 extents  E 2.1588 m  N 1.2977 m   =>  growth E +158.8 mm  N +97.7 mm   bound +100/+100 mm   [FAIL]
+   IDENTITY    E: E-min out + E-max out = 85.4 + 73.4 = 158.8 mm vs growth 158.8 mm (resid -0.000 mm)
+               N: N-min out + N-max out = 60.7 + 36.9 = 97.7 mm vs growth 97.7 mm (resid 0.000 mm)
+
+   TABLE A -- the four walls: what makes the growth (global extremes over the B1 window)
+     wall   at         out (mm)    t (s) phase       v  where                nearest corner |    out|on    t (s) |     in|on    t (s)
+     E-min  E=0.500       +85.4    53.39 leg4    0.005  (E +0.4146, N +1.6063) c4  0.086 m   |     +85.4    53.39 |      +6.6    63.27
+     E-max  E=2.500       +73.4    34.99 leg2    0.010  (E +2.5734, N +0.4016) c2  0.073 m   |     +73.4    34.99 |      +1.5    47.90
+     N-min  N=0.400       +60.7    30.26 leg2    1.547  (E +0.9736, N +0.3393) c1  0.477 m   |     +60.7    30.26 |     +11.9    32.15
+     N-max  N=1.600       +36.9    45.87 leg3    0.007  (E +2.5025, N +1.6369) c3  0.037 m   |     +19.4    49.85 |      +6.2    51.71
+     'out' = how far past that wall the truth reaches (positive = OUTSIDE the rectangle, this is
+     the growth); 'in|on' = the largest stand-off INSIDE on the samples whose nearest wall is
+     this one (a leg flown 20 mm inside its wall shows up here, and cannot make B1 grow).
+     the same four peak samples, decomposed (all from setpoints.csv at 50 Hz):
+        wall    truth-cmd E/N    fcu-cmd E/N  truth-fcu E/N        |v_fcu|
+        E-min    -88.0   +4.2   -84.8   +4.4    -3.1   -0.2       0.002
+        E-max    +70.8   -0.5   +77.7   +7.9    -6.9   -8.3       0.028
+        N-min  -1529.0  -62.8 -1559.3  -60.4   +30.4   -2.4       1.455
+        N-max     -0.1  +34.9    -1.7  +46.9    +1.7  -12.0       0.020
+
+   TABLE B -- the corner visits: which visit owns the wall extreme, and WHEN inside it
+     vis  commanded corner wall     cmd t0  dwell t0 closest      out (mm)    t (s) since c/a since dw | truth-cmd   fcu-cmd truth-fcu
+     1    (E +0.5026, N +0.4020) E-min     27.04      --   52.5 mm @ 29.22   +501.9    27.04    -2.18     --  |    +504.4    +501.9      +2.5   <-- BEFORE the B1 window (the entry leg)
+     1    (E +0.5026, N +0.4020) N-min     27.04      --   52.5 mm @ 29.22   +417.2    27.11    -2.11     --  |    +419.2    +421.5      -2.3   <-- BEFORE the B1 window (the entry leg)
+     2    (E +2.5026, N +0.4020) E-max     29.24     35.41 3.4 mm @ 34.16    +73.4    34.99     0.83   -0.42 |     +70.8     +77.7      -6.9
+     2    (E +2.5026, N +0.4020) N-min     29.24     35.41 3.4 mm @ 34.16    +60.7    30.26    -3.90   -5.16 |     +62.8     +60.4      +2.4
+     3    (E +2.5026, N +1.6020) E-max     40.44     42.62 1.8 mm @ 47.08     +8.4    41.08    -5.99   -1.53 |      +5.8      +4.2      +1.7
+     3    (E +2.5026, N +1.6020) N-max     40.44     42.62 1.8 mm @ 47.08    +36.9    45.87    -1.20    3.26 |     +34.9     +46.9     -12.0
+     4    (E +0.5026, N +1.6020) E-min     47.63     54.06 3.3 mm @ 58.64    +85.4    53.39    -5.25   -0.67 |     +88.0     +84.8      +3.1
+     4    (E +0.5026, N +1.6020) N-max     47.63     54.06 3.3 mm @ 58.64    +19.4    49.85    -8.80   -4.21 |     +17.4     +18.4      -1.1
+     5    (E +0.5026, N +0.4020) E-min     59.08     61.35 4.2 mm @ 63.31     +8.0    61.50    -1.81    0.15 |     +10.5      +8.7      +1.8
+     5    (E +0.5026, N +0.4020) N-min     59.08     61.35 4.2 mm @ 63.31    +54.9    64.26     0.95    2.91 |     +56.9     +55.9      +1.0
+     a visit = one commanded corner: from the moment the plan box commands it to the moment it
+     commands the next one (the dwell is the last hold_s of it).  'since c/a' = seconds after
+     the truth's closest approach to that corner; 'since dw' = seconds after the dwell clock
+     starts (negative = the aircraft is ALREADY outside when the park begins).  The last three
+     columns are the signed deviation past the wall from the command, from the FCU's own
+     estimate and the FCU's own error, in mm.
+
+   TABLE C -- per leg, B2's own number next to the wall the leg runs along
+     leg  phase       n  len(m)  B2 perp     at t      side wall    wall-out     at t    out<2 s    same?
+     1    leg1     2666   0.680     0.7 mm    27.25        -1 --       (no wall)       --         -- different
+     2    leg2    13456   2.047    41.3 mm    30.36        -1 N-min     +60.7 mm    30.26     +60.7     SAME
+     3    leg3     8646   1.198     3.9 mm    46.60        -1 E-max      +8.4 mm    41.08      +8.4 different
+     4    leg4    13742   2.004    16.2 mm    49.83        -1 N-max     +19.4 mm    49.85     +18.7     SAME
+     5    leg5     8698   1.191    11.7 mm    63.52        +1 E-min      +8.0 mm    61.50      +6.9 different
+     'side' = the sign of the worst B2 sample against the leg's own direction; 'wall-out' = the
+     largest excursion past the wall this leg runs along, inside the SAME leg phase; 'same?'
+     says whether those two are the same instant (|dt| <= 0.3 s) or two different events.
+
+   TABLE E -- per corner: the RING the arrival excites, in the frame of the leg that arrives
+              (ring window = 2 s before to 3 s after the corner pass; the pass is the truth's
+              closest approach to the corner; 'along' = the direction of travel, positive =
+              PAST the commanded corner)
+     vis  corner           pass            short(mm)        t        v  past(mm)        t        v    delay half-T |   cross-   cross+      p-p when the 'past' extreme happens
+     1    (E +0.5026, N +0.4020)  52.5mm@29.22    -503.1    27.22    0.015     -43.5    29.22    0.047     0.00  2.00 |   -418.8    -29.4    459.6 while parked (dwell clock running)   <-- entry leg, BEFORE the B1 window
+     2    (E +2.5026, N +0.4020)   3.4mm@34.16    -168.3    32.83    0.014     +70.8    34.99    0.010     0.83  2.16 |    -12.9     +9.9    239.1 settling (command held, dwell clock not yet started)
+     3    (E +2.5026, N +1.6020)   1.8mm@47.08      -5.9    47.55    0.005     +34.9    45.87    0.007    -1.20 -1.68 |     -2.8     +2.6     40.8 while parked (dwell clock running)
+     4    (E +0.5026, N +1.6020)   3.3mm@58.64      +3.2    58.56    0.006     +13.1    56.84    0.005    -1.80 -1.72 |     -1.4     +6.2     10.0 while parked (dwell clock running)
+     5    (E +0.5026, N +0.4020)   4.2mm@63.31     -73.6    62.40    0.013     +56.9    64.26    0.007     0.95  1.86 |    -10.5     +4.5    130.4 while parked (dwell clock running)
+     'short'/'past' = how far the truth gets on the two sides of the commanded corner along
+     the direction of travel inside that window: a position loop that rings shows BOTH,
+     seconds apart, with the aircraft nearly stationary (v) at each extreme.  'delay' =
+     seconds from the corner pass to the 'past' extreme; 'half-T' = the interval between the
+     two extremes (half a period if it is one oscillation).  'cross-/cross+' is the lateral
+     component on the two sides of the leg's own line; 'p-p' is the along peak-to-peak.
+     NOTE: this run's commanded corners sit 3.3 mm from the world file's (the judged
+           rectangle is built from the world file): the walls above are the WORLD's, as
+           tools/metrics.py judges them.
+
+   TABLE D -- the FCU's own contribution (measured from setpoints.csv at 50 Hz)
+     over the DWELL windows only (24012 of 44539 window samples -- the instants at which the commanded
+     point is a FIXED corner and 'truth - command' is a parking error, not the intended travel):
+        truth - command  rms  38.06 mm, worst 119.40 mm at t 43.84 s
+     over the WHOLE B1 window:  truth - FCU est  rms  20.45 mm, p95  50.51 mm, max  85.27 mm at t 50.28 s
+     (A4 reports the same difference over the whole flight as ~15 mm rms: the tail ABOVE it
+      is made at the corner arrivals, and the four wall peaks in TABLE A carry its value.)
+
+   the arrivals (the peak speed within 1 m of each commanded corner, truth-only):
+     (E +0.5026, N +0.4020) closest   52.5 mm at t   29.22 (v 0.047 m/s),  peak within 1 m  0.57 m/s,  median v within 0.15 m 0.141 m/s
+     (E +2.5026, N +0.4020) closest    3.4 mm at t   34.16 (v 0.149 m/s),  peak within 1 m  1.75 m/s,  median v within 0.15 m 0.026 m/s
+     (E +2.5026, N +1.6020) closest    1.8 mm at t   47.08 (v 0.023 m/s),  peak within 1 m  1.28 m/s,  median v within 0.15 m 0.054 m/s
+     (E +0.5026, N +1.6020) closest    3.3 mm at t   58.64 (v 0.005 m/s),  peak within 1 m  1.70 m/s,  median v within 0.15 m 0.017 m/s
+     (E +0.5026, N +0.4020) closest    4.2 mm at t   63.31 (v 0.109 m/s),  peak within 1 m  1.28 m/s,  median v within 0.15 m 0.049 m/s
+
+run missionA-RECT24-plan-cmd   /home/fanxin/lio_avoid/logs/missionA-RECT24-plan-cmd
+   truth tap 88705 samples over 73.9 s;  command rectangle E [0.500, 2.500] N [0.400, 1.600] (2.000 x 1.200 m);  dwell 5.0 s (--hold-s default)
+   command/FCU channels: setpoints.csv 2049 rows at 55.2 Hz;  command check (the commanded point during a dwell vs the corner): 0.00 mm
+   B1 window [the first leg phase whose truth is at corner 1, the land entry] = phase leg2, sim 29.42 .. 66.53 s = 37.11 s, 44552 truth samples
+   B1 extents  E 2.1698 m  N 1.2998 m   =>  growth E +169.8 mm  N +99.8 mm   bound +100/+100 mm   [FAIL]
+   IDENTITY    E: E-min out + E-max out = 88.2 + 81.6 = 169.8 mm vs growth 169.8 mm (resid 0.000 mm)
+               N: N-min out + N-max out = 56.9 + 42.9 = 99.8 mm vs growth 99.8 mm (resid 0.000 mm)
+
+   TABLE A -- the four walls: what makes the growth (global extremes over the B1 window)
+     wall   at         out (mm)    t (s) phase       v  where                nearest corner |    out|on    t (s) |     in|on    t (s)
+     E-min  E=0.500       +88.2    53.57 leg4    0.006  (E +0.4118, N +1.6073) c4  0.088 m   |     +88.2    53.57 |      +9.0    63.46
+     E-max  E=2.500       +81.6    35.12 leg2    0.011  (E +2.5816, N +0.4017) c2  0.082 m   |     +81.6    35.12 |      +2.1    48.09
+     N-min  N=0.400       +56.9    30.45 leg2    1.555  (E +0.9846, N +0.3431) c1  0.488 m   |     +56.9    30.45 |     +10.2    32.34
+     N-max  N=1.600       +42.9    46.08 leg3    0.002  (E +2.5036, N +1.6429) c3  0.043 m   |     +18.2    49.88 |      +4.2    51.82
+     'out' = how far past that wall the truth reaches (positive = OUTSIDE the rectangle, this is
+     the growth); 'in|on' = the largest stand-off INSIDE on the samples whose nearest wall is
+     this one (a leg flown 20 mm inside its wall shows up here, and cannot make B1 grow).
+     the same four peak samples, decomposed (all from setpoints.csv at 50 Hz):
+        wall    truth-cmd E/N    fcu-cmd E/N  truth-fcu E/N        |v_fcu|
+        E-min    -90.8   +5.2   -87.6   +5.1    -3.2   +0.1       0.003
+        E-max    +78.9   -0.4   +88.0   +8.0    -9.1   -8.4       0.040
+        N-min  -1518.1  -59.0 -1550.6  -57.4   +32.5   -1.5       1.467
+        N-max     +1.0  +40.8    -0.0  +52.1    +1.0  -11.3       0.018
+
+   TABLE B -- the corner visits: which visit owns the wall extreme, and WHEN inside it
+     vis  commanded corner wall     cmd t0  dwell t0 closest      out (mm)    t (s) since c/a since dw | truth-cmd   fcu-cmd truth-fcu
+     1    (E +0.5027, N +0.4021) E-min     27.21      --   44.1 mm @ 29.41   +506.2    27.21    -2.20     --  |    +508.8    +506.7      +2.2   <-- BEFORE the B1 window (the entry leg)
+     1    (E +0.5027, N +0.4021) N-min     27.21      --   44.1 mm @ 29.41   +406.6    27.42    -1.99     --  |    +408.7    +410.1      -1.4   <-- BEFORE the B1 window (the entry leg)
+     2    (E +2.5027, N +0.4021) E-max     29.42     35.64 1.5 mm @ 34.33    +81.6    35.12     0.79   -0.52 |     +78.9     +88.0      -9.1
+     2    (E +2.5027, N +0.4021) N-min     29.42     35.64 1.5 mm @ 34.33    +56.9    30.45    -3.88   -5.19 |     +59.0     +57.4      +1.5
+     3    (E +2.5027, N +1.6021) E-max     40.66     42.82 0.3 mm @ 45.30    +13.7    41.19    -4.12   -1.63 |     +11.0      +9.5      +1.5
+     3    (E +2.5027, N +1.6021) N-max     40.66     42.82 0.3 mm @ 45.30    +42.9    46.08     0.78    3.26 |     +40.8     +52.1     -11.3
+     4    (E +0.5027, N +1.6021) E-min     47.83     54.32 2.3 mm @ 52.66    +88.2    53.57     0.91   -0.75 |     +90.8     +87.6      +3.2
+     4    (E +0.5027, N +1.6021) N-max     47.83     54.32 2.3 mm @ 52.66    +18.2    49.88    -2.78   -4.44 |     +16.1     +18.1      -2.0
+     5    (E +0.5027, N +0.4021) E-min     59.35     61.53 6.7 mm @ 63.53     +7.9    60.02    -3.51   -1.52 |     +10.6      +8.2      +2.4
+     5    (E +0.5027, N +0.4021) N-min     59.35     61.53 6.7 mm @ 63.53    +48.3    64.50     0.97    2.96 |     +50.4     +48.8      +1.6
+     a visit = one commanded corner: from the moment the plan box commands it to the moment it
+     commands the next one (the dwell is the last hold_s of it).  'since c/a' = seconds after
+     the truth's closest approach to that corner; 'since dw' = seconds after the dwell clock
+     starts (negative = the aircraft is ALREADY outside when the park begins).  The last three
+     columns are the signed deviation past the wall from the command, from the FCU's own
+     estimate and the FCU's own error, in mm.
+
+   TABLE C -- per leg, B2's own number next to the wall the leg runs along
+     leg  phase       n  len(m)  B2 perp     at t      side wall    wall-out     at t    out<2 s    same?
+     1    leg1     2666   0.666     6.7 mm    28.06        -1 --       (no wall)       --         -- different
+     2    leg2    13534   2.047    41.4 mm    30.54        -1 N-min     +56.9 mm    30.45     +56.9     SAME
+     3    leg3     8581   1.197     5.7 mm    42.19        -1 E-max     +13.7 mm    41.19     +13.7 different
+     4    leg4    13820   2.006    13.0 mm    49.83        -1 N-max     +18.2 mm    49.88     +18.2     SAME
+     5    leg5     8620   1.191    15.3 mm    63.73        +1 E-min      +7.9 mm    60.02      +7.9 different
+     'side' = the sign of the worst B2 sample against the leg's own direction; 'wall-out' = the
+     largest excursion past the wall this leg runs along, inside the SAME leg phase; 'same?'
+     says whether those two are the same instant (|dt| <= 0.3 s) or two different events.
+
+   TABLE E -- per corner: the RING the arrival excites, in the frame of the leg that arrives
+              (ring window = 2 s before to 3 s after the corner pass; the pass is the truth's
+              closest approach to the corner; 'along' = the direction of travel, positive =
+              PAST the commanded corner)
+     vis  corner           pass            short(mm)        t        v  past(mm)        t        v    delay half-T |   cross-   cross+      p-p when the 'past' extreme happens
+     1    (E +0.5027, N +0.4021)  44.1mm@29.41    -506.5    27.41    0.018     -37.2    29.41    0.041     0.00  2.00 |   -408.7    -23.7    469.4 while parked (dwell clock running)   <-- entry leg, BEFORE the B1 window
+     2    (E +2.5027, N +0.4021)   1.5mm@34.33    -184.8    33.04    0.012     +78.9    35.12    0.011     0.79  2.09 |    -13.4     +8.1    263.8 settling (command held, dwell clock not yet started)
+     3    (E +2.5027, N +1.6021)   0.3mm@45.30    -116.2    44.05    0.002     +40.8    46.08    0.002     0.78  2.03 |     -1.4     +2.6    157.0 while parked (dwell clock running)
+     4    (E +0.5027, N +1.6021)   2.3mm@52.66    -269.4    51.25    0.012     +90.8    53.57    0.006     0.91  2.32 |     -7.6     +6.3    360.2 settling (command held, dwell clock not yet started)
+     5    (E +0.5027, N +0.4021)   6.7mm@63.53     -67.1    62.59    0.013     +50.4    64.50    0.010     0.97  1.91 |     -9.6     +7.2    117.4 while parked (dwell clock running)
+     'short'/'past' = how far the truth gets on the two sides of the commanded corner along
+     the direction of travel inside that window: a position loop that rings shows BOTH,
+     seconds apart, with the aircraft nearly stationary (v) at each extreme.  'delay' =
+     seconds from the corner pass to the 'past' extreme; 'half-T' = the interval between the
+     two extremes (half a period if it is one oscillation).  'cross-/cross+' is the lateral
+     component on the two sides of the leg's own line; 'p-p' is the along peak-to-peak.
+     NOTE: this run's commanded corners sit 3.4 mm from the world file's (the judged
+           rectangle is built from the world file): the walls above are the WORLD's, as
+           tools/metrics.py judges them.
+
+   TABLE D -- the FCU's own contribution (measured from setpoints.csv at 50 Hz)
+     over the DWELL windows only (24012 of 44552 window samples -- the instants at which the commanded
+     point is a FIXED corner and 'truth - command' is a parking error, not the intended travel):
+        truth - command  rms  36.95 mm, worst 116.19 mm at t 44.06 s
+     over the WHOLE B1 window:  truth - FCU est  rms  21.67 mm, p95  58.74 mm, max  89.81 mm at t 50.48 s
+     (A4 reports the same difference over the whole flight as ~15 mm rms: the tail ABOVE it
+      is made at the corner arrivals, and the four wall peaks in TABLE A carry its value.)
+
+   the arrivals (the peak speed within 1 m of each commanded corner, truth-only):
+     (E +0.5027, N +0.4021) closest   44.1 mm at t   29.41 (v 0.041 m/s),  peak within 1 m  0.57 m/s,  median v within 0.15 m 0.146 m/s
+     (E +2.5027, N +0.4021) closest    1.5 mm at t   34.33 (v 0.172 m/s),  peak within 1 m  1.74 m/s,  median v within 0.15 m 0.026 m/s
+     (E +2.5027, N +1.6021) closest    0.3 mm at t   45.30 (v 0.103 m/s),  peak within 1 m  1.28 m/s,  median v within 0.15 m 0.055 m/s
+     (E +0.5027, N +1.6021) closest    2.3 mm at t   52.66 (v 0.201 m/s),  peak within 1 m  1.71 m/s,  median v within 0.15 m 0.019 m/s
+     (E +0.5027, N +0.4021) closest    6.7 mm at t   63.53 (v 0.096 m/s),  peak within 1 m  1.27 m/s,  median v within 0.15 m 0.046 m/s
+
+run missionA-RECT7-hold5   /home/fanxin/lio_avoid/logs/missionA-RECT7-hold5
+   truth tap 95098 samples over 79.2 s;  command rectangle E [0.500, 2.500] N [0.400, 1.600] (2.000 x 1.200 m);  dwell 5.0 s (--hold-s default)
+   command/FCU channels: setpoints.csv 2994 rows at 78.4 Hz;  command check (the commanded point during a dwell vs the corner): 0.00 mm
+   B1 window [the first leg phase whose truth is at corner 1, the land entry] = phase leg2, sim 29.63 .. 67.80 s = 38.17 s, 45826 truth samples
+   B1 extents  E 2.1539 m  N 1.2872 m   =>  growth E +153.9 mm  N +87.2 mm   bound +100/+100 mm   [FAIL]
+   IDENTITY    E: E-min out + E-max out = 80.5 + 73.4 = 153.9 mm vs growth 153.9 mm (resid -0.000 mm)
+               N: N-min out + N-max out = 51.1 + 36.0 = 87.2 mm vs growth 87.2 mm (resid 0.000 mm)
+
+   TABLE A -- the four walls: what makes the growth (global extremes over the B1 window)
+     wall   at         out (mm)    t (s) phase       v  where                nearest corner |    out|on    t (s) |     in|on    t (s)
+     E-min  E=0.500       +80.5    54.19 leg4    0.005  (E +0.4195, N +1.6039) c4  0.081 m   |     +80.5    54.19 |      +2.2    53.28
+     E-max  E=2.500       +73.4    35.42 leg2    0.001  (E +2.5734, N +0.4032) c2  0.073 m   |     +73.4    35.42 |      +1.8    45.04
+     N-min  N=0.400       +51.1    30.57 leg2    1.341  (E +0.8261, N +0.3489) c1  0.330 m   |     +51.1    30.57 |     +14.6    32.45
+     N-max  N=1.600       +36.0    45.80 leg3    0.007  (E +2.4998, N +1.6360) c3  0.036 m   |     +36.0    45.80 |      +4.3    52.72
+     'out' = how far past that wall the truth reaches (positive = OUTSIDE the rectangle, this is
+     the growth); 'in|on' = the largest stand-off INSIDE on the samples whose nearest wall is
+     this one (a leg flown 20 mm inside its wall shows up here, and cannot make B1 grow).
+     the same four peak samples, decomposed (all from setpoints.csv at 50 Hz):
+        wall    truth-cmd E/N    fcu-cmd E/N  truth-fcu E/N        |v_fcu|
+        E-min    -83.3   +1.1   -81.1   +3.0    -2.2   -1.9       0.002
+        E-max    +70.6   +0.4   +72.3   +4.2    -1.7   -3.8       0.009
+        N-min  -1676.7  -54.0 -1667.3  -53.1    -9.4   -0.9       1.335
+        N-max     -3.0  +33.2    -3.4  +46.8    +0.3  -13.6       0.023
+
+   TABLE B -- the corner visits: which visit owns the wall extreme, and WHEN inside it
+     vis  commanded corner wall     cmd t0  dwell t0 closest      out (mm)    t (s) since c/a since dw | truth-cmd   fcu-cmd truth-fcu
+     1    (E +0.5028, N +0.4028) E-min     27.31      --   57.2 mm @ 29.63   +499.0    27.47    -2.16     --  |    +501.8    +497.6      +4.1   <-- BEFORE the B1 window (the entry leg)
+     1    (E +0.5028, N +0.4028) N-min     27.31      --   57.2 mm @ 29.63   +410.2    27.31    -2.32     --  |    +413.1    +414.5      -1.4   <-- BEFORE the B1 window (the entry leg)
+     2    (E +2.5028, N +0.4028) E-max     29.65     35.41 3.7 mm @ 40.41    +73.4    35.42    -4.99    0.01 |     +70.6     +72.3      -1.7
+     2    (E +2.5028, N +0.4028) N-min     29.65     35.41 3.7 mm @ 40.41    +51.1    30.57    -9.85   -4.85 |     +54.0     +53.1      +0.9
+     3    (E +2.5028, N +1.6028) E-max     40.44     43.46 0.2 mm @ 48.34     +6.5    42.12    -6.22   -1.34 |      +3.7      +4.2      -0.5
+     3    (E +2.5028, N +1.6028) N-max     40.44     43.46 0.2 mm @ 48.34    +36.0    45.80    -2.54    2.34 |     +33.2     +46.8     -13.6
+     4    (E +0.5028, N +1.6028) E-min     48.48     54.46 5.1 mm @ 53.28    +80.5    54.19     0.91   -0.27 |     +83.3     +81.1      +2.2
+     4    (E +0.5028, N +1.6028) N-max     48.48     54.46 5.1 mm @ 53.28    +13.4    49.36    -3.92   -5.10 |     +10.5     +13.8      -3.3
+     5    (E +0.5028, N +0.4028) E-min     59.48     69.61 1.8 mm @ 64.15     +9.1    62.10    -2.05   -7.51 |     +11.9      +9.2      +2.7
+     5    (E +0.5028, N +0.4028) N-min     59.48     69.61 1.8 mm @ 64.15    +40.6    65.12     0.97   -4.49 |     +43.4     +41.4      +2.0
+     a visit = one commanded corner: from the moment the plan box commands it to the moment it
+     commands the next one (the dwell is the last hold_s of it).  'since c/a' = seconds after
+     the truth's closest approach to that corner; 'since dw' = seconds after the dwell clock
+     starts (negative = the aircraft is ALREADY outside when the park begins).  The last three
+     columns are the signed deviation past the wall from the command, from the FCU's own
+     estimate and the FCU's own error, in mm.
+
+   TABLE C -- per leg, B2's own number next to the wall the leg runs along
+     leg  phase       n  len(m)  B2 perp     at t      side wall    wall-out     at t    out<2 s    same?
+     1    leg1     2796   0.671     3.5 mm    28.03        +1 --       (no wall)       --         -- different
+     2    leg2    12962   2.051    29.1 mm    30.69        -1 N-min     +51.1 mm    30.57     +51.1     SAME
+     3    leg3     9673   1.204     4.2 mm    42.24        -1 E-max      +6.5 mm    42.12      +6.5     SAME
+     4    leg4    13209   2.005    11.9 mm    50.63        -1 N-max     +13.4 mm    49.36     +13.4 different
+     5    leg5     9985   1.197    12.6 mm    65.29        +1 E-min      +9.1 mm    62.10      +6.7 different
+     'side' = the sign of the worst B2 sample against the leg's own direction; 'wall-out' = the
+     largest excursion past the wall this leg runs along, inside the SAME leg phase; 'same?'
+     says whether those two are the same instant (|dt| <= 0.3 s) or two different events.
+
+   TABLE E -- per corner: the RING the arrival excites, in the frame of the leg that arrives
+              (ring window = 2 s before to 3 s after the corner pass; the pass is the truth's
+              closest approach to the corner; 'along' = the direction of travel, positive =
+              PAST the commanded corner)
+     vis  corner           pass            short(mm)        t        v  past(mm)        t        v    delay half-T |   cross-   cross+      p-p when the 'past' extreme happens
+     1    (E +0.5028, N +0.4028)  57.2mm@29.63    -499.0    27.63    0.069     -47.9    29.63    0.029     0.00  2.00 |   -408.3    -31.4    451.1 while parked (dwell clock running)   <-- entry leg, BEFORE the B1 window
+     2    (E +2.5028, N +0.4028)   3.7mm@40.41      +3.1    40.41    0.006     +12.0    39.03    0.005    -1.39 -1.39 |     -7.0     -2.0      8.8 while parked (dwell clock running)
+     3    (E +2.5028, N +1.6028)   0.2mm@48.34     -11.3    47.46    0.003     +18.8    46.34    0.043    -2.00 -1.12 |     -2.4     +0.6     30.1 while parked (dwell clock running)
+     4    (E +0.5028, N +1.6028)   5.1mm@53.28    -252.1    51.86    0.010     +83.3    54.19    0.005     0.91  2.33 |     -3.8     +7.1    335.4 settling (command held, dwell clock not yet started)
+     5    (E +0.5028, N +0.4028)   1.8mm@64.15     -81.6    62.86    0.006     +43.4    65.12    0.003     0.97  2.27 |    -11.9     +5.4    125.1 settling (command held, dwell clock not yet started)
+     'short'/'past' = how far the truth gets on the two sides of the commanded corner along
+     the direction of travel inside that window: a position loop that rings shows BOTH,
+     seconds apart, with the aircraft nearly stationary (v) at each extreme.  'delay' =
+     seconds from the corner pass to the 'past' extreme; 'half-T' = the interval between the
+     two extremes (half a period if it is one oscillation).  'cross-/cross+' is the lateral
+     component on the two sides of the leg's own line; 'p-p' is the along peak-to-peak.
+     NOTE: this run's commanded corners sit 4.0 mm from the world file's (the judged
+           rectangle is built from the world file): the walls above are the WORLD's, as
+           tools/metrics.py judges them.
+
+   TABLE D -- the FCU's own contribution (measured from setpoints.csv at 50 Hz)
+     over the DWELL windows only (18009 of 45826 window samples -- the instants at which the commanded
+     point is a FIXED corner and 'truth - command' is a parking error, not the intended travel):
+        truth - command  rms  35.61 mm, worst 110.29 mm at t 43.75 s
+     over the WHOLE B1 window:  truth - FCU est  rms  21.00 mm, p95  54.77 mm, max  89.77 mm at t 50.95 s
+     (A4 reports the same difference over the whole flight as ~15 mm rms: the tail ABOVE it
+      is made at the corner arrivals, and the four wall peaks in TABLE A carry its value.)
+
+   the arrivals (the peak speed within 1 m of each commanded corner, truth-only):
+     (E +0.5028, N +0.4028) closest   57.2 mm at t   29.63 (v 0.029 m/s),  peak within 1 m  0.56 m/s,  median v within 0.15 m 0.111 m/s
+     (E +2.5028, N +0.4028) closest    3.7 mm at t   40.41 (v 0.006 m/s),  peak within 1 m  1.71 m/s,  median v within 0.15 m 0.027 m/s
+     (E +2.5028, N +1.6028) closest    0.2 mm at t   48.34 (v 0.017 m/s),  peak within 1 m  1.27 m/s,  median v within 0.15 m 0.042 m/s
+     (E +0.5028, N +1.6028) closest    5.1 mm at t   53.28 (v 0.184 m/s),  peak within 1 m  1.69 m/s,  median v within 0.15 m 0.014 m/s
+     (E +0.5028, N +0.4028) closest    1.8 mm at t   64.15 (v 0.083 m/s),  peak within 1 m  1.26 m/s,  median v within 0.15 m 0.006 m/s
+
+run missionA-RECT9-hold5   /home/fanxin/lio_avoid/logs/missionA-RECT9-hold5
+   truth tap 94020 samples over 78.3 s;  command rectangle E [0.500, 2.500] N [0.400, 1.600] (2.000 x 1.200 m);  dwell 5.0 s (--hold-s default)
+   command/FCU channels: setpoints.csv 2954 rows at 79.0 Hz;  command check (the commanded point during a dwell vs the corner): 0.00 mm
+   B1 window [the first leg phase whose truth is at corner 1, the land entry] = phase leg2, sim 29.38 .. 66.77 s = 37.39 s, 44890 truth samples
+   B1 extents  E 2.1429 m  N 1.2974 m   =>  growth E +142.9 mm  N +97.4 mm   bound +100/+100 mm   [FAIL]
+   IDENTITY    E: E-min out + E-max out = 69.2 + 73.7 = 142.9 mm vs growth 142.9 mm (resid -0.000 mm)
+               N: N-min out + N-max out = 58.8 + 38.6 = 97.4 mm vs growth 97.4 mm (resid 0.000 mm)
+
+   TABLE A -- the four walls: what makes the growth (global extremes over the B1 window)
+     wall   at         out (mm)    t (s) phase       v  where                nearest corner |    out|on    t (s) |     in|on    t (s)
+     E-min  E=0.500       +69.2    53.71 leg4    0.008  (E +0.4308, N +1.6015) c4  0.069 m   |     +69.2    53.71 |      +5.7    52.77
+     E-max  E=2.500       +73.7    35.17 leg2    0.001  (E +2.5737, N +0.4042) c2  0.074 m   |     +73.7    35.17 |      +1.4    44.63
+     N-min  N=0.400       +58.8    30.39 leg2    1.514  (E +0.9566, N +0.3412) c1  0.460 m   |     +58.8    30.39 |     +13.3    32.36
+     N-max  N=1.600       +38.6    45.39 leg3    0.004  (E +2.4993, N +1.6386) c3  0.039 m   |     +38.6    45.39 |      +6.3    52.50
+     'out' = how far past that wall the truth reaches (positive = OUTSIDE the rectangle, this is
+     the growth); 'in|on' = the largest stand-off INSIDE on the samples whose nearest wall is
+     this one (a leg flown 20 mm inside its wall shows up here, and cannot make B1 grow).
+     the same four peak samples, decomposed (all from setpoints.csv at 50 Hz):
+        wall    truth-cmd E/N    fcu-cmd E/N  truth-fcu E/N        |v_fcu|
+        E-min    -71.9   -1.4   -71.7   +0.3    -0.1   -1.7       0.005
+        E-max    +71.1   +1.3   +71.7   +5.1    -0.7   -3.8       0.007
+        N-min  -1546.0  -61.7 -1531.3  -58.6   -14.7   -3.1       1.489
+        N-max     -3.4  +35.7    -3.5  +49.4    +0.1  -13.7       0.025
+
+   TABLE B -- the corner visits: which visit owns the wall extreme, and WHEN inside it
+     vis  commanded corner wall     cmd t0  dwell t0 closest      out (mm)    t (s) since c/a since dw | truth-cmd   fcu-cmd truth-fcu
+     1    (E +0.5026, N +0.4029) E-min     27.20      --   57.9 mm @ 29.36   +501.4    27.20    -2.15     --  |    +504.1    +500.6      +3.5   <-- BEFORE the B1 window (the entry leg)
+     1    (E +0.5026, N +0.4029) N-min     27.20      --   57.9 mm @ 29.36   +408.2    27.23    -2.13     --  |    +411.1    +411.9      -0.8   <-- BEFORE the B1 window (the entry leg)
+     2    (E +2.5026, N +0.4029) E-max     29.38     34.96 3.4 mm @ 34.23    +73.7    35.17     0.94    0.21 |     +71.1     +71.7      -0.7
+     2    (E +2.5026, N +0.4029) N-min     29.38     34.96 3.4 mm @ 34.23    +58.8    30.39    -3.83   -4.56 |     +61.7     +58.6      +3.1
+     3    (E +2.5026, N +1.6029) E-max     39.98     42.95 0.5 mm @ 46.32     +7.4    42.51    -3.81   -0.44 |      +4.8      +4.3      +0.4
+     3    (E +2.5026, N +1.6029) N-max     39.98     42.95 0.5 mm @ 46.32    +38.6    45.39    -0.93    2.44 |     +35.7     +49.4     -13.7
+     4    (E +0.5026, N +1.6029) E-min     47.97     53.51 3.2 mm @ 55.85    +69.2    53.71    -2.15    0.20 |     +71.9     +71.7      +0.1
+     4    (E +0.5026, N +1.6029) N-max     47.97     53.51 3.2 mm @ 55.85    +13.4    48.76    -7.09   -4.74 |     +10.5     +14.8      -4.3
+     5    (E +0.5026, N +0.4029) E-min     58.53     68.78 4.2 mm @ 63.27     +6.2    61.25    -2.02   -7.52 |      +8.9      +7.0      +1.8
+     5    (E +0.5026, N +0.4029) N-min     58.53     68.78 4.2 mm @ 63.27    +28.0    64.39     1.11   -4.39 |     +30.9     +26.7      +4.2
+     a visit = one commanded corner: from the moment the plan box commands it to the moment it
+     commands the next one (the dwell is the last hold_s of it).  'since c/a' = seconds after
+     the truth's closest approach to that corner; 'since dw' = seconds after the dwell clock
+     starts (negative = the aircraft is ALREADY outside when the park begins).  The last three
+     columns are the signed deviation past the wall from the command, from the FCU's own
+     estimate and the FCU's own error, in mm.
+
+   TABLE C -- per leg, B2's own number next to the wall the leg runs along
+     leg  phase       n  len(m)  B2 perp     at t      side wall    wall-out     at t    out<2 s    same?
+     1    leg1     2614   0.688     1.2 mm    27.91        +1 --       (no wall)       --         -- different
+     2    leg2    12702   2.052    37.9 mm    30.52        -1 N-min     +58.8 mm    30.39     +58.8     SAME
+     3    leg3     9621   1.205     5.2 mm    44.77        +1 E-max      +7.4 mm    42.51      +7.3 different
+     4    leg4    12650   1.997    14.7 mm    50.48        -1 N-max     +13.4 mm    48.76     +13.4 different
+     5    leg5     9920   1.201     9.7 mm    65.25        +1 E-min      +6.2 mm    61.25      +3.7 different
+     'side' = the sign of the worst B2 sample against the leg's own direction; 'wall-out' = the
+     largest excursion past the wall this leg runs along, inside the SAME leg phase; 'same?'
+     says whether those two are the same instant (|dt| <= 0.3 s) or two different events.
+
+   TABLE E -- per corner: the RING the arrival excites, in the frame of the leg that arrives
+              (ring window = 2 s before to 3 s after the corner pass; the pass is the truth's
+              closest approach to the corner; 'along' = the direction of travel, positive =
+              PAST the commanded corner)
+     vis  corner           pass            short(mm)        t        v  past(mm)        t        v    delay half-T |   cross-   cross+      p-p when the 'past' extreme happens
+     1    (E +0.5026, N +0.4029)  57.9mm@29.36    -503.9    27.36    0.007     -47.5    29.36    0.056     0.00  2.00 |   -410.9    -33.0    456.4 while parked (dwell clock running)   <-- entry leg, BEFORE the B1 window
+     2    (E +2.5026, N +0.4029)   3.4mm@34.23    -166.8    32.82    0.013     +71.1    35.17    0.001     0.94  2.35 |     -7.8    +10.4    237.9 while parked (dwell clock running)
+     3    (E +2.5026, N +1.6029)   0.5mm@46.32     -36.6    44.32    0.113     +35.7    45.39    0.004    -0.93  1.07 |     -1.5     +4.2     72.3 while parked (dwell clock running)
+     4    (E +0.5026, N +1.6029)   3.2mm@55.85      -4.2    58.27    0.001     +70.4    53.85    0.021    -2.00 -4.41 |     -3.7     +8.2     74.6 while parked (dwell clock running)
+     5    (E +0.5026, N +0.4029)   4.2mm@63.27     -77.2    61.91    0.005     +30.9    64.39    0.013     1.11  2.47 |     -8.9     +6.7    108.1 settling (command held, dwell clock not yet started)
+     'short'/'past' = how far the truth gets on the two sides of the commanded corner along
+     the direction of travel inside that window: a position loop that rings shows BOTH,
+     seconds apart, with the aircraft nearly stationary (v) at each extreme.  'delay' =
+     seconds from the corner pass to the 'past' extreme; 'half-T' = the interval between the
+     two extremes (half a period if it is one oscillation).  'cross-/cross+' is the lateral
+     component on the two sides of the leg's own line; 'p-p' is the along peak-to-peak.
+     NOTE: this run's commanded corners sit 3.9 mm from the world file's (the judged
+           rectangle is built from the world file): the walls above are the WORLD's, as
+           tools/metrics.py judges them.
+
+   TABLE D -- the FCU's own contribution (measured from setpoints.csv at 50 Hz)
+     over the DWELL windows only (18009 of 44890 window samples -- the instants at which the commanded
+     point is a FIXED corner and 'truth - command' is a parking error, not the intended travel):
+        truth - command  rms  39.32 mm, worst 114.07 mm at t 43.34 s
+     over the WHOLE B1 window:  truth - FCU est  rms  19.28 mm, p95  48.69 mm, max  72.97 mm at t 32.01 s
+     (A4 reports the same difference over the whole flight as ~15 mm rms: the tail ABOVE it
+      is made at the corner arrivals, and the four wall peaks in TABLE A carry its value.)
+
+   the arrivals (the peak speed within 1 m of each commanded corner, truth-only):
+     (E +0.5026, N +0.4029) closest   57.9 mm at t   29.36 (v 0.056 m/s),  peak within 1 m  0.56 m/s,  median v within 0.15 m 0.144 m/s
+     (E +2.5026, N +0.4029) closest    3.4 mm at t   34.23 (v 0.139 m/s),  peak within 1 m  1.71 m/s,  median v within 0.15 m 0.031 m/s
+     (E +2.5026, N +1.6029) closest    0.5 mm at t   46.32 (v 0.043 m/s),  peak within 1 m  1.28 m/s,  median v within 0.15 m 0.049 m/s
+     (E +0.5026, N +1.6029) closest    3.2 mm at t   55.85 (v 0.001 m/s),  peak within 1 m  1.69 m/s,  median v within 0.15 m 0.027 m/s
+     (E +0.5026, N +0.4029) closest    4.2 mm at t   63.27 (v 0.062 m/s),  peak within 1 m  1.26 m/s,  median v within 0.15 m 0.007 m/s
+
+run missionA-RECT10-hold5   /home/fanxin/lio_avoid/logs/missionA-RECT10-hold5
+   truth tap 95221 samples over 79.3 s;  command rectangle E [0.500, 2.500] N [0.400, 1.600] (2.000 x 1.200 m);  dwell 5.0 s (--hold-s default)
+   command/FCU channels: setpoints.csv 3001 rows at 78.1 Hz;  command check (the commanded point during a dwell vs the corner): 0.00 mm
+   B1 window [the first leg phase whose truth is at corner 1, the land entry] = phase leg2, sim 29.15 .. 67.58 s = 38.43 s, 46138 truth samples
+   B1 extents  E 2.1545 m  N 1.2894 m   =>  growth E +154.5 mm  N +89.4 mm   bound +100/+100 mm   [FAIL]
+   IDENTITY    E: E-min out + E-max out = 81.7 + 72.8 = 154.5 mm vs growth 154.5 mm (resid 0.000 mm)
+               N: N-min out + N-max out = 57.4 + 31.9 = 89.4 mm vs growth 89.4 mm (resid 0.000 mm)
+
+   TABLE A -- the four walls: what makes the growth (global extremes over the B1 window)
+     wall   at         out (mm)    t (s) phase       v  where                nearest corner |    out|on    t (s) |     in|on    t (s)
+     E-min  E=0.500       +81.7    54.02 leg4    0.004  (E +0.4183, N +1.6057) c4  0.082 m   |     +81.7    54.02 |      +0.0    66.58
+     E-max  E=2.500       +72.8    34.97 leg2    0.004  (E +2.5728, N +0.4044) c2  0.073 m   |     +72.8    34.97 |      +1.8    44.88
+     N-min  N=0.400       +57.4    30.15 leg2    1.493  (E +0.9314, N +0.3426) c1  0.435 m   |     +57.4    30.15 |     +13.6    31.97
+     N-max  N=1.600       +31.9    45.58 leg3    0.010  (E +2.5016, N +1.6319) c3  0.032 m   |     +29.9    45.40 |      +2.0    51.83
+     'out' = how far past that wall the truth reaches (positive = OUTSIDE the rectangle, this is
+     the growth); 'in|on' = the largest stand-off INSIDE on the samples whose nearest wall is
+     this one (a leg flown 20 mm inside its wall shows up here, and cannot make B1 grow).
+     the same four peak samples, decomposed (all from setpoints.csv at 50 Hz):
+        wall    truth-cmd E/N    fcu-cmd E/N  truth-fcu E/N        |v_fcu|
+        E-min    -84.0   +3.7   -81.7   +3.8    -2.4   -0.2       0.000
+        E-max    +70.5   +2.4   +74.4   +7.8    -4.0   -5.4       0.019
+        N-min  -1571.0  -59.4 -1592.1  -60.4   +21.1   +1.0       1.421
+        N-max     -0.7  +29.9    -2.6  +41.9    +1.9  -12.0       0.021
+
+   TABLE B -- the corner visits: which visit owns the wall extreme, and WHEN inside it
+     vis  commanded corner wall     cmd t0  dwell t0 closest      out (mm)    t (s) since c/a since dw | truth-cmd   fcu-cmd truth-fcu
+     1    (E +0.5023, N +0.4020) E-min     26.93      --   57.7 mm @ 29.13   +494.2    27.06    -2.08     --  |    +496.5    +494.7      +1.9   <-- BEFORE the B1 window (the entry leg)
+     1    (E +0.5023, N +0.4020) N-min     26.93      --   57.7 mm @ 29.13   +414.5    26.93    -2.20     --  |    +416.5    +417.7      -1.3   <-- BEFORE the B1 window (the entry leg)
+     2    (E +2.5023, N +0.4020) E-max     29.16     35.24 2.3 mm @ 34.08    +72.8    34.97     0.88   -0.28 |     +70.5     +74.4      -4.0
+     2    (E +2.5023, N +0.4020) N-min     29.16     35.24 2.3 mm @ 34.08    +57.4    30.15    -3.93   -5.09 |     +59.4     +60.4      -1.0
+     3    (E +2.5023, N +1.6020) E-max     40.26     43.25 1.8 mm @ 47.99     +7.0    46.56    -1.43    3.30 |      +4.6      +4.1      +0.6
+     3    (E +2.5023, N +1.6020) N-max     40.26     43.25 1.8 mm @ 47.99    +31.9    45.58    -2.41    2.32 |     +29.9     +41.9     -12.0
+     4    (E +0.5023, N +1.6020) E-min     48.26     54.31 0.9 mm @ 53.09    +81.7    54.02     0.93   -0.29 |     +84.0     +81.7      +2.4
+     4    (E +0.5023, N +1.6020) N-max     48.26     54.31 0.9 mm @ 53.09    +16.2    49.09    -4.00   -5.22 |     +14.2     +16.4      -2.2
+     5    (E +0.5023, N +0.4020) E-min     59.33     69.48 3.0 mm @ 64.01    +11.5    61.79    -2.22   -7.69 |     +13.8     +11.0      +2.8
+     5    (E +0.5023, N +0.4020) N-min     59.33     69.48 3.0 mm @ 64.01    +42.5    64.96     0.95   -4.52 |     +44.5     +43.6      +0.9
+     a visit = one commanded corner: from the moment the plan box commands it to the moment it
+     commands the next one (the dwell is the last hold_s of it).  'since c/a' = seconds after
+     the truth's closest approach to that corner; 'since dw' = seconds after the dwell clock
+     starts (negative = the aircraft is ALREADY outside when the park begins).  The last three
+     columns are the signed deviation past the wall from the command, from the FCU's own
+     estimate and the FCU's own error, in mm.
+
+   TABLE C -- per leg, B2's own number next to the wall the leg runs along
+     leg  phase       n  len(m)  B2 perp     at t      side wall    wall-out     at t    out<2 s    same?
+     1    leg1     2692   0.669     2.3 mm    27.51        +1 --       (no wall)       --         -- different
+     2    leg2    13326   2.051    36.9 mm    30.26        -1 N-min     +57.4 mm    30.15     +57.4     SAME
+     3    leg3     9608   1.208     7.1 mm    46.55        -1 E-max      +7.0 mm    46.56      +5.8     SAME
+     4    leg4    13274   2.003    10.5 mm    49.31        -1 N-max     +16.2 mm    49.09     +16.2     SAME
+     5    leg5     9933   1.198    14.4 mm    65.17        +1 E-min     +11.5 mm    61.79     +10.3 different
+     'side' = the sign of the worst B2 sample against the leg's own direction; 'wall-out' = the
+     largest excursion past the wall this leg runs along, inside the SAME leg phase; 'same?'
+     says whether those two are the same instant (|dt| <= 0.3 s) or two different events.
+
+   TABLE E -- per corner: the RING the arrival excites, in the frame of the leg that arrives
+              (ring window = 2 s before to 3 s after the corner pass; the pass is the truth's
+              closest approach to the corner; 'along' = the direction of travel, positive =
+              PAST the commanded corner)
+     vis  corner           pass            short(mm)        t        v  past(mm)        t        v    delay half-T |   cross-   cross+      p-p when the 'past' extreme happens
+     1    (E +0.5023, N +0.4020)  57.7mm@29.13    -496.3    27.13    0.017     -49.1    29.13    0.048     0.00  2.00 |   -415.3    -30.5    447.2 while parked (dwell clock running)   <-- entry leg, BEFORE the B1 window
+     2    (E +2.5023, N +0.4020)   2.3mm@34.08    -163.2    32.73    0.016     +70.5    34.97    0.004     0.88  2.24 |     -8.9    +11.3    233.7 settling (command held, dwell clock not yet started)
+     3    (E +2.5023, N +1.6020)   1.8mm@47.99     -10.4    47.21    0.007     +22.0    45.99    0.034    -2.00 -1.22 |     -4.6     +2.5     32.4 while parked (dwell clock running)
+     4    (E +0.5023, N +1.6020)   0.9mm@53.09    -233.5    51.66    0.002     +84.0    54.02    0.004     0.93  2.36 |     -6.6     +4.0    317.6 settling (command held, dwell clock not yet started)
+     5    (E +0.5023, N +0.4020)   3.0mm@64.01     -79.9    62.75    0.006     +44.5    64.96    0.004     0.95  2.20 |    -13.6     +6.9    124.4 settling (command held, dwell clock not yet started)
+     'short'/'past' = how far the truth gets on the two sides of the commanded corner along
+     the direction of travel inside that window: a position loop that rings shows BOTH,
+     seconds apart, with the aircraft nearly stationary (v) at each extreme.  'delay' =
+     seconds from the corner pass to the 'past' extreme; 'half-T' = the interval between the
+     two extremes (half a period if it is one oscillation).  'cross-/cross+' is the lateral
+     component on the two sides of the leg's own line; 'p-p' is the along peak-to-peak.
+     NOTE: this run's commanded corners sit 3.1 mm from the world file's (the judged
+           rectangle is built from the world file): the walls above are the WORLD's, as
+           tools/metrics.py judges them.
+
+   TABLE D -- the FCU's own contribution (measured from setpoints.csv at 50 Hz)
+     over the DWELL windows only (18009 of 46138 window samples -- the instants at which the commanded
+     point is a FIXED corner and 'truth - command' is a parking error, not the intended travel):
+        truth - command  rms  34.93 mm, worst 111.43 mm at t 43.61 s
+     over the WHOLE B1 window:  truth - FCU est  rms  20.40 mm, p95  53.31 mm, max  82.47 mm at t 50.80 s
+     (A4 reports the same difference over the whole flight as ~15 mm rms: the tail ABOVE it
+      is made at the corner arrivals, and the four wall peaks in TABLE A carry its value.)
+
+   the arrivals (the peak speed within 1 m of each commanded corner, truth-only):
+     (E +0.5023, N +0.4020) closest   57.7 mm at t   29.13 (v 0.048 m/s),  peak within 1 m  0.56 m/s,  median v within 0.15 m 0.133 m/s
+     (E +2.5023, N +0.4020) closest    2.3 mm at t   34.08 (v 0.143 m/s),  peak within 1 m  1.73 m/s,  median v within 0.15 m 0.027 m/s
+     (E +2.5023, N +1.6020) closest    1.8 mm at t   47.99 (v 0.022 m/s),  peak within 1 m  1.28 m/s,  median v within 0.15 m 0.038 m/s
+     (E +0.5023, N +1.6020) closest    0.9 mm at t   53.09 (v 0.181 m/s),  peak within 1 m  1.69 m/s,  median v within 0.15 m 0.015 m/s
+     (E +0.5023, N +0.4020) closest    3.0 mm at t   64.01 (v 0.088 m/s),  peak within 1 m  1.27 m/s,  median v within 0.15 m 0.006 m/s
+
+run missionA-RECT11-hold5   /home/fanxin/lio_avoid/logs/missionA-RECT11-hold5
+   truth tap 88805 samples over 74.0 s;  command rectangle E [0.500, 2.500] N [0.400, 1.600] (2.000 x 1.200 m);  dwell 5.0 s (--hold-s default)
+   command/FCU channels: setpoints.csv 2755 rows at 81.3 Hz;  command check (the commanded point during a dwell vs the corner): 0.00 mm
+   B1 window [the first leg phase whose truth is at corner 1, the land entry] = phase leg2, sim 29.07 .. 62.97 s = 33.91 s, 40704 truth samples
+   B1 extents  E 2.1367 m  N 1.3244 m   =>  growth E +136.7 mm  N +124.4 mm   bound +100/+100 mm   [FAIL]
+   IDENTITY    E: E-min out + E-max out = 61.0 + 75.7 = 136.7 mm vs growth 136.7 mm (resid -0.000 mm)
+               N: N-min out + N-max out = 60.4 + 64.0 = 124.4 mm vs growth 124.4 mm (resid 0.000 mm)
+
+   TABLE A -- the four walls: what makes the growth (global extremes over the B1 window)
+     wall   at         out (mm)    t (s) phase       v  where                nearest corner |    out|on    t (s) |     in|on    t (s)
+     E-min  E=0.500       +61.0    51.42 leg4    0.006  (E +0.4390, N +1.5950) c4  0.061 m   |     +61.0    51.42 |      +3.3    50.49
+     E-max  E=2.500       +75.7    34.87 leg2    0.006  (E +2.5757, N +0.4039) c2  0.076 m   |     +75.7    34.87 |      +0.8    45.99
+     N-min  N=0.400       +60.4    30.12 leg2    1.570  (E +1.0003, N +0.3396) c1  0.504 m   |     +60.4    30.12 |     +11.2    32.01
+     N-max  N=1.600       +64.0    43.05 leg3    0.001  (E +2.5003, N +1.6640) c3  0.064 m   |     +40.8    43.68 |      +3.3    50.49
+     'out' = how far past that wall the truth reaches (positive = OUTSIDE the rectangle, this is
+     the growth); 'in|on' = the largest stand-off INSIDE on the samples whose nearest wall is
+     this one (a leg flown 20 mm inside its wall shows up here, and cannot make B1 grow).
+     the same four peak samples, decomposed (all from setpoints.csv at 50 Hz):
+        wall    truth-cmd E/N    fcu-cmd E/N  truth-fcu E/N        |v_fcu|
+        E-min    -64.1   -7.4   -68.6   -5.6    +4.5   -1.8       0.012
+        E-max    +72.6   +1.5   +77.2   +7.7    -4.6   -6.2       0.019
+        N-min  -1502.8  -62.8 -1527.0  -60.6   +24.1   -2.2       1.496
+        N-max     -2.8  +61.6    -1.6  +67.3    -1.2   -5.8       0.002
+
+   TABLE B -- the corner visits: which visit owns the wall extreme, and WHEN inside it
+     vis  commanded corner wall     cmd t0  dwell t0 closest      out (mm)    t (s) since c/a since dw | truth-cmd   fcu-cmd truth-fcu
+     1    (E +0.5031, N +0.4024) E-min     26.90      --   54.8 mm @ 29.04   +498.3    26.90    -2.14     --  |    +501.3    +498.9      +2.4   <-- BEFORE the B1 window (the entry leg)
+     1    (E +0.5031, N +0.4024) N-min     26.90      --   54.8 mm @ 29.04   +409.9    26.98    -2.06     --  |    +412.4    +413.5      -1.1   <-- BEFORE the B1 window (the entry leg)
+     2    (E +2.5031, N +0.4024) E-max     29.07     32.64 3.0 mm @ 33.99    +75.7    34.87     0.87    2.23 |     +72.6     +77.2      -4.6
+     2    (E +2.5031, N +0.4024) N-min     29.07     32.64 3.0 mm @ 33.99    +60.4    30.12    -3.88   -2.52 |     +62.8     +60.6      +2.2
+     3    (E +2.5031, N +1.6024) E-max     37.65     40.63 1.4 mm @ 42.26    +19.1    38.28    -3.98   -2.35 |     +16.0     +14.4      +1.6
+     3    (E +2.5031, N +1.6024) N-max     37.65     40.63 1.4 mm @ 42.26    +64.0    43.05     0.80    2.42 |     +61.6     +67.3      -5.8
+     4    (E +0.5031, N +1.6024) E-min     45.66     49.66 3.3 mm @ 53.42    +61.0    51.42    -2.00    1.75 |     +64.1     +68.6      -4.5
+     5    (E +0.5031, N +0.4024) E-min     54.69     64.39 0.3 mm @ 65.70    +17.1    54.99   -10.72   -9.41 |     +20.1     +16.9      +3.2
+     5    (E +0.5031, N +0.4024) N-min     54.69     64.39 0.3 mm @ 65.70    +50.1    60.33    -5.37   -4.06 |     +52.6     +48.2      +4.4
+     a visit = one commanded corner: from the moment the plan box commands it to the moment it
+     commands the next one (the dwell is the last hold_s of it).  'since c/a' = seconds after
+     the truth's closest approach to that corner; 'since dw' = seconds after the dwell clock
+     starts (negative = the aircraft is ALREADY outside when the park begins).  The last three
+     columns are the signed deviation past the wall from the command, from the FCU's own
+     estimate and the FCU's own error, in mm.
+
+   TABLE C -- per leg, B2's own number next to the wall the leg runs along
+     leg  phase       n  len(m)  B2 perp     at t      side wall    wall-out     at t    out<2 s    same?
+     1    leg1     2614   0.676     1.4 mm    28.13        -1 --       (no wall)       --         -- different
+     2    leg2    10297   2.057    40.6 mm    30.20        -1 N-min     +60.4 mm    30.12     +60.4     SAME
+     3    leg3     9621   1.198     7.2 mm    38.56        -1 E-max     +19.1 mm    38.28     +19.1     SAME
+     4    leg4    10817   2.020    10.7 mm    46.45        -1 N-max      +5.0 mm    46.60      +5.0     SAME
+     5    leg5     9972   1.204     3.8 mm    61.36        -1 E-min     +17.1 mm    54.99     +17.1 different
+     'side' = the sign of the worst B2 sample against the leg's own direction; 'wall-out' = the
+     largest excursion past the wall this leg runs along, inside the SAME leg phase; 'same?'
+     says whether those two are the same instant (|dt| <= 0.3 s) or two different events.
+
+   TABLE E -- per corner: the RING the arrival excites, in the frame of the leg that arrives
+              (ring window = 2 s before to 3 s after the corner pass; the pass is the truth's
+              closest approach to the corner; 'along' = the direction of travel, positive =
+              PAST the commanded corner)
+     vis  corner           pass            short(mm)        t        v  past(mm)        t        v    delay half-T |   cross-   cross+      p-p when the 'past' extreme happens
+     1    (E +0.5031, N +0.4024)  54.8mm@29.04    -500.7    27.04    0.007     -46.3    29.04    0.056     0.00  2.00 |   -412.3    -29.3    454.4 while parked (dwell clock running)   <-- entry leg, BEFORE the B1 window
+     2    (E +2.5031, N +0.4024)   3.0mm@33.99    -166.7    32.65    0.016     +72.6    34.87    0.006     0.87  2.21 |    -10.2     +8.7    239.3 while parked (dwell clock running)
+     3    (E +2.5031, N +1.6024)   1.4mm@42.26    -188.8    40.96    0.003     +61.6    43.05    0.001     0.80  2.09 |     -4.0     +3.2    250.3 while parked (dwell clock running)
+     4    (E +0.5031, N +1.6024)   3.3mm@53.42      +3.1    53.42    0.001     +64.1    51.42    0.006    -2.00 -2.00 |     -1.2     +7.4     61.0 while parked (dwell clock running)
+     5    (E +0.5031, N +0.4024)   0.3mm@65.70      -2.0    67.05    0.001     +17.1    63.97    0.011    -1.73 -3.08 |     -6.1     +8.5     19.1 settling (command held, dwell clock not yet started)
+     'short'/'past' = how far the truth gets on the two sides of the commanded corner along
+     the direction of travel inside that window: a position loop that rings shows BOTH,
+     seconds apart, with the aircraft nearly stationary (v) at each extreme.  'delay' =
+     seconds from the corner pass to the 'past' extreme; 'half-T' = the interval between the
+     two extremes (half a period if it is one oscillation).  'cross-/cross+' is the lateral
+     component on the two sides of the leg's own line; 'p-p' is the along peak-to-peak.
+     NOTE: this run's commanded corners sit 3.9 mm from the world file's (the judged
+           rectangle is built from the world file): the walls above are the WORLD's, as
+           tools/metrics.py judges them.
+
+   TABLE D -- the FCU's own contribution (measured from setpoints.csv at 50 Hz)
+     over the DWELL windows only (18009 of 40704 window samples -- the instants at which the commanded
+     point is a FIXED corner and 'truth - command' is a parking error, not the intended travel):
+        truth - command  rms  66.53 mm, worst 188.82 mm at t 40.96 s
+     over the WHOLE B1 window:  truth - FCU est  rms  22.34 mm, p95  61.30 mm, max  74.27 mm at t 40.08 s
+     (A4 reports the same difference over the whole flight as ~15 mm rms: the tail ABOVE it
+      is made at the corner arrivals, and the four wall peaks in TABLE A carry its value.)
+
+   the arrivals (the peak speed within 1 m of each commanded corner, truth-only):
+     (E +0.5031, N +0.4024) closest   54.8 mm at t   29.04 (v 0.056 m/s),  peak within 1 m  0.56 m/s,  median v within 0.15 m 0.147 m/s
+     (E +2.5031, N +0.4024) closest    3.0 mm at t   33.99 (v 0.149 m/s),  peak within 1 m  1.73 m/s,  median v within 0.15 m 0.056 m/s
+     (E +2.5031, N +1.6024) closest    1.4 mm at t   42.26 (v 0.154 m/s),  peak within 1 m  1.28 m/s,  median v within 0.15 m 0.060 m/s
+     (E +0.5031, N +1.6024) closest    3.3 mm at t   53.42 (v 0.001 m/s),  peak within 1 m  1.70 m/s,  median v within 0.15 m 0.040 m/s
+     (E +0.5031, N +0.4024) closest    0.3 mm at t   65.70 (v 0.010 m/s),  peak within 1 m  1.32 m/s,  median v within 0.15 m 0.015 m/s
+
+run missionA-stepB10-01-20261013_232331   /home/fanxin/lio_avoid/logs/missionA-stepB10-01-20261013_232331
+   truth tap 85554 samples over 71.3 s;  command rectangle E [0.500, 2.500] N [0.400, 1.600] (2.000 x 1.200 m);  dwell 5.0 s (--hold-s default)
+   B1 window [the first leg phase whose truth is at corner 1, the land entry] = phase leg2, sim 31.82 .. 60.62 s = 28.81 s, 34581 truth samples
+   B1 extents  E 2.0384 m  N 1.2550 m   =>  growth E +38.4 mm  N +55.0 mm   bound +100/+100 mm   [PASS]
+   IDENTITY    E: E-min out + E-max out = 24.2 + 14.2 = 38.4 mm vs growth 38.4 mm (resid 0.000 mm)
+               N: N-min out + N-max out = 97.2 + -42.2 = 55.0 mm vs growth 55.0 mm (resid 0.000 mm)
+
+   TABLE A -- the four walls: what makes the growth (global extremes over the B1 window)
+     wall   at         out (mm)    t (s) phase       v  where                nearest corner |    out|on    t (s) |     in|on    t (s)
+     E-min  E=0.500       +24.2    31.82 leg2    0.043  (E +0.4758, N +0.3399) c1  0.065 m   |     +24.2    31.82 |     +60.9    54.50
+     E-max  E=2.500       +14.2    43.63 leg3    0.198  (E +2.5142, N +0.9859) c2  0.586 m   |     +14.2    43.63 |     +91.1    47.12
+     N-min  N=0.400       +97.2    33.15 leg2    0.315  (E +0.6779, N +0.3028) c1  0.203 m   |     +97.2    33.15 |     +19.7    41.38
+     N-max  N=1.600       -42.2    49.77 leg4    0.223  (E +1.7303, N +1.5578) c3  0.771 m   |     -42.2    49.77 |     +93.6    47.63
+     'out' = how far past that wall the truth reaches (positive = OUTSIDE the rectangle, this is
+     the growth); 'in|on' = the largest stand-off INSIDE on the samples whose nearest wall is
+     this one (a leg flown 20 mm inside its wall shows up here, and cannot make B1 grow).
+
+   TABLE C -- per leg, B2's own number next to the wall the leg runs along
+     leg  phase       n  len(m)  B2 perp     at t      side wall    wall-out     at t    out<2 s    same?
+     1    leg1     3706   0.600    29.3 mm    29.81        -1 --       (no wall)       --         -- different
+     2    leg2    10414   2.024    37.8 mm    33.16        -1 N-min     +97.2 mm    33.15     +97.2     SAME
+     3    leg3     6748   1.185    26.7 mm    41.89        +1 E-max     +14.2 mm    43.63      +6.2 different
+     4    leg4    10544   1.992    25.9 mm    49.77        -1 N-max     -42.2 mm    49.77     -64.3     SAME
+     5    leg5     6878   1.197    30.8 mm    56.20        +1 E-min     +14.6 mm    58.01      -1.2 different
+     'side' = the sign of the worst B2 sample against the leg's own direction; 'wall-out' = the
+     largest excursion past the wall this leg runs along, inside the SAME leg phase; 'same?'
+     says whether those two are the same instant (|dt| <= 0.3 s) or two different events.
+
+   TABLE E -- per corner: the RING the arrival excites, in the frame of the leg that arrives
+              (ring window = 2 s before to 3 s after the corner pass; the pass is the truth's
+              closest approach to the corner; 'along' = the direction of travel, positive =
+              PAST the commanded corner)
+     vis  corner           pass            short(mm)        t        v  past(mm)        t        v    delay half-T |   cross-   cross+      p-p when the 'past' extreme happens
+     'short'/'past' = how far the truth gets on the two sides of the commanded corner along
+     the direction of travel inside that window: a position loop that rings shows BOTH,
+     seconds apart, with the aircraft nearly stationary (v) at each extreme.  'delay' =
+     seconds from the corner pass to the 'past' extreme; 'half-T' = the interval between the
+     two extremes (half a period if it is one oscillation).  'cross-/cross+' is the lateral
+     component on the two sides of the leg's own line; 'p-p' is the along peak-to-peak.
+
+   the arrivals (the peak speed within 1 m of each commanded corner, truth-only):
+   NOTE: no setpoints.csv: the command/FCU decomposition is NOT available
+
+SUMMARY -- the growth, wall by wall, in mm (out = past the wall; the two walls of an axis add
+           up to B1's growth on that axis)
+   run                         E-min    E-max    N-min    N-max |  growthE  growthN | B1       who owns each wall (corner, when)
+   missionA-RECT34-accept      +69.9    +92.8    +54.6    +49.1 |   +162.7   +103.7 | FAIL     c4, c2, c1, c3
+   missionA-RECT33-accept      +65.6    +49.3    +71.4    +32.0 |   +114.9   +103.4 | FAIL     c4, c2, c1, c3
+   missionA-RECT26-accept      +75.3    +35.1    +42.2    +45.9 |   +110.4    +88.1 | FAIL     c4, c2, c1, c3
+   missionA-RECT23-plan-cmd    +85.4    +73.4    +60.7    +36.9 |   +158.8    +97.7 | FAIL     c4, c2, c1, c3
+   missionA-RECT24-plan-cmd    +88.2    +81.6    +56.9    +42.9 |   +169.8    +99.8 | FAIL     c4, c2, c1, c3
+   missionA-RECT7-hold5        +80.5    +73.4    +51.1    +36.0 |   +153.9    +87.2 | FAIL     c4, c2, c1, c3
+   missionA-RECT9-hold5        +69.2    +73.7    +58.8    +38.6 |   +142.9    +97.4 | FAIL     c4, c2, c1, c3
+   missionA-RECT10-hold5       +81.7    +72.8    +57.4    +31.9 |   +154.5    +89.4 | FAIL     c4, c2, c1, c3
+   missionA-RECT11-hold5       +61.0    +75.7    +60.4    +64.0 |   +136.7   +124.4 | FAIL     c4, c2, c1, c3
+   missionA-stepB10-01-20261013_232331    +24.2    +14.2    +97.2    -42.2 |    +38.4    +55.0 | PASS     c1, c2, c1, c3
+
+   the same four walls, and WHEN in the corner visit the extreme sits:
+   missionA-RECT34-accept  
+/home/fanxin/.local/lib/python3.10/site-packages/matplotlib/projections/__init__.py:63: UserWarning: Unable to import Axes3D. This may be due to multiple versions of Matplotlib being installed (e.g. as a system package and as a pip package). As a result, the 3D projection is not available.
+  warnings.warn("Unable to import Axes3D. This may be due to multiple versions of "
+      E-min   +69.9 mm  visit 4 (corner (E +0.5000, N +1.6000)), -1.49 s after the closest approach, -0.44 s from the dwell clock, v 0.005 m/s -- settling (command held, dwell clock not yet started)
+      E-max   +92.8 mm  visit 2 (corner (E +2.5000, N +0.4000)),  0.91 s after the closest approach, -0.76 s from the dwell clock, v 0.003 m/s -- settling (command held, dwell clock not yet started)
+      N-min   +54.6 mm  visit 5 (corner (E +0.5000, N +0.4000)), -0.51 s after the closest approach, -0.03 s from the dwell clock, v 0.002 m/s -- settling (command held, dwell clock not yet started)
+      N-max   +49.1 mm  visit 3 (corner (E +2.5000, N +1.6000)),  3.23 s after the closest approach, +3.46 s from the dwell clock, v 0.007 m/s -- while parked (dwell clock running)
+   missionA-RECT33-accept  
+      E-min   +65.6 mm  visit 4 (corner (E +0.5000, N +1.6000)), -2.12 s after the closest approach, +0.32 s from the dwell clock, v 0.005 m/s -- while parked (dwell clock running)
+      E-max   +49.3 mm  visit 2 (corner (E +2.5000, N +0.4000)),  0.79 s after the closest approach, +0.33 s from the dwell clock, v 0.005 m/s -- while parked (dwell clock running)
+      N-min   +71.4 mm  visit 5 (corner (E +0.5000, N +0.4000)),  0.82 s after the closest approach, +3.35 s from the dwell clock, v 0.011 m/s -- while parked (dwell clock running)
+      N-max   +32.0 mm  visit 3 (corner (E +2.5000, N +1.6000)), -1.08 s after the closest approach, +3.48 s from the dwell clock, v 0.004 m/s -- while parked (dwell clock running)
+   missionA-RECT26-accept  
+      E-min   +75.3 mm  visit 4 (corner (E +0.5000, N +1.6000)),  0.91 s after the closest approach, -0.54 s from the dwell clock, v 0.004 m/s -- settling (command held, dwell clock not yet started)
+      E-max   +35.1 mm  visit 2 (corner (E +2.5000, N +0.4000)),  0.83 s after the closest approach, +0.73 s from the dwell clock, v 0.012 m/s -- while parked (dwell clock running)
+      N-min   +42.2 mm  visit 5 (corner (E +0.5000, N +0.4000)),  0.91 s after the closest approach, +3.44 s from the dwell clock, v 0.002 m/s -- while parked (dwell clock running)
+      N-max   +45.9 mm  visit 3 (corner (E +2.5000, N +1.6000)),  0.80 s after the closest approach, +3.39 s from the dwell clock, v 0.007 m/s -- while parked (dwell clock running)
+   missionA-RECT23-plan-cmd
+      E-min   +85.4 mm  visit 4 (corner (E +0.5026, N +1.6020)), -5.25 s after the closest approach, -0.67 s from the dwell clock, v 0.005 m/s -- settling (command held, dwell clock not yet started)
+      E-max   +73.4 mm  visit 2 (corner (E +2.5026, N +0.4020)),  0.83 s after the closest approach, -0.42 s from the dwell clock, v 0.010 m/s -- settling (command held, dwell clock not yet started)
+      N-min   +60.7 mm  visit 2 (corner (E +2.5026, N +0.4020)), -3.90 s after the closest approach, -5.16 s from the dwell clock, v 1.547 m/s -- departure (first 2 s of the visit)
+      N-max   +36.9 mm  visit 3 (corner (E +2.5026, N +1.6020)), -1.20 s after the closest approach, +3.26 s from the dwell clock, v 0.007 m/s -- while parked (dwell clock running)
+   missionA-RECT24-plan-cmd
+      E-min   +88.2 mm  visit 4 (corner (E +0.5027, N +1.6021)),  0.91 s after the closest approach, -0.75 s from the dwell clock, v 0.006 m/s -- settling (command held, dwell clock not yet started)
+      E-max   +81.6 mm  visit 2 (corner (E +2.5027, N +0.4021)),  0.79 s after the closest approach, -0.52 s from the dwell clock, v 0.011 m/s -- settling (command held, dwell clock not yet started)
+      N-min   +56.9 mm  visit 2 (corner (E +2.5027, N +0.4021)), -3.88 s after the closest approach, -5.19 s from the dwell clock, v 1.555 m/s -- departure (first 2 s of the visit)
+      N-max   +42.9 mm  visit 3 (corner (E +2.5027, N +1.6021)),  0.78 s after the closest approach, +3.26 s from the dwell clock, v 0.002 m/s -- while parked (dwell clock running)
+   missionA-RECT7-hold5    
+      E-min   +80.5 mm  visit 4 (corner (E +0.5028, N +1.6028)),  0.91 s after the closest approach, -0.27 s from the dwell clock, v 0.005 m/s -- settling (command held, dwell clock not yet started)
+      E-max   +73.4 mm  visit 2 (corner (E +2.5028, N +0.4028)), -4.99 s after the closest approach, +0.01 s from the dwell clock, v 0.001 m/s -- while parked (dwell clock running)
+      N-min   +51.1 mm  visit 2 (corner (E +2.5028, N +0.4028)), -9.85 s after the closest approach, -4.85 s from the dwell clock, v 1.341 m/s -- departure (first 2 s of the visit)
+      N-max   +36.0 mm  visit 3 (corner (E +2.5028, N +1.6028)), -2.54 s after the closest approach, +2.34 s from the dwell clock, v 0.007 m/s -- while parked (dwell clock running)
+   missionA-RECT9-hold5    
+      E-min   +69.2 mm  visit 4 (corner (E +0.5026, N +1.6029)), -2.15 s after the closest approach, +0.20 s from the dwell clock, v 0.008 m/s -- while parked (dwell clock running)
+      E-max   +73.7 mm  visit 2 (corner (E +2.5026, N +0.4029)),  0.94 s after the closest approach, +0.21 s from the dwell clock, v 0.001 m/s -- while parked (dwell clock running)
+      N-min   +58.8 mm  visit 2 (corner (E +2.5026, N +0.4029)), -3.83 s after the closest approach, -4.56 s from the dwell clock, v 1.514 m/s -- departure (first 2 s of the visit)
+      N-max   +38.6 mm  visit 3 (corner (E +2.5026, N +1.6029)), -0.93 s after the closest approach, +2.44 s from the dwell clock, v 0.004 m/s -- while parked (dwell clock running)
+   missionA-RECT10-hold5   
+      E-min   +81.7 mm  visit 4 (corner (E +0.5023, N +1.6020)),  0.93 s after the closest approach, -0.29 s from the dwell clock, v 0.004 m/s -- settling (command held, dwell clock not yet started)
+      E-max   +72.8 mm  visit 2 (corner (E +2.5023, N +0.4020)),  0.88 s after the closest approach, -0.28 s from the dwell clock, v 0.004 m/s -- settling (command held, dwell clock not yet started)
+      N-min   +57.4 mm  visit 2 (corner (E +2.5023, N +0.4020)), -3.93 s after the closest approach, -5.09 s from the dwell clock, v 1.493 m/s -- departure (first 2 s of the visit)
+      N-max   +31.9 mm  visit 3 (corner (E +2.5023, N +1.6020)), -2.41 s after the closest approach, +2.32 s from the dwell clock, v 0.010 m/s -- while parked (dwell clock running)
+   missionA-RECT11-hold5   
+      E-min   +61.0 mm  visit 4 (corner (E +0.5031, N +1.6024)), -2.00 s after the closest approach, +1.75 s from the dwell clock, v 0.006 m/s -- while parked (dwell clock running)
+      E-max   +75.7 mm  visit 2 (corner (E +2.5031, N +0.4024)),  0.87 s after the closest approach, +2.23 s from the dwell clock, v 0.006 m/s -- while parked (dwell clock running)
+      N-min   +60.4 mm  visit 2 (corner (E +2.5031, N +0.4024)), -3.88 s after the closest approach, -2.52 s from the dwell clock, v 1.570 m/s -- departure (first 2 s of the visit)
+      N-max   +64.0 mm  visit 3 (corner (E +2.5031, N +1.6024)),  0.80 s after the closest approach, +2.42 s from the dwell clock, v 0.001 m/s -- while parked (dwell clock running)
+   missionA-stepB10-01-20261013_232331
+      E-min   +24.2 mm  no command stream: the extreme is in phase leg2, 0.065 m from corner 1, at t 31.82 s, v 0.043 m/s
+      E-max   +14.2 mm  no command stream: the extreme is in phase leg3, 0.586 m from corner 2, at t 43.63 s, v 0.198 m/s
+      N-min   +97.2 mm  no command stream: the extreme is in phase leg2, 0.203 m from corner 1, at t 33.15 s, v 0.315 m/s
+      N-max   -42.2 mm  no command stream: the extreme is in phase leg4, 0.771 m from corner 3, at t 49.77 s, v 0.223 m/s
+
+   (TABLES B and D of this run are omitted here to keep the file readable; the
+    tool prints them for every run dir named on its command line.)
+
+
+(the two 'wrote ...' lines the tool prints for --csv/--figure, kept for provenance)
+wrote /mnt/d/distill_self/_stage/b1-edge-budget.csv
+wrote docs/figures/b1-mechanism.png (font Microsoft YaHei)
