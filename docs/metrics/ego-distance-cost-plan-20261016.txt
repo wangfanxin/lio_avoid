@@ -1,0 +1,58 @@
+THE ONE ROUTE LEFT, SCOPED: GIVE THIS PLANNER A REAL OBSTACLE-DISTANCE COST
+2026-10-16   written at the end of the ego-avoidance work.  HEAD 77bafbf.
+
+WHY THIS AND NOTHING ELSE, in one paragraph.  Twenty-seven crossings of `worlds/diagonal.yaml` have been
+measured; every parameter and every code path this planner exposes has been flown and refuted (relay window
+0/3/8/15 s, `lambda_fitness` 4.0, inflation 0.20 and 0.30 m, an A* clearance cost, the collision-sweep coverage,
+`lambda_collision` 2.0, `dist0` 0.8 m).  The localisation is complete and has not moved since STATUS row 104: at
+the aircraft's closest approach its own map HOLDS the obstacle (four of six runs), the plan goes there anyway
+(four of four), and the aircraft follows the plan to within 0.003-0.044 m.  The limiter is therefore the
+trajectory the optimiser produces against a map that is already good enough -- and this variant's optimiser has
+NO obstacle-distance term at all.  That is the gap.
+
+WHAT IS VERIFIED IN *THIS* TREE (read, not assumed):
+  * `bspline_opt/src/bspline_optimizer.cpp` -- `calcDistanceCostRebound(q, cost, gradient, iter_num,
+    smoothness_cost)` at :962.  Its body:
+        double dist = (cps_.points.col(i) - cps_.base_point[i][j]).dot(cps_.direction[i][j]);
+        double dist_err = cps_.clearance - dist;
+    i.e. it measures distance to `base_point`/`direction` -- and those arrays are filled by
+    `check_collision_and_rebound()` from its rebound A* path (:1405-1408), NOT from any distance field.  With no
+    collision found they are empty and the loop body never executes.
+  * `cps_.clearance = dist0_` (:488), read from `optimization/dist0`.
+  * the ONLY obstacle query in the whole planner is `grid_map_->getInflateOccupancy(point)` -> 0/1/**-1 for
+    outside the map**, and the collision check reads -1 as OCCUPIED.
+  * `grep -rn 'updateESDF3D|evaluateEDTWithGrad|distance_buffer_'` over the entire planner tree returns
+    **NOTHING**: there is no ESDF, no distance buffer and no distance query anywhere.  The classic
+    ego-planner's `calcDistanceCost` + `evaluateEDTWithGrad` pair was removed when this swarm variant was made.
+  * the parameters that would drive such a cost are ALREADY WIRED and already in our launch file:
+    `optimization/lambda_collision` (0.5) and `optimization/dist0` (0.5) -- they are simply multiplied by an
+    inert term today.
+
+THE WORK, in the order it should be done:
+  1. READ FIRST, in the ego tree: `plan_env/include/plan_env/grid_map.h` and `src/grid_map.cpp` for where an
+     ESDF would live, and `bspline_opt`'s cost list for where `calcDistanceCostRebound` is called
+     (`:1820`) -- the plan below names what to look for, not what was found, because these were not read.
+  2. MAINTENANCE: build a distance field over the map's occupied buffer.  The map is already rebuilt from the
+     CURRENT message every cycle (`grid_map.cpp:835` reset, `:910` direct write), so the field must be rebuilt
+     per message too -- which is affordable at 16x16x5 m / 0.10 m = 128 k cells, a standard two-pass EDT.
+     **The property to keep: the field must be rebuilt from the same array the collision check reads**, or the
+     optimiser and the check will disagree and the failure mode will be silent.
+  3. QUERY: a `evaluateEDTWithGrad(pos, dist, grad)` equivalent -- trilinear `dist`, central-difference `grad`,
+     returning false outside the map and treating that as large clearance (NOT as occupied; the -1 convention is
+     what caused the z-boundary deadlock of DIAG12).
+  4. COST: add it to the optimiser.  The mechanism already exists in `calcDistanceCostRebound` -- if
+     `base_point`/`direction` can be set from the field's gradient with `cps_.clearance = dist0_`, then
+     `lambda_collision` and `dist0` come alive AS THEY ARE, with no new parameters to invent.  That is the
+     smallest version of this work: **the cost function does not have to change; what feeds it does.**
+  5. PREDICTION TO RECORD BEFORE THE FIRST FLIGHT: the PLAN's own minimum clearance in the best arm (window 8,
+     measured at +0.040 .. +0.126 m) rises toward `dist0`, and the C2 footprint count falls below 1887 of 47406.
+     THE REFUTATION: no change, which would mean the failures are not where the plan goes but in how the
+     trajectory is sampled or tracked -- and that would be a different investigation, with the evidence for it
+     already in `docs/metrics/ego-margin-budget-20261016.txt`.
+
+WHAT THIS FILE IS NOT: a claim that it will work.  Everything in this investigation that looked promising on one
+run failed on its reproduction, and this plan is a hypothesis with a prediction attached, exactly like the ones
+before it.
+
+Read with: `docs/STATUS.md` rows 85 (the distribution), 104 (the localisation), 108 (every lever flown) and
+`docs/metrics/ego-margin-budget-20261016.txt`.
