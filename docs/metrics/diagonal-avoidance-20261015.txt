@@ -1,0 +1,75 @@
+THE DIAGONAL: an obstacle-avoidance test that the CONTROL passes and the TEST fails
+2026-10-15 15:28:50Z   HEAD: 7cfe723
+
+=== WHY A NEW MISSION WAS NEEDED ==============================================================
+Every existing world's tour threads between pillars with room to spare, MEASURED offline by
+_stage/pick-avoidance-mission.py (minimum segment clearance to a pillar SURFACE):
+   forest_all.yaml +0.428 m | pillars.yaml +0.600 | corridor_fast +0.700 | forest6x4 +0.962
+   | pillars_fast +1.114
+So a planner that ignores obstacles and a planner that avoids them fly the same path, and no
+avoidance can be demonstrated.  The owner's 'diagonal' is the leg that CROSSES the field, so the
+mission was defined for that purpose: worlds/diagonal.yaml.
+
+=== THE MISSION, CHOSEN SO THE STRAIGHT LINE IS BLOCKED ======================================
+Pillars and arena are IDENTICAL to worlds/pillars.yaml (46 pillars r=0.30, arena +-5 m, 0.0-4.2 m
+tall); only the waypoints differ.  Chosen by search (_stage/write-diagonal-world2.py) with two
+constraints at once: every WAYPOINT clear of every pillar, every LEG passing through one.
+   corners (W): (-4.00 -4.00 2.0)  and  (-1.00 -1.00 2.0)
+   waypoint clearance : +0.407 m each   (a place the vehicle can be)
+   leg 1 clearance    : -0.300 m        (through a pillar)
+   leg 2 clearance    : -0.300 m        (through a pillar)
+
+=== DIAG1-rect-control: THE CONTROL, AND IT BEHAVES AS PREDICTED =============================
+The rectangle plan box has NO pillar awareness -- its only mention of the world is its --world
+default ( finds nothing).
+PREDICTED BEFORE FLYING: C2 must catch it.  MEASURED:
+   A1 route horizontal rms      5.89 mm   (target <= 20)
+   A2 route vertical rms        2.83 mm   (target <= 50, mean removed)
+   C2 obstacle clearance over the whole flight (46 pillars from diagonal.yaml): minimum pillar-surface distance -0.299 m;  9635 of 54929 samples inside the 0.20 m footprint  [FAIL]
+   C1 final point: the aircraft stopped 0.028 m from the last commanded point (-4.000, -4.000)  [PASS]
+   the truth's worst approach: -0.299 m;  9635 of 54929 samples inside the 0.20 m footprint (10.6%)
+   the straight line it was asked to fly: 52.8% and 70.8% of the two legs inside the footprint
+   rc=0, hung=0, no abort -- the sortie is valid, and it is INVALID as flight quality because it
+   flew through a pillar.  That is the point: this is the negative control for the C2 instrument.
+
+=== DIAG2-ego-avoidance: THE TEST, AND EGO **FAILED** TO AVOID ================================
+Same mission, same script, planner=ego.  MEASURED:
+   A1 route horizontal rms      6.54 mm   (target <= 20)
+   A2 route vertical rms        8.01 mm   (target <= 50, mean removed)
+   C2 obstacle clearance over the whole flight (46 pillars from diagonal.yaml): minimum pillar-surface distance -0.279 m;  15649 of 63630 samples inside the 0.20 m footprint  [FAIL]
+   C1 final point: the aircraft stopped 0.003 m from the last commanded point (-1.023, -0.929)  [PASS]
+   the truth's worst approach: -0.279 m;  15649 of 63630 samples inside the 0.20 m footprint (13.9%)
+   the adapter's own log:
+      ego_source: goal 1 of 2 -> [-3.992  4.003  1.884] (L)   (re-sent every 1.0 s until it is reached)
+      ego_source: ARRIVED at waypoint 1 (0.297 m), dwelling 5.0 s
+      ego_source: next waypoint 2 of 2
+      ego_source: goal 2 of 2 -> [-0.995  1.     1.884] (L)   (re-sent every 1.0 s until it is reached)
+      ego_source: ARRIVED at waypoint 2 (0.299 m), dwelling 5.0 s
+      ego_source: TOUR COMPLETE -- the stream now carries trajectory_flag = COMPLETED and KEEPS TALKING (it does not stop asking for more)
+
+   SO EGO WAS NOT BETTER THAN THE RECTANGLE -- it was slightly WORSE (13.9% vs 10.6% of samples
+   inside the footprint).  It flew the mission (C1: stopped 0.003 m from the last commanded point)
+   and it flew it THROUGH the pillars.
+
+=== WHAT THIS DOES AND DOES NOT ESTABLISH =====================================================
+ESTABLISHES: (a) the instrument works -- a planner with no obstacle awareness is caught by C2, so a
+PASS on this mission would have meant something; (b) ego, as wired by us, did NOT avoid; (c) both
+  planners can complete this mission, so the failure is not an inability to fly it.
+DOES NOT ESTABLISH WHY.  The candidates, in the order they should be checked, and none of them is
+yet measured:
+  1. DID EGO'S MAP EVER SEE THE PILLARS?  Its map is built from /ego/cloud, i.e. OUR relay of
+     /lio/cloud_world.  Nothing in this round recorded ego's occupancy (grid_map/occupancy_inflate)
+     or the map's own view, so 'the map was empty where the pillars are' and 'the map had them and
+     the planner ignored them' are indistinguishable from these logs.  THIS IS THE NEXT MEASUREMENT,
+     and it is why criterion 3 names that topic explicitly.
+  2. the LIO's registered cloud may be SPARSE on pillars: an offline check on a 3-scan recording
+     found 10 of 46 pillars with NO returns at all (_stage/ego1-pad-obstacle-test.py), which is
+     expected from one viewpoint but has never been measured over a whole crossing;
+  3. the relay's 0.10 m decimation is exactly the map's resolution, so it cannot thin a pillar away
+     -- but the relay also CROPS to +-5.5 m around the vehicle, and the far waypoint is 5.66 m away;
+  4. ego's collision check samples only the first 2/3 of a trajectory's duration and its sample
+     spacing is displacement/resolution (both read from bspline_opt, not measured here).
+
+=== THE FIGURES ===============================================================================
+   docs/figures/traj-xy-DIAG1-rect-control.png   sha256 62b7addf67c956fbd1d8b0233f6725eb17f16fb6fb5ff86d4bad8b51f36b78b7
+   docs/figures/traj-xy-DIAG2-ego-avoidance.png   sha256 7c5d9a63a20e5a1ff199cf346332e4415bd36c70d46ab9e714b09f38c98d58a7
