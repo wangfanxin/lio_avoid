@@ -429,7 +429,10 @@ def _ros_main(args) -> int:
     qos = QoSProfile(depth=10, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.RELIABLE,
                      durability=DurabilityPolicy.VOLATILE)
     goal_pub = node.create_publisher(PoseStamped, args.goal_topic, 10)
-    last_goal_sent = None
+    #: one-element lists rather than `nonlocal` rebinding: the closure reads AND writes both, and a rebind
+    #: without a `nonlocal` declaration silently becomes a LOCAL (pyflakes' "referenced before assignment",
+    #: which `tools/test-lint.py` refuses -- it caught this on the first run of the change that introduced it).
+    last_goal = [None]
 
     def on_odom(m):
         p = np.array([m.pose.pose.position.x, m.pose.pose.position.y, m.pose.pose.position.z])
@@ -474,6 +477,22 @@ def _ros_main(args) -> int:
               "Build ego-planner first (its own planner_ws)", file=sys.stderr)
         return 3
 
+    #: THE GOAL IS RE-SENT, NOT ANNOUNCED ONCE.  `ego_replan_fsm` returns to WAIT_TARGET -- "wait for goal or
+    #: trigger" -- whenever it decides a plan has stalled, and it then waits for a NEW goal on this topic.  A
+    #: producer that sends each waypoint exactly once therefore DEADLOCKS with it: ego waits for a goal, the
+    #: plan box waits for an arrival that ego has stopped planning towards.
+    #:
+    #: MEASURED, EGO2-accept-clock-fixed: the patched FSM's own trace says it in one line --
+    #:   PLANNER-STALL: the plan's clock is out (t 1.590 s of 1.600 s) but the vehicle is 1.890 m from the
+    #:   goal -- a stalled plan, NOT an arrival; replanning instead of declaring the goal reached
+    #: followed by `from EXEC_TRAJ to WAIT_TARGET`, and then 378 `WAIT_TARGET` lines against 22 `EXEC_TRAJ`
+    #: while the aircraft held at 1.5 m for 360 s.  The HISTORICAL adapter did this too: the pre-F1
+    #: `planner/ego_adapter.py` forwarded its goal at 1 Hz, and dropping that was a regression this branch
+    #: introduced.  The `/plan/cmd` contract is unchanged: `trajectory_id` still advances only on ARRIVAL, so
+    #: re-sending a goal is invisible to the consumer.
+    GOAL_RESEND_S = 1.0
+    last_goal_wall = [0.0]
+
     def tick():
         s = box.sample()
         if s is None:
@@ -488,17 +507,19 @@ def _ros_main(args) -> int:
         m.trajectory_id, m.trajectory_flag = int(s.trajectory_id), int(s.trajectory_flag)
         pub.publish(m)
         g = box.goal_to_send()
-        nonlocal last_goal_sent
-        if g is not None and (last_goal_sent is None or np.linalg.norm(g - last_goal_sent) > 1e-9):
+        now = time.monotonic()
+        if g is not None and (now - last_goal_wall[0]) >= GOAL_RESEND_S:
             gm = PoseStamped()
             gm.header.stamp = m.header.stamp
             gm.header.frame_id = FRAME_L
             gm.pose.position.x, gm.pose.position.y, gm.pose.position.z = (float(g[0]), float(g[1]), float(g[2]))
             gm.pose.orientation.w = 1.0
             goal_pub.publish(gm)
-            last_goal_sent = g
-            print("ego_source: goal %d of %d -> %s (L)" % (box.i_goal + 1, len(targets_l), np.round(g, 3)),
-                  flush=True)
+            last_goal_wall[0] = now
+            if last_goal[0] is None or np.linalg.norm(g - last_goal[0]) > 1e-9:
+                last_goal[0] = g
+                print("ego_source: goal %d of %d -> %s (L)   (re-sent every %.1f s until it is reached)"
+                      % (box.i_goal + 1, len(targets_l), np.round(g, 3), GOAL_RESEND_S), flush=True)
 
     node.create_timer(1.0 / args.rate, tick)
     try:
