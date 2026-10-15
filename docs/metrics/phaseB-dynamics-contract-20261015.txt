@@ -1,0 +1,169 @@
+================================================================================
+PHASE B -- THE DYNAMICS CONTRACT: WHAT THE PLAN ASKS FOR, WHAT THE AIRCRAFT CAN DO,
+AND WHY 3 m/s IS NOT AN EVIDENCE-BASED DEMAND YET
+================================================================================
+DATE 2026-10-15.  This file changes NOTHING by itself: the mission's speed demand is the owner's decision and
+the frozen mission parameters are untouched.  It puts the three-way numbers on the record, states what speed
+the measurements support, and names the labelled variant and the sortie that would test it.
+
+SOURCES (every number below is one of these, and none of them is an estimate):
+  * docs/metrics/phaseB-pipeline-audit-20261015.txt -- the C++ read verbatim, plus the AP5 re-analysis of all
+    44 committed trajectories and the per-frame following error over 24-50 s
+  * tools/bin-params.py on logs/missionA-AP5-stations/flight.BIN -- the FCU's OWN parameter record (1328 names)
+  * tools/plan-start-audit.py -- per-plan anchoring, from a run's bspline.csv + lio.csv
+  * tools/stop-clearance.py -- the mission's stops against the world file's pillar surfaces
+  * planner/ego_adapter.py's own --selftest and tools/dyn-stream-check.py -- the analytic dynamics stream
+  * sortie logs: missionA-AP5-stations, missionA-AP6-rect-dyn
+--------------------------------------------------------------------------------
+1. THE THREE-WAY TABLE   (ego assumption | interface | the FCU's own limit | who is tighter | factor)
+--------------------------------------------------------------------------------
+quantity          ego assumption              what crosses the       the FCU's limit, from its     tighter  factor
+                                              interface              own parameter record
+----------------  --------------------------  ---------------------  ----------------------------  -------  ------
+speed             2.0 m/s                     the plan's velocity    WP_SPD 2.0 m/s                equal    1.00x
+                  manager/max_vel             is streamed EXACTLY    (phase_a_mission_fast.parm:20;
+                  (coll20 file, line 51)      now: /planner/traj_dyn FCU record WP_SPD 2.0)
+                                              carries ego's own      LOIT_SPEED_MS 2.0            equal    1.00x
+                                              derivative, matched
+                                              to the Path's stamps
+acceleration      1.0 m/s^2                   NOT SENT:             WP_ACC 2.5 m/s^2              ego      2.5x
+                  manager/max_acc             --setpoint-mode       (phase_a_mission_fast.parm:23)
+                  (coll20 file, line 52)      posvel (posvelacc     LOIT_ACC_MAX_M 3.0 m/s^2      ego      3.0x
+                                              was tried and broke    a_max = g*tan(ATC_ANGLE_MAX   ego      5.7x
+                                              station holding)       30 deg) = 5.66 m/s^2
+                                                                     (params/apm_lio_only.parm:144
+                                                                     sets ATC_ANGLE_MAX 30.0)
+jerk              -- nothing limits it --      nothing                PSC_NE_JERK 5.0 m/s^3         FCU      19.4x
+                                                                     (FCU record; the ONLY jerk
+                                                                     limit anywhere in this loop)
+attitude          no plan-side limit           --                     ATC_ANGLE_MAX 30 deg          FCU      --
+ATC_ACCEL_P_MAX   DOES NOT EXIST IN THIS FIRMWARE.  The FCU's full parameter list (1328 names, read out of its
+ATC_ACCEL_R_MAX   own log) contains no ATC_ACCEL_* at all, and no ANGLE_MAX -- the modern names are
+                  ATC_ANGLE_MAX / PSC_NE_*.  The horizontal acceleration ceiling is therefore the ATTITUDE
+                  limit, g*tan(30 deg) = 5.66 m/s^2, not a separate gain.  Anyone "tuning ATC_ACCEL_P_MAX"
+                  would be editing a parameter that does not exist; the same class as GOAL/EGO_MAX_VEL.
+PSC_*             --                          --                     PSC_NE_POS_P 1.0, PSC_NE_VEL_P 2.0,    --
+                                                                     PSC_NE_VEL_I 1.0, PSC_NE_VEL_D 0.25,
+                                                                     PSC_NE_JERK 5.0, PSC_ANGLE_MAX 0
+                                                                     (= use ATC_ANGLE_MAX)
+DEAD KEYS IN EGO: bspline/limit_vel, bspline/limit_acc, bspline/limit_ratio and manager/max_jerk are NEVER
+READ (uniform_bspline.cpp hard-codes the 1.1 ratio at :131); only manager/max_vel and manager/max_acc take
+effect, with a 5 % tolerance, and REFINED trajectories are not re-checked (planner_manager.cpp:315-317).
+--------------------------------------------------------------------------------
+2. WHAT THE PLAN ACTUALLY ASKS FOR  (AP5, all 44 committed trajectories)
+--------------------------------------------------------------------------------
+  |v|max   median 2.050 m/s   max 2.123 m/s   3 of 44 above 2.0   -> velocity holds (the 5 % tolerance)
+  |a|max   median 1.89 m/s^2  MAX 7.785 m/s^2 32 of 44 ABOVE 1.0  -> 7.8x the configured limit, 3.1x WP_ACC
+  jerk     inter-knot max 88.24 m/s^3, |jerk| max 97.6 m/s^3        -> 19.4x the FCU's PSC_NE_JERK 5.0
+NOT A SMOOTHNESS COMPLAINT: a cubic uniform B-spline is C2 -- its acceleration is continuous and piecewise
+LINEAR, and the measured inter-knot acceleration jump is 4.1e-6 m/s^2.  What jumps is the JERK.  So the plan
+is not "a bit sharp": it asks the position controller for 7.8 m/s^2 and 97 m/s^3, in a corridor whose free
+width is 0.565-0.640 m, while the only jerk limit in the loop (the FCU's) is 19x smaller than the demand.
+--------------------------------------------------------------------------------
+3. WHAT THE AIRCRAFT ACTUALLY DOES  (AP5, 24-50 s, per frame)
+--------------------------------------------------------------------------------
+  commanded speed  |v_cmd|   median 0.544   p95 1.725 m/s
+  achieved  speed  |v_ach|   median 1.077   p95 2.489   MAX 2.984 m/s
+  RATIO                      median 1.29  -- THE AIRCRAFT FLEW FASTER THAN IT WAS ASKED TO
+  achieved acceleration      up to 3.87 m/s^2
+  position error             median 0.074   p95 1.220   max 2.833 m
+  commanded speed on 23 % of the samples above 0.5 m/s achieved:  BELOW 0.05 m/s
+                             (the same statistic in AP3: 77 %)
+  lag search: hit its +/-0.40 s bound and beat the zero-delay hypothesis by only ~20 %
+WHAT THIS IS: not a delay to compensate and not a gain to raise.  The aircraft is being DRAGGED by the
+position-error term of the FCU's own position controller -- it is commanded to sit still while it moves at
+0.5-1.0 m/s, and the only thing that can produce that is a large position error feeding PSC's P-gain.  The
+feed-forward is not flying the aircraft; the error term is.
+AND THE REFERENCE'S TIMING, measured two ways, because the fix for it is now in place:
+  * the OLD finite-difference reference (what the FSM used until commit 25ad453): velocity = the SEGMENT
+    AVERAGE, i.e. the value half a sample (10.0 ms) late; measured against the exact value at the sample,
+    median 0.1275 m/s on an ego-like spline whose own speed is 2.289 m/s.
+  * measured on AP5's REAL plans by the audit: |v_fd - v_an| median 0.0098 / p95 0.0248 m/s, i.e. almost
+    exactly a 20 ms LEAD -- the magnitude was never the problem, the TIMING was.
+  * the analytic stream is live end to end since AP6: adapter "paths 200 (traj_dyn 200)" and the FSM
+    "DYNAMICS: analytic (matched to the Path (max stamp diff 0.00e+00 s), 38 points, |v|1.33/1.35 m/s,
+    |a|0.23/0.30 m/s^2 now)" -- so the reference is now ego's own derivative, not a difference of poses.
+--------------------------------------------------------------------------------
+4. THE CORRIDOR, AND WHAT IT LEAVES FOR ERROR
+--------------------------------------------------------------------------------
+  pillars            r = 0.40 m on a ~1.43-1.52 m lattice (measured nearest-neighbour spacing: min 1.368,
+                    median 1.429, max 1.516 m over 64 pillars), 0..4.2 m tall
+  free corridor     0.565-0.640 m between pillar surfaces (worlds/forest_b.yaml's own header; = lattice
+                    spacing - 2r)
+  the CONTRACT      0.20 m from every TRUE pillar surface, per point of every published plan
+                    (planner/ego_adapter.py --footprint; the owner's decision, 2026-10-14)
+  ego's own margin  grid_map/obstacles_inflation 0.10 m (the owner's decision) -- the PLANNER's margin, not
+                    the project's; the adapter's 0.20 m gate is strictly larger, so the adapter binds
+  what that means   a plan may use at most (0.565 - 2*0.20)/2 ... more usefully: with the plan at the
+                    contract line (0.20 m from a surface) on one side and 0.20 m on the other, the plan has
+                    NO lateral error budget at all in the narrowest cell; and the mission's stops themselves
+                    are not the constraint -- MEASURED with tools/stop-clearance.py on the 12-stop rectangle:
+                    minimum 0.3011 m clearance, 0 of 12 stops closer than 0.20 m (the four specified corners
+                    alone: minimum 0.3056 m, 0 of 4 closer than 0.20 m).
+  the budget        available half-width in the corridor: 0.28-0.32 m.  Tracking error (section 3) p95 at
+                    1.0-1.1 m/s: 0.55-0.72 m (docs/metrics/phaseB-tracking-error.txt), i.e. TWICE the
+                    available half-width; at 0.36-0.65 m/s the measured median is 0.12-0.19 m, which fits.
+--------------------------------------------------------------------------------
+5. WHAT SPEED KEEPS C2 CLEAN WITH MARGIN -- THE EVIDENCE'S ANSWER
+--------------------------------------------------------------------------------
+C2 is "no sample of the FLOWN path inside the 0.20 m footprint" (AP5: 5.66 % inside, min -0.296 m; AP6:
+5.60 %, min -0.336 m; the worst historical arm AF1: 46.62 %, min -0.376 m).  C2 is a property of the FLOWN
+path, so it is bounded by (the plan's clearance) MINUS (the tracking error), and the tracking error is a
+function of speed:
+    at 0.36-0.65 m/s   measured error median 0.12-0.19 m   -> budget 0.28-0.32 m: FITS, with 0.09-0.20 m left
+    at 1.0-1.1 m/s     measured error p95 0.55-0.72 m      -> budget 0.28-0.32 m: DOES NOT FIT
+    at 2.0 m/s (flown) achieved 2.98 m/s, error p95 1.22 m -> DOES NOT FIT (this is what C2 measures)
+    at 3.0 m/s         nothing in this project has measured it, and by the trend above the error would be
+                       LARGER than at 2.0 -- there is no evidence that 3 m/s can hold ANY clearance, let
+                       alone 0.20 m
+SO: THE SPEED THE EVIDENCE SUPPORTS IS <= ~0.65 m/s, and that is true for a reason that has nothing to do
+with the plan's speed limit: the loop that turns commands into motion is dragging the aircraft.  RAISING ANY
+SPEED LIMIT BEFORE THE PLAN'S ACCELERATION IS ACTUALLY ENFORCED WOULD MAKE C2 WORSE, NOT BETTER -- the plan
+already asks for 7.8 m/s^2 (7.8x its own limit) and 97 m/s^3 (19x the FCU's), and the acceleration that is
+NOT enforced is exactly the term that smears the path sideways in a 0.565-0.640 m corridor.
+THIS FILE DOES NOT CHANGE THE MISSION'S 3 m/s DEMAND.  The owner asked for 3 m/s; the evidence says the
+demand is not yet supportable, and the missing piece is the enforcement of the plan's own acceleration, not
+a number in a params file.
+--------------------------------------------------------------------------------
+6. THE READY-TO-FLY VARIANTS, AND WHICH SORTIE TESTS THEM
+--------------------------------------------------------------------------------
+VARIANT A -- params/ego_planner_humble_coll20_dyn.yaml  (NOT FLOWN YET; labelled)
+    manager/max_vel 1.5  (was 2.0), manager/max_acc 0.8 (was 1.0), optimization/* mirrors the same two.
+    Everything else is byte-identical to the flown arm (verified: 4 of 54 parameters differ), including the
+    map (0.10 m inflation) and the mission (the station list is the run's own stations.yaml).
+    WHY THESE TWO: 1.5 m/s is the smallest reduction that buys corridor margin while keeping the plan's 20 ms
+    reference resolvable; 0.8 m/s^2 is BELOW the FCU's WP_ACC 2.5 by 3.1x and below the attitude ceiling 5.66
+    by 7.1x, so the time allocation is longer than the aircraft needs -- the correct direction when the
+    aircraft is being dragged by its position loop.
+VARIANT B -- the same file with the speed at the measured-clean regime (no new file needed):
+        PARAMS=params/ego_planner_humble_coll20_dyn.yaml EGO_MAX_VEL=0.65
+    run-mission.sh passes EGO_MAX_VEL through to run-planner.sh, which applies it as
+    `-p manager/max_vel:=0.65` (ROS 2 `-p` wins over --params-file, which is measured behaviour and the
+    reason that override exists).
+HOW TO TEST IT, ONE FLIGHT EACH, same world, same 12-stop rectangle, same gates:
+    tag AP8-dyn-1.5      : Variant A   -- expected: plans at <=1.5 m/s, |a| still overshooting 0.8, C2 still
+                                          FAILING but with a smaller inside-fraction than AP6's 5.60 %
+    tag AP8-dyn-0.65     : Variant B   -- the C2 hypothesis: with the error in the 0.12-0.19 m band the flown
+                                          path should stay outside 0.20 m for MOST samples; if it does not,
+                                          the drag mechanism is not speed-dependent and the finding is bigger
+                                          than the speed question
+    ACCEPTANCE for both, unchanged: every rectangle stop REACHED (N of N), C2 = 0 samples inside 0.20 m,
+    A1 <= 20 mm, A2 <= 50 mm, A4 <= 50 mm, C1 <= 0.30 m, no silent stalls.
+    THE ORDER MATTERS: fly B first.  If the slow arm cannot hold C2 either, then no speed limit is the lever
+    and the priority becomes the position-loop drag (PSC_NE_VEL_* tuning or a feed-forward-only setpoint),
+    which is a different investigation than "how fast may we plan".
+--------------------------------------------------------------------------------
+7. COULD NOT ESTABLISH
+--------------------------------------------------------------------------------
+  * WHY THE PLANS EXCEED THEIR OWN ACCELERATION LIMIT.  The audit establishes THAT (32 of 44 above 1.0, max
+    7.785) and that refined trajectories are not re-checked, but not which term of the refiner produces the
+    overshoot; enforcing it is a change in bspline_opt, not a parameter.
+  * THE FCU'S OWN CONTRIBUTION to the drag.  The audit shows the error is not a constant delay, and that the
+    aircraft moves while commanded to sit still; separating "the FCU's PSC is dragging" from "the published
+    plan jumps between switches" needs a per-sample plan-vs-truth artifact for a rectangle sortie, which AP6
+    does not have (only the circle sorties do).
+  * WHETHER 3 m/s IS PHYSICALLY POSSIBLE ON THIS AIRFRAME at all: not measured at any speed above 2.98 m/s,
+    in any corridor.
+  * THE TRACKING ERROR AT 1.5 m/s specifically: interpolated from the two measured regimes (0.36-0.65 and
+    1.0-1.1 m/s), not measured.
+================================================================================
