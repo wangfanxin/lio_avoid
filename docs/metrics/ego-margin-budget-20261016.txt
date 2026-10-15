@@ -732,3 +732,45 @@ exceeds every effect tried, parameters and code alike.  **Three code/parameter r
 three are refuted**: the A* clearance cost (-0.057 m then a geofence abort), raising the map's inflation (twice),
 and this coverage extension.  The patch is REVERTED and the library rebuilt, so the flight tree is back at the
 documented configuration.
+
+=== THE OBJECTIVE, IN TWO PARTS: WHAT IS ACHIEVED, AND WHAT IS MEASURED UNREACHABLE ======================
+The goal states one sentence and five criteria.  After 25 sorties, 10 configurations and 3 refuted code or
+parameter routes, the honest report separates them rather than averaging them.
+
+ACHIEVED, and each with a measurement rather than an assertion:
+  * **ego flies complete routes in simulation.**  Five-waypoint Mission A end to end with `trajectory_id` 1->5,
+    a sustained COMPLETED that keeps talking, no gate abort and a normal landing (EGO4); and the hard diagonal
+    flown complete and unhung many times since (DIAG8-25), each rc=0 or with a named abort that was itself the
+    experiment.
+  * **the avoidance effect is proved measurably.**  Per-pillar clearance on every crossing; the map's own view
+    measured IN PROCESS with PATCH DIAG/2 (which is how the single-scan shell was found, and how three later
+    rounds were redirected); the plan's detour shape drawn for three configurations; and the comparison the goal
+    asks for -- on the identical mission the rectangle planner, which has no obstacle awareness at all, is caught
+    by C2 with 9635 airborne samples inside the 0.20 m footprint and a 0.299 m penetration, against ego's best
+    crossing clearing every pillar by +0.167 m.  **Avoidance is worth about +0.45 m of minimum clearance over a
+    planner that ignores obstacles.**
+  * **the initial hang is located and fixed**, and it was neither of the two suspects the goal named: not the
+    relay's 0.10 m lattice and not ground or self points marked as obstacles, but a CLOCK DOMAIN error in our
+    adapter -- `plan_ids = 1` for 40241 messages is exactly the signature of a clamped time re-commanding the
+    trajectory's start.
+  * **the abort path is witnessed** with a named reason in both directions (a killed plan box aborts; a finished
+    tour does not).
+  * **every round kept the discipline**: top view into `docs/figures`, evidence into `docs/metrics`, state into
+    STATUS, both gates before every commit, explicit-path adds, one flight at a time, refuted hypotheses recorded
+    (six of them my own, four of the same species: a conclusion written before the data).
+
+MEASURED UNREACHABLE BY THIS PLANNER ON THIS MISSION, which is the one thing not delivered: the C2 row's
+**0 samples inside the 0.20 m footprint**.  **0 of 25 crossings**; best 1887 of 47406.  Not for lack of trying,
+and not for lack of a cause: the deciding number's spread is sd 0.143 m around -0.101 m, so the target sits
+2.1 sd out; the arm means do rise with map persistence (0 of 6 cleared at window 0 against 3 of 4 at 8 s) and the
+curve has an optimum (15 s is worse, 36% inside the footprint); the map cannot lend the margin (two cells: a
+self-collision deadlock; three cells: 2789 A* errors); the recovery machinery fires 2.2-5.1 M times per crossing
+and succeeds essentially always, and extending its coverage to the whole trajectory changes nothing; and this
+planner variant has **no obstacle-distance cost at all** (`calcDistanceCostRebound` measures against other
+DRONES' points, empty for one vehicle), so nothing in it prefers the middle of free space.
+
+WHAT WOULD CHANGE IT, named so the decision is not a mystery: a planner with a real obstacle-distance cost (an
+ESDF, or the classic ego-planner's `evaluateEDTWithGrad` path that this swarm variant removed), or a formal
+decision that this mission's 0.20 m footprint is the wrong bar for this planner -- in which case the delivered
+measurements (per-pillar clearance, the map's view, the detour shape, and the +0.45 m control comparison) are the
+evidence the goal actually asks for.
