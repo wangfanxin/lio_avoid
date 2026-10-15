@@ -1,0 +1,136 @@
+APPROACH SHAPING, FLOWN: WHAT PLAN-SIDE MEANS DO TO B1, AND WHAT THEY CANNOT DO
+================================================================================
+Written 2026-10-15/16 by the round that flew the experiment.  Commit `17df0f2` is the feature (default
+OFF); the sortie is `RECT39-shaping`; the attribution tool is the one `39218f5` added
+(`tools/b1-edge-budget.py`), and every number below is that tool's or the run's own output.  The bound is
+2.10 / 1.30 m and DID NOT MOVE.
+
+
+1. THE EXPERIMENT
+-----------------
+`--approach-shaping-m 0.30` inserts ONE waypoint 0.30 m short of each tour corner, ON the leg, whose dwell
+is ZERO: the vehicle must come to a SETTLED stop there (the settle gate is untouched -- the stop is what
+makes it stop, not the dwell), so the last approach into the corner starts from rest.  Only legs longer
+than 3 x D are split, so the 0.64 m pad->corner-1 transit keeps its geometry.  The tour becomes 9 waypoints
+(the plan box's own start-up line: "APPROACH SHAPING: 0.300 m before every tour leg longer than 0.900 m --
+4 waypoints added (dwell 0.0 at each: stopped at, not held), tour now 9 waypoints"), plus the climb leg =
+10 targets, and the phase log reads `... leg1 .. leg10 ...`.
+
+WHY THIS WAS THE CANDIDATE: B1's box is made by the under-damped ring that braking into a corner excites
+(`docs/metrics/b1-mechanism-20261016.txt`): the aircraft crosses the corner at 0-5 mm, swings 99-142 mm
+INSIDE, comes back, overshoots 35-93 mm PAST, and BOTH extremes are at ~0 m/s -- it stops out there.  Every
+wire row commands position with velocity and acceleration exactly 0.0000, so the approach is a position
+step and the plan's only lever on the ring is the SHAPE of that step.  The prediction's anchor was
+measured, not assumed: the one leg this mission already flies from rest -- the 0.64 m entry from the pad --
+overshoots 2.0-6.0 mm (its excursion column in `_stage/b1-arrival-shape.py`).
+
+
+2. THE RESULT (each row from that sortie's own `metrics.txt`; `RECT36-ratio` was recomputed, see 5)
+------------------------------------------------------------------------------------------------------
+  sortie           shaping   B1 E      B1 N      growthE  growthN   E bound  N bound   verdict
+  RECT26-accept    none      2.110     1.288     +110.4   +88.1     2.10     1.30      FAIL (E)
+  RECT33-accept    none      2.115     1.303     +114.9   +103.4    2.10     1.30      FAIL (both)
+  RECT34-accept    none      2.163     1.304     +162.7   +103.7    2.10     1.30      FAIL (both)
+  RECT35-ratio     none      2.136     1.278      -        -        2.10     1.30      FAIL (E)
+  RECT36-ratio     none      2.144     1.250      -        -        2.10     1.30      FAIL (E)
+  RECT37-ratio     none      2.120     1.329     +120.1   +129.3    2.10     1.30      FAIL (both)
+  RECT39-shaping   0.30 m    2.110     1.269     +109.6   +69.0     2.10     1.30      FAIL (E, by 9.6 mm)
+
+  THE WHOLE ROW SET OF THE SHAPED SORTIE (`RECT39-shaping`, 101024 truth samples over 84.2 s):
+  A1 3.22 mm (<= 20) PASS;  A2 1.74 mm (<= 50) PASS;  A3 PASS (200.1 Hz over 15526 samples, worst gap
+  4.998 ms);  A4 19.75 mm (<= 50) PASS at best-fit lag +70 ms;  B2 10 of 10 legs, worst perpendicular
+  2.1-38.4 mm (<= 50);  B3 5 of 5 corners, 0.3-4.2 mm (<= 100);  B4 'land' -> yes, armed=False;
+  C1 0.015 m (<= 0.30) PASS;  C2 minimum pillar-surface distance 0.552 m, 0 of 62017 samples inside
+  0.20 m PASS;  no ABORT, no leg timeout, no EKF failsafe.
+  DWELL: 4 of 4 corners >= 5.0 s both ways -- DEFAULT 12.92 / 6.92 / 6.86 / 7.71 s, and with
+  `--airborne-m 0.5` 9.27 / 6.92 / 6.86 / 7.71 s.
+  THE COST IS NOT TIME: the tour's own log reads "total 67.7 s", inside the unshaped range of the three
+  ratio sorties (RECT35 68.1 s, RECT37 67.0 s, RECT34 70.8 s).  Four extra stop-and-go moves cost nothing
+  measurable, because the 5.0 s dwells dominate the tour.
+
+  WHAT MOVED, PER WALL (`tools/b1-edge-budget.py`, mm past each wall; the identity residual is 0.000):
+    wall   RECT34 (none)  RECT37 (none)  RECT39 (0.30 m)   owner
+    E-min     +69.9          +50.9          +68.8          corner 4   (arrival, v 0.010 m/s)
+    E-max     +92.8          +69.2          +40.8          corner 2   (arrival, v 0.002 m/s)
+    N-min     +54.6          +85.4          +57.7          closing corner 1 (DEPARTURE, v 1.453 m/s)
+    N-max     +49.1          +43.9          +11.3          corner 3   (arrival, v 0.010 m/s)
+  So shaping took E-max (corner 2) from 69-93 mm to 40.8 mm and N-max (corner 3) from 44-49 mm to 11.3 mm,
+  left E-min (corner 4) at 68.8 mm, and left the DEPARTURE dip at 57.7 mm.  E growth 109.6 mm against a
+  100 mm allowance: TEN MILLIMETRES SHORT.  At the four extremes the FCU's own estimate differs from the
+  truth by only 1.2-4.9 mm, so what remains is the position loop, not the estimator.
+
+
+3. WHY IT STOPPED TEN MILLIMETRES SHORT (measured, and it is a property of the loop)
+-------------------------------------------------------------------------------------
+The corner-4 trace (`_stage/trace-corner.py`, every 0.2 s) shows the mechanism the shaping does NOT remove:
+the plan declares arrival at the shaping point while the vehicle is STILL SWINGING around it, and the final
+0.3 m move therefore starts from a moving, offset state:
+
+  t 58.60  cmd (0.80, 1.60) [the shaping point]   truth E 0.8353  v 0.178 m/s
+  t 58.80  cmd (0.50, 1.60) [the corner, NOW]     truth E 0.8287  v 0.089 m/s   <- the plan advanced
+  t 59.40  cmd (0.50, 1.60)                       truth E 0.9261  v 0.036 m/s   <- 126 mm AWAY from it
+  t 61.40  cmd (0.50, 1.60)                       truth E 0.5001  v 0.177 m/s   <- crosses the corner
+  t 62.20  cmd (0.50, 1.60)                       truth E 0.4314  v 0.013 m/s   <- stops 68.7 mm PAST
+  t 66.61  (dwell)                                truth E 0.4958                <- back inside, +4.2 mm
+
+The plan's arrival rule is "inside 0.060 m of the commanded point AND slower than 0.080 m/s", and on a ring
+those two are satisfied near the CENTRE of a swing, i.e. exactly when the vehicle is moving -- and the ring
+at the shaping point then carries it up to 126 mm away before the corner move even starts.  This is the
+same ring, excited one waypoint earlier: shaping MOVES the excitation, it does not damp it.  The plan has
+no lever on damping: it commands positions only (velocity and acceleration are 0.0000 on every wire row),
+so the ring's amplitude -- measured at 40-90 mm past a wall with the excitation, 2-6 mm without it -- is
+the floor this configuration can reach at the corners it stops at.
+
+
+4. THE TWO CANDIDATE TRADE-OFFS (no bound changed; neither is applied)
+---------------------------------------------------------------------
+(a) PLAN-SIDE, taken further: requalify the stop.  The vehicle must be at rest WITHIN A TIGHTER RADIUS than
+    0.060 m before the final approach is commanded (a per-waypoint arrival gate for the shaped points), so
+    the ring decays before the corner move starts.  Cost, measured: the ring at c4 took 4.4 s to come back
+    inside the wall, and a 0.020 m gate would spend that time at FOUR waypoints per tour -- the tour's 67.7 s
+    would grow by roughly 10-20 s, and the dwell/A4 rows would have to be re-verified because the hover is
+    unchanged but the arrival instants move.  Expected benefit, from the same data: the final move would
+    start from a settled state, which is the 2-6 mm case, so E growth would fall to ~30-50 mm -- a PASS with
+    margin.  NOT TESTED: it is a new experiment, not an extrapolation this file can claim.
+(b) FCU-SIDE, damping the loop: the slow arm already passes.  `params/phase_a_mission.parm` (WP_SPD 0.25,
+    LOIT_ACC 0.3) reports B1 growth +38.4 mm E / +55.0 mm N, PASS, on the same square with the same
+    estimator (stepB10-01, in the attribution table of `b1-mechanism-20261016.txt`), and its extremes are no
+    longer corner events at all (0.065-0.771 m from the nearest corner, 0.04-0.32 m/s).  Cost: the route
+    takes longer, every B1/B2/B3 and F1/F2 row must be re-verified, and a loop-damping change
+    (PSC_XY/VELXY -- no params/ file currently overrides them) needs a bench step-response measurement
+    BEFORE a sortie, plus a deliberate re-stamp of the frozen set and its parameter provenance.
+BOTH change how the mission is flown; neither changes the bound, and NEITHER IS A FIX FOR THE RING -- they
+are the two measured ways to keep the ring small enough for a 0.10 m allowance.
+
+
+5. TWO RECORDED MISTAKES OF THIS ROUND
+--------------------------------------
+(i) `RECT36-ratio`'s harness died in POST-processing: "error reading input file: No data available",
+    because `tools/run-mission.sh` was edited WHILE bash was reading it (the revision line and the
+    `SHAPING_M` block were added during that sortie).  The FLIGHT is complete -- 11 phases ending in `done`,
+    TOUR COMPLETE, no timeout, no abort -- and only the metrics step was lost, plus three orphan processes
+    that `stop_stack` never got to stop (killed by PID after printing their own command lines:
+    `_stage/clean-rect36-orphans.sh`).  `metrics.txt` was then produced by running exactly the command line
+    `run-mission.sh` runs (`_stage/recover-rect36.sh`) and its rows are in the table above.  THE RULE: a
+    file a running flight reads is not edited until that flight is over.
+(ii) The stored `RECT34-accept/metrics.txt` still carries the OLD window rule's number (E 2.584 / N 1.651):
+    it was written by the tool as it stood during that flight, and the window rule changed afterwards
+    (commit `b92efed`).  The current tool reads the same run as E 2.163 / N 1.304, and BOTH numbers are in
+    this file and in `f2b-climb-flight-20261015.txt`.  A sortie's own `metrics.txt` is left as the flight
+    wrote it on purpose -- rewriting history is worse than a stated discrepancy.
+
+
+6. SIDE RESULTS OF THIS ROUND'S BATCH (all from the pool's own table, `tools/acceptance-table.py`)
+------------------------------------------------------------------------------------------------
+  * 9 of 9 nominal sorties with 4 of 4 corners hovered >= 5.0 s STRICT (airborne > 0.5 m), 36 of 36 corner
+    visits; tightest corner is c3 in all nine (6.34-6.41 s).
+  * The owner's 0.2 m take-off profile with the climb leg is stable across four sorties (RECT34/35/36/37):
+    A1 3.21-3.55 mm, A2 1.74-1.86, A4 18.65-22.08, B2 6 of 6 legs, C2 0 of 61521-63837 inside 0.20 m
+    (minimum pillar-surface distance 0.551-0.570 m), C1 0.012-0.015, faults 0, no abort, no EKF failsafe.
+  * THE KILL SORTIE, re-flown on `--trigger-on-airborne` (`RECT38-kill-plan`): phases
+    `preflight takeoff hold leg1 leg2 abort land done` -- an abort AFTER a leg phase; the NAMED reason
+    "THE PLAN BOX HAS STOPPED TALKING: nothing on /plan/cmd for 3.0 s (limit 3.0 s) after 2372 messages,
+    trajectory_id 2 -- a plan box that is DONE says so in the message (trajectory_flag = COMPLETED);
+    SILENCE IS NOT COMPLETION"; and the clean ending `landed: armed=False mode=LAND`, the FCU's own log
+    ending in "Disarming motors".  The supervisor exits 1 on a deliberate abort, which is what
+    `tools/acceptance-table.py --abort-ok` reads.
