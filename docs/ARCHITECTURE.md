@@ -222,7 +222,12 @@ tap; the producer's log says only what the producer intended.
 With `BRIDGE=mavros` the MAVLink rows become mavros topics (`/mavros/local_position/pose` 30-50 Hz ENU,
 `/mavros/state` 1 Hz, setpoints on `/mavros/setpoint_position/local`, vision on
 `/mavros/vision_pose/pose_cov`) and **mavros performs the frame conversions**.  `BRIDGE=mavlink`
-(pymavlink) is the flown path; `mavros_impl` exists and is unflown.
+(pymavlink) is the flown path.  **CORRECTED 2026-10-15: there is no `bridge/mavros_impl.py`.**  `ls bridge/`
+is `base.py` and `mavlink_impl.py`, and `git log` shows no deletion -- the file was never written, while
+this document, `bridge/base.py`'s own header and `STATUS.md` all described it as "written, unflown" and
+`fsm/mission_fsm.py` imported it as the non-mavlink branch.  So `BRIDGE=mavros` raises
+`ModuleNotFoundError` at the first call, and everything above describes the CONTRACT that implementation
+would have to meet, not a file.  The `mavros` rows below are kept for that reason, in the conditional.
 
 ### Two disciplines the old pipeline taught, kept here
 
@@ -315,7 +320,7 @@ class Transport(Protocol):                       # both directions
     def local_velocity(self) -> Vec3: ...
 ```
 
-| direction | `mavlink_impl` (pymavlink, the flown path) | `mavros_impl` (written, unflown) |
+| direction | `mavlink_impl` (pymavlink, the flown path) | a `mavros_impl` (NOT WRITTEN -- see above; this column is the contract it must meet) |
 |---|---|---|
 | setpoints out | `f_to_ned()` then msg 84 (z becomes DOWN) | publish `/mavros/setpoint_position/local` (mavros converts) |
 | external nav out | ENU->NED + FLU->FRD + origin, then msg 102/331 | publish `/mavros/vision_pose/pose_cov` (mavros converts) |

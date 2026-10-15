@@ -259,6 +259,7 @@ B1 truth box extents over the route (33.9 s): E 2.137 m  N 1.324 m   (command 2.
    the same window restricted to the corner visits (truth within 0.15 m of a commanded corner, 33148 of 40704 samples): E 2.137 m  N 1.315 m  [REPORTED, not gated]
    where the E extent comes from: corner 4 -0.061 m (N -0.005) and corner 2 +0.076 m (N +0.004) from their own commanded point, reached with a peak speed of 1.75 m/s within 1 m o
 
+
 ================================================================================
 == 6. THE PER-CORNER EXCURSION: a TURNAROUND TRANSIENT at the fast corners
 ================================================================================
@@ -417,14 +418,16 @@ tap.csv, and both print their own stdout below.
 
 READ (a) AND (b) TOGETHER, and the mechanism is not a hypothesis:
 
-  * THE FAILURE IS AT THE TWO CORNERS ARRIVED AT FAST.  c2 and c4 are approached at 1.67-1.76 m/s and
+  * THE FAILURE IS AT THE CORNERS ARRIVED AT FAST.  c2 and c4 are approached at 1.67-1.76 m/s and
     overshoot their wall by E +0.0610..+0.0817 m on every HOLD sortie; c3 is approached at 1.27-1.29
-    m/s and overshoots by N +0.0065..+0.0143 m.  The E extent of the box is exactly this: c2's
+    m/s and overshoots by N +0.0020..+0.0386 m.  The E extent of the box is exactly this: c2's
     overshoot is the box's maximum and c1's return swing is its minimum.
-  * IT RINGS AND THEN SETTLES -- IT IS NOT AN OFFSET.  On the four hold sorties the surviving fraction
-    at the end of the window is 0.05-0.33 at c2 and c4 (RECT7 +0.0734 -> +0.0049, RECT10 +0.0817 ->
-    +0.0067, RECT11 +0.0757 -> +0.0189), and the aircraft is back within 10 mm of the command 0.8-1.9 s
-    after the peak.  A steady-state bias would not decay at all.
+  * IT RINGS AND THEN SETTLES -- IT IS NOT AN OFFSET.  On the three sorties that hold cleanly the
+    surviving fraction at the end of the window is 0.05-0.10 at c2 and c4 (RECT7 +0.0734 -> +0.0049,
+    RECT9 +0.0737 -> +0.0041, RECT10 +0.0817 -> +0.0081), and the aircraft is back within 10 mm of the
+    command 1.4-2.0 s after the peak.  A steady-state bias would not decay at all.  (RECT11's residuals
+    are the largest, 0.18-0.29, and that is the same run whose c3 ring crossed the 0.15 m judging radius
+    -- section 7.  It is still a decay: +0.0757 -> +0.0189 at c2, +0.0610 -> +0.0109 at c4.)
   * THE CONTROL FOR THAT IS THE SAME MEASUREMENT ON THE NO-HOLD SORTIES.  RECT1 and RECT6 arrive at the
     same 1.67-1.76 m/s and produce the same peak (E +0.0700..+0.0811 m), but with no dwell to settle in
     the surviving fraction is 0.90-1.00 and the 'back to 10 mm' column reads NONE.  Same ring, no time
