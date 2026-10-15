@@ -144,3 +144,47 @@ END of `cloudCallback`'s marking loop (after :910's writes and before the next c
 MEASURED and recorded rather than assumed.  A field that lags the map is exactly the species of silent
 disagreement this plan's step 2 warns about.
 
+
+=== A CODE SKETCH, SO THE NEXT SESSION STARTS WRITING RATHER THAN SEARCHING ====================
+UNVERIFIED -- nothing here has been compiled, and the anchor lines and member names must be confirmed in the tree
+before they are trusted.  It exists so the first hour of the next session is spent on the algorithm and the
+build, not on re-deriving where things go.  Four pieces, in dependency order.
+
+(1) THE BUFFER -- `plan_env/include/plan_env/grid_map.h`, beside :98-99 where the two occupancy vectors are
+    declared (the comment there already says "Euclidean distance"; the array is what is missing):
+        std::vector<double> distance_buffer_;          // per voxel, metres to the nearest inflated cell
+    and in the same struct, whatever the existing buffers use to know their size (`mp_.map_voxel_num_`), since
+    the buffer must be resized where they are.
+
+(2) THE BUILD -- at the END of `cloudCallback`'s marking loop (after the writes at `:910` and before the local
+    bounds are computed), i.e. on the SAME message and the SAME array the collision check reads:
+        // occupancy_buffer_inflate_: 1 = occupied.  A two-pass exact EDT over the local box, or a cheap
+        // truncated sweep if the exact one is too slow -- but MEASURE which, do not assume:
+        //   pass 1 (forward):  d[i] = 0 if occupied, else 1 + min(d of the three causal neighbours)
+        //   pass 2 (backward): the symmetric sweep, taking the min with pass 1
+        // The 0.10 m lattice makes this an integer-lattice EDT, so the classic 3x3x3 sweeps are exact.
+    PROPERTY TO KEEP: built from `occupancy_buffer_inflate_`, never from `occupancy_buffer_`; the optimiser and
+    the collision check must not be given two different worlds.
+
+(3) THE QUERY -- next to `getInflateOccupancy` at `grid_map.h:175`, with the -1 convention FIXED rather than
+    copied (this is the bug that caused DIAG12's deadlock):
+        inline bool evaluateEDT(const Eigen::Vector3d &pos, double &dist, Eigen::Vector3d &grad) {
+          if (!isInMap(pos)) { dist = 1e3; grad.setZero(); return true; }   // OUTSIDE = FAR, not occupied
+          // trilinear interpolation of distance_buffer_ for `dist`; central differences for `grad`;
+          // return false only if a consumer genuinely needs to know the query left the map
+        }
+
+(4) THE FEED -- the distance cost reads `cps_.base_point` / `cps_.direction` / `cps_.clearance`, and today only
+    `check_collision_and_rebound()` fills them, from a rebound A* path.  The smallest change that makes the
+    existing cost live: fill those same arrays from the FIELD, once per optimisation, before
+    `combineCostRebound` runs -- one entry per control point, `direction` = the normalised field gradient at that
+    point, `base_point` = the point itself, `cps_.clearance = dist0_`.  Then `calcDistanceCostRebound` at
+    `bspline_optimizer.cpp:962`, called from `:1841`, multiplies a real term with the parameters ALREADY in our
+    launch file (`lambda_collision` 0.5, `dist0` 0.5), and the only decision left is whether `dist0` should stay
+    at 0.5 m or be raised -- a question the first flight answers.
+
+THE FIRST THREE MEASUREMENTS TO MAKE, in order, before any flight: (a) the build compiles and a parked run shows
+`distance_buffer_` non-zero in the right places; (b) the field agrees with `getInflateOccupancy` (a cell the one
+calls occupied has distance 0 in the other) on a sample of points, printed once; (c) the cost's value on a
+straight-line trajectory in a known corridor is roughly `lambda_collision * (dist0 - clearance)^2` -- a number
+that can be checked by hand, which is how this investigation has caught every silent instrument fault.
