@@ -898,3 +898,11 @@ has been complete since round 31 -- the map holds the obstacle at the moment of 
 there anyway (four of four), the aircraft follows the plan to 0.003-0.044 m -- and the architecture contains
 nothing left to turn.  What remains is outside it: a real obstacle-distance cost, or a decision that the 0.20 m
 footprint is the wrong bar for this planner.
+
+=== THE HEADLINE FIGURE FOR CRITERION 3 ==================================================================
+`docs/figures/traj-xy-DIAG21-best-crossing.png`, sha256 9cbb5ecaf0227f6a92864f3da11dbb1b473af7a473a7fe18677c1bc24a491183 -- two top views: on the left the best ego
+crossing of the hard diagonal (DIAG21, window 8: truth minimum **+0.167 m**, 1887 of 47406 samples inside the
+0.20 m footprint, against the straight legs that pass through pillar CENTRES and are what the rectangle control
+actually flies); on the right, ego's OWN MAP at the closest-approach instant, from PATCH DIAG/2 -- the marked
+cells that the avoidance was planned against.  It is the figure the criterion's third question ("whether ego's own
+map saw the pillars") is answered by, drawn rather than asserted.
