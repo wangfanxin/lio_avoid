@@ -215,3 +215,39 @@ plateau it reaches measures that corridor's distance from the pillars.  RESULT, 
 
 
 
+
+=== THE SELF-BLIND BUBBLE, AND THE END OF THE MAP-SIDE LEVERS (`DIAG16-twocell-bubble`) ========
+The bubble was built for one measured defect and it fixed it.  `cloud_relay.py --self-blind R` drops cloud
+points within R of the vehicle, so the map cannot mark the machine's own position -- the map-side statement of
+"the robot is never its own obstacle", and a thing every real sensor does anyway (minimum range).  With R = 0.45
+and TWO cells of inflation:
+
+    metric                              DIAG13 (2 cells)     DIAG16 (2 cells + bubble)
+    `the drone is in obstacle`          **112 729**          **3 107**
+    `a star error`                      10                   71
+    `terminal point ... in obstacle`    2                    114
+    planner log                         108 MB               6 MB
+    sortie                              HUNG (watchdog)      rc=0, completed, C1 PASS
+    relay points inside the bubble      --                   591 886 of 8.4 M (7%)
+
+**The deadlock is gone**, exactly as predicted, and the mission completes.
+
+AND THE CLEARANCE GOT WORSE, which is the finding that closes the map-side search:
+
+    run                         truth min    samples inside 0.20 m     note
+    DIAG9  (1 cell)              +0.150 m     2108 of  53753            best clearance
+    DIAG10 (1 cell)              +0.056 m    12028 of 100120
+    DIAG14 (1 cell)              -0.222 m     3387 of  46916
+    DIAG15 (1 cell, fitness 4)   +0.068 m     1231 of  54097            fewest inside the footprint
+    DIAG16 (2 cells + bubble)   **-0.100 m** **27999 of 100127 (15.8%)** worst of any crossing
+
+So raising inflation does not buy the C2 row its 0.20 m footprint even when the defect that made it hang is
+fixed: the run is healthy and the path is the worst yet.  Together with the two refutations that came before
+(0.30 m: 2789 A* errors and a vehicle through the field; 0.20 m: the self-collision deadlock) and the
+one-cell plateau (the plan's 1st percentile at +0.12 m, against the ~0.15 m a free cell sits from a surface),
+**the map-side levers are exhausted**.  What is left is the optimiser: this ego-planner-swarm variant has NO
+obstacle-distance cost at all -- `calcDistanceCostRebound` measures against other DRONES' points, empty for one
+vehicle -- so nothing in it prefers the middle of free space, and the only term that can pull the trajectory is
+`lambda_fitness` (measured: 1st percentile -0.031 -> +0.124 m at 4.0, not yet reproduced).
+
+Figure `docs/figures/traj-xy-DIAG16-twocell-bubble.png`, sha256 86f2685744e7ed363f0a46309f2e645400fd7db11b40390a628666302a9827b4.

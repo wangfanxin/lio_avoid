@@ -201,6 +201,13 @@ EGO_CLOUD_TOPIC="${EGO_CLOUD_TOPIC:-/ego/cloud}"
 #: the memory the planner assumes it has is restored here, on our side.  ~3 s is what the geometry asks for: the
 #: measured closing speed on the diagonal is ~0.4 m/s, so 3 s spans the whole approach the map forgets.
 EGO_CLOUD_WINDOW="${EGO_CLOUD_WINDOW:-0.0}"
+#: RADIUS OF THE SELF-BLIND BUBBLE the relay clears around the vehicle (0 = off, the behaviour of every round
+#: up to 13).  ego's hard collision check treats its OWN POSITION inside the inflated map as fatal
+#: (`bspline_optimizer.cpp:1341-1345`), and MEASURED with two cells of inflation that produced 112 729
+#: 'the drone is in obstacle' and a hung sortie (DIAG13).  Two cells is the only way to give the C2 row its
+#: 0.20 m footprint, so this is its enabler, not a convenience: with the bubble, marked cells are at least this
+#: far away and the map cannot mark the machine itself.
+EGO_SELF_BLIND="${EGO_SELF_BLIND:-0.0}"
 case "$PLANNER" in
     rectangle)
         PLANNER_FILE="$REPO/planner/rectangle_source.py"
@@ -248,10 +255,10 @@ if [ "${PLANNER_DRY_RUN:-0}" = "1" ]; then
     echo "   topic          : $PLANNER_TOPIC (quadrotor_msgs/PositionCommand, frame lio_world)"
     echo "   argv           : $PLANNER_ARGS"
     echo "   what would run : python3 $PLANNER_FILE $PLANNER_ARGS"
-    echo "   ego stack      : $EGO_STACK (cloud_relay /lio/cloud_world -> $EGO_CLOUD_TOPIC; ego max_vel $EGO_MAX_VEL max_acc $EGO_MAX_ACC; cloud window ${EGO_CLOUD_WINDOW}s)"
+    echo "   ego stack      : $EGO_STACK (cloud_relay /lio/cloud_world -> $EGO_CLOUD_TOPIC; ego max_vel $EGO_MAX_VEL max_acc $EGO_MAX_ACC; cloud window ${EGO_CLOUD_WINDOW}s, self-blind ${EGO_SELF_BLIND}m)"
     if [ "$EGO_STACK" = "1" ]; then
         echo "                    would also run: ros2 launch ego_planner ego_on_lio.launch.py"
-        echo "                                   python3 $REPO/planner/cloud_relay.py --out $EGO_CLOUD_TOPIC --window $EGO_CLOUD_WINDOW"
+        echo "                                   python3 $REPO/planner/cloud_relay.py --out $EGO_CLOUD_TOPIC --window $EGO_CLOUD_WINDOW --self-blind $EGO_SELF_BLIND"
     fi
     exit 0
 fi
@@ -528,7 +535,7 @@ if [ "$EGO_STACK" = "1" ]; then
     set -u
     export ROS_LOCALHOST_ONLY=1
     python3 "$REPO/planner/cloud_relay.py" --in /lio/cloud_world --out "$EGO_CLOUD_TOPIC" \
-        --window "$EGO_CLOUD_WINDOW" \
+        --window "$EGO_CLOUD_WINDOW" --self-blind "$EGO_SELF_BLIND" \
         > "$OUT/ego_relay.log" 2>&1 &
     EGO_RELAY_PID=$!
     ros2 launch ego_planner ego_on_lio.launch.py \

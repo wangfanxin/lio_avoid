@@ -86,6 +86,38 @@ def crop_box(points, centre, half):
     return out, dropped
 
 
+def self_blind(points, centre, radius):
+    """Drop every point within `radius` of the vehicle.
+
+    WHY: ego's hard collision check treats ITS OWN POSITION inside the inflated map as fatal --
+    `check_collision_and_rebound()` scans backwards for a free control point, and when it does not find one it
+    prints `ERROR! the drone is in obstacle. This should not happen.` and plans from an occupied start
+    (`bspline_optimizer.cpp:1341-1345`).  MEASURED with two cells of inflation (`DIAG13`): **112 729** of those,
+    an FSM that stops, a vehicle that sinks, lands, and then sits in the ground's own marked layer for ever --
+    the run hung.  Two cells is otherwise the only way to give the C2 row its 0.20 m footprint, because a free
+    cell one voxel out from a marked cell is only about 0.15 m from a pillar surface (measured: the plan's 1st
+    percentile plateaus at +0.12 m).
+
+    A clear bubble around the machine is what a real sensor has anyway (minimum range, self-returns), and it is
+    the map-side statement of `the robot is never its own obstacle`.  The cost is honest and bounded: nothing
+    closer than `radius` can be marked, so the radius must stay under the distance at which the window's older
+    scans -- which are NOT dropped, since they were taken from a different position and are already far -- still
+    hold the obstacle.  Default 0.0 = off, i.e. every earlier round's behaviour exactly.
+    """
+    if not radius or centre is None:
+        return list(points), 0
+    cx, cy, cz = centre
+    out, dropped = [], 0
+    r2 = radius * radius
+    for p in points:
+        dx, dy, dz = p[0] - cx, p[1] - cy, p[2] - cz
+        if dx * dx + dy * dy + dz * dz < r2:
+            dropped += 1
+        else:
+            out.append(p)
+    return out, dropped
+
+
 class VoxelWindow:
     """THE LAST `seconds` OF DECIMATED SCANS, unioned by voxel key.
 
@@ -241,6 +273,19 @@ def _selftest() -> int:
     if len(m4) != 3:
         bad.append("the union across views gave %d voxels, expected 3" % len(m4))
 
+    # THE SELF-BLIND BUBBLE, whose two failure modes are dropping too much and dropping nothing.
+    print("      the self-blind bubble")
+    near = [(0.10, 0.0, 0.0), (0.40, 0.0, 0.0), (0.60, 0.0, 0.0)]
+    keptb, dropb = self_blind(near, (0.0, 0.0, 0.0), 0.45)
+    print("      points at 0.10 / 0.40 / 0.60 m       -> %d kept, %d dropped (bubble 0.45 m)"
+          % (len(keptb), dropb))
+    if len(keptb) != 1 or dropb != 2:
+        bad.append("the bubble kept %d and dropped %d; expected 1 and 2" % (len(keptb), dropb))
+    if self_blind(near, (0.0, 0.0, 0.0), 0.0)[1] != 0:
+        bad.append("a bubble of 0.0 must drop nothing")
+    if self_blind(near, None, 0.45)[1] != 0:
+        bad.append("with no odometry the bubble must be a pass-through")
+
     # WHAT THE RELAY BUYS, on a surface whose answer is known, and ONLY that.  The number that matters for
     # the real scan is the input, which is MEASURED -- 19480 points per scan at 5.0 Hz (RECT48's own
     # recording, see the header) -- and the ratio the relay achieves on it is reported at RUNTIME by the
@@ -291,6 +336,7 @@ def _ros_main(args) -> int:
             self.pos = None
             self.win = VoxelWindow(args.window, args.voxel)
             self.n_in = self.n_out = self.n_drop = self.n_cloud = 0
+            self.n_blind = 0
             self.last_pub = 0.0
             self.last_frame = None
             self.create_timer(5.0, self.report)
@@ -313,9 +359,11 @@ def _ros_main(args) -> int:
             self.n_cloud += 1
             self.n_in += len(pts)
             kept, dropped = crop_box(pts, self.pos if args.crop else None, ACCEPT_M)
+            kept, blinded = self_blind(kept, self.pos if args.self_blind else None, args.self_blind)
             merged = self.win.add(now, kept)      # the union of the last `--window` seconds, by voxel
             out = [merged[k] for k in sorted(merged)]
             self.n_drop += dropped
+            self.n_blind += blinded
             self.n_out += len(out)
             self.last_frame = msg.header.frame_id
             if not out:
@@ -336,10 +384,12 @@ def _ros_main(args) -> int:
             if not self.n_cloud:
                 self.get_logger().warn("no cloud on %s yet (is the LIO up?)" % args.topic_in)
                 return
-            self.get_logger().info("%d scan(s): %d -> %d points (%.1f%% kept), %d cropped away, frame %r, "
-                                   "odometry %s, window %.1f s (union is %.2fx the newest scan)"
+            self.get_logger().info("%d scan(s): %d -> %d points (%.1f%% kept), %d cropped away, %d inside the "
+                                   "self-blind bubble (%.2f m), frame %r, odometry %s, window %.1f s "
+                                   "(union is %.2fx the newest scan)"
                                    % (self.n_cloud, self.n_in, self.n_out,
-                                      100.0 * self.n_out / max(1, self.n_in), self.n_drop, self.last_frame,
+                                      100.0 * self.n_out / max(1, self.n_in), self.n_drop, self.n_blind,
+                                      args.self_blind, self.last_frame,
                                       "yes" if self.pos else "NO -- crop disabled, forwarding whole scans",
                                       self.win.seconds, self.win.factor))
 
@@ -360,6 +410,12 @@ def main() -> int:
     ap.add_argument("--selftest", action="store_true", help="the arithmetic, with no ROS and no LIO")
     ap.add_argument("--voxel", type=float, default=0.10, help="decimation cell, m (= ego's map resolution)")
     ap.add_argument("--rate", type=float, default=5.0, help="max output rate, Hz (the source is 5 Hz)")
+    ap.add_argument("--self-blind", type=float, default=0.0, dest="self_blind",
+                    help="drop cloud points within this many metres of the vehicle, so the map cannot mark the "
+                         "machine's own position as an obstacle.  0.0 = off (every round up to 13).  The measured "
+                         "reason to use it: with two cells of inflation the planner printed 112 729 'the drone "
+                         "is in obstacle' and hung (DIAG13), and two cells is the only way to give the C2 row its "
+                         "0.20 m footprint.")
     ap.add_argument("--window", type=float, default=0.0,
                     help="seconds of scans to UNION into each message; 0 = one scan, the behaviour every "
                          "earlier round was flown with.  This is the persistence ego's map does not have "

@@ -118,24 +118,18 @@ def generate_launch_description():
         'grid_map/local_update_range_x': 5.5,
         'grid_map/local_update_range_y': 5.5,
         'grid_map/local_update_range_z': 4.5,
-        'grid_map/obstacles_inflation': 0.099,   # ONE VOXEL, and the two-cell question is now ANSWERED rather
-                                                # than open.  Two cells was flown twice: DIAG12 hung in a
-                                                # z-boundary deadlock (a landed vehicle outside the map, since
-                                                # fixed in `ground_height`), and DIAG13 -- with that fix in
-                                                # place, so no confound -- flew properly to 2.6 m and produced
-                                                # only **10** `a star error` against DIAG12's 1 030 645.  **The
-                                                # corridor DOES survive two cells**; the earlier "the channel
-                                                # closed" reading is refuted.  What two cells breaks is the
-                                                # VEHICLE: `the drone is in obstacle` fired **112 729** times
-                                                # because a point within 0.20 m of a marked cell is occupied, so
-                                                # the machine's own position keeps reading as an obstacle, the FSM
-                                                # stops, it sinks, lands, and a landed vehicle is an obstacle to
-                                                # itself for ever.  So the C2 row's 0.20 m footprint is blocked by
-                                                # an EGO-SIDE semantics problem (a start inside the inflated map
-                                                # is treated as fatal), not by geometry.  See STATUS rows 81-82.
-                                                # The 0.30 m attempt (DIAG7) stays refuted on its own terms:
-                                                # 2789 rebound A* errors and a vehicle that flew through the
-                                                # field to 0.1 m altitude.
+        'grid_map/obstacles_inflation': 0.099,   # ONE VOXEL.  The two-cell route is now CLOSED, and not for the
+                                                # old reason: `cloud_relay.py --self-blind` did fix the defect
+                                                # that made two cells hang -- `the drone is in obstacle` fell
+                                                # from 112 729 to **3 107** and the sortie completed (DIAG16) --
+                                                # but the flown result got WORSE, not better: truth minimum
+                                                # -0.100 m and **27 999 of 100 127** samples inside the C2
+                                                # footprint (15.8%), the worst of any ego crossing.  So the
+                                                # 0.20 m footprint is not reachable by raising this parameter,
+                                                # with or without the bubble, and the map-side levers are
+                                                # exhausted.  See STATUS row 84.
+                                                # ONE CELL is flown and healthy (DIAG14: rc=0, `a star error` 1,
+                                                # truth min -0.222 m); its best crossing cleared by +0.150 m.
         'grid_map/local_map_margin': 10,
         'grid_map/ground_height': LaunchConfiguration('ground_height'),
         'grid_map/virtual_ceil_height': LaunchConfiguration('virtual_ceil_height'),
