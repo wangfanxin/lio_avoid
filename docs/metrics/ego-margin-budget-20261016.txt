@@ -340,3 +340,26 @@ and the plan's MINIMUM, which did not move (-0.274, +0.061, -0.285 m across thre
 DIAG15 is the run whose TRUTH was the best of the three while its PLAN's 1st percentile is the worst, which is the
 clearest statement yet that flown quality and planned quality are only loosely coupled here).
 Figure `docs/figures/traj-xy-EGO-plan-detour-shape.png`, sha256 f6d04fc4de158a58e933ba4433a3cd8a77b824e879a53b68ea3577a4c2ebc4cc.
+
+=== PATCH CLEARANCE/1, FLOWN (`DIAG18-clearance1`) -- THE FIRST CODE CHANGE, AND IT IS NOT ENOUGH =========
+The measured reason for it: `dyn_a_star.cpp:217` costs every A* step a CONSTANT, so the search returns the
+shortest path through a corridor -- one that hugs the boundary -- and nothing downstream prefers the middle
+(this variant's optimiser has no obstacle-distance term at all).  The patch adds a SOFT cost, 0.75 per occupied
+horizontal neighbour of a node, so a node against a wall costs more than one in the middle; feasibility is
+unchanged and the map's own inflation is untouched, which matters because raising THAT was refuted twice.
+
+    run                                    truth min    inside 0.20 m        note
+    DIAG9-window3 (no patch)                +0.150 m    2108 of  53753        best crossing
+    DIAG14-onecell-groundfix (no patch)     -0.222 m    3387 of  46916
+    DIAG17-fitness4-repro (no patch)        -0.078 m    6741 of 106248
+    **DIAG18-clearance1 (patched)**        **-0.057 m** 3001 of  46190        least-bad penetration yet
+
+It flies: rc=0, completed, C1 PASS 0.004 m, A1 6.82 mm, A2 3.47 mm, no hang, no deadlock.  And it produced the
+smallest penetration of any one-cell crossing (-0.057 m against -0.071 .. -0.279 m) while still failing the C2
+row.  **NOT PROMOTED, and the patch is REVERTED**, because one run is not a promotion: the relay window looked
+convincing on two runs and failed on the third, and `lambda_fitness` 4.0 looked convincing on one and failed on
+its reproduction.  The change is preserved as `_stage/apply-clearance1.py` (and it also re-anchors on the exact
+source pair, refusing to apply twice), so the next round can reproduce it before promoting it.  What the single
+result does establish is that the mechanism is not obviously wrong: the search still finds corridors, the
+mission is flown no more slowly, and the worst excursion got smaller.  Figure
+`docs/figures/traj-xy-DIAG18-clearance1.png`, sha256 39d9783fb4a6bf757db14ee32475268542015c8ece7c29d6c44fea23a217c8e2.
