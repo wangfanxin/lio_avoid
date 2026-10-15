@@ -451,6 +451,17 @@ class Mission:
             return
         if self.lio["n"] == 0:
             return
+        # S4 (2026-10-16) MOVED THE COMMAND'S L -> W STEP INTO THE BRIDGE and LEFT THIS ONE HERE, and the
+        # asymmetry is deliberate.  This is the ESTIMATOR-INPUT path (`send_external_nav`), not the
+        # command path: the bridge already crosses the frame boundary once inside it
+        # (`mavlink_impl.py:393` calls `frames.world_to_wire`, the one place the SITL wire is crossed),
+        # and what stands above it is the mission's L -> "F" step -- identical arithmetic to
+        # `common.frames.l_to_wire`, which the bridge now also owns for COMMANDS via
+        # `bridge.send_cmd(cmd_l, calib)`.  Folding this call into the bridge too is F1/F2's change (the
+        # plan box's command stream is what the bridge will consume), and doing it here would have been a
+        # flight-path change with no flight budget to prove it in.  The equivalent, already-proven form is
+        # one call: `self.bridge.send_external_nav_l(self.lio["t_us"], self.lio["p"], self.lio["q"],
+        # self.lio["v"], self.calib)` -- a bridge method that does not exist yet, on purpose.
         R, t = self.calib.R_WL, self.calib.t_WL
         p_f = R @ self.lio["p"] + t
         q_f = frames.q_from_R(R @ frames.R_from_q(self.lio["q"]))

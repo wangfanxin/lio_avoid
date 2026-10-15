@@ -453,11 +453,22 @@ def main() -> int:
     ap.add_argument("--sim-seconds", type=float, default=60.0,
                     help="how much SIMULATED time each run covers.  The loop's period is 1/--rate, so "
                          "the iteration count is derived from this: a run at a 100 Hz loop needs 100 "
-                         "iterations per simulated second and would otherwise cover 1/25th of the tour")
+                         "iterations per simulated second.  THE TOUR TAKES ABOUT 45 s in this harness "
+                         "(19.97 s of flying at 0.30 m/s over the 6.4 m square, 4 x 5.0 s of dwell, and "
+                         "the 2.0 s COMPLETED window), so a smaller value cannot reach the end and the "
+                         "run is refused rather than reported as a failure of the stream.")
     ap.add_argument("--iters", type=int, default=0,
                     help="override the iteration count (0 = derive it from --sim-seconds and the rate)")
     args = ap.parse_args()
     ok = True
+    # The tour needs roughly `sum(leg_len / 0.30) + n_corners * 5.0 + 2.0` seconds ~= 43 s.  A run given
+    # less than that cannot reach COMPLETED, and reporting that as a failure of the STREAM would be a
+    # false alarm, so it is refused here with the reason (MEASURED: --sim-seconds 20 with a 4 Hz loop
+    # stopped at leg 1 and the tour-completion check failed).
+    if args.sim_seconds < 50.0:
+        raise SystemExit("--sim-seconds %.1f is too short: the harness's tour takes ~45 simulated "
+                         "seconds (19.97 s of flying + 4 x 5.0 s of dwell + a 2.0 s COMPLETED window)"
+                         % args.sim_seconds)
 
     print("THE SHADOW CLAIM: /plan/cmd runs BESIDE /planner/traj, and the Path does not move.")
     print("world %s" % args.world)

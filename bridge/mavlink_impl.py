@@ -365,6 +365,43 @@ class MavlinkBridge(Bridge):
             x_ned, y_ned, z_ned, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, yaw_rad, 0.0)
         self._sent_positions += 1
 
+    # ---- THE ONE L -> WIRE CROSSING (S4 of _stage/refactor-bridge-plan.md section 6) ------------------
+    def send_cmd(self, cmd_l, calib, yaw_rad=None):
+        """A `PositionCommand`-shaped command in **L**, placed on the wire in ONE conversion.
+
+        WHAT MOVED HERE, AND WHY IT IS THE SAME ARITHMETIC.  Until 2026-08-16 the L -> W step lived in
+        the mission (`fsm/mission_fsm.py:446-449` built what it called `p_f`) and the W -> NED permutation
+        lived here (`:345`, `:361`, `:369`).  `F` is `W` numerically -- the EKF origin is set to the pad --
+        so the two steps composed correctly, but the transport was silently depending on that identity
+        while `docs/ARCHITECTURE.md:206` and this file's `base.py` both claim the transport crosses the
+        frame boundary exactly once.  The expression the chain computes is
+        `permute(R_WL @ p_L + t_WL)`, which is what this method computes, in this file, once.  The A/B
+        that proves it is bit-identical (not merely close) is `tools/test-s4-l-to-wire.py`.
+
+        FIELDS.  `p` crosses as `frames.l_to_wire`; `v` and `a` cross by the rotation alone
+        (`frames.l_to_wire_velocity`: a velocity is a difference of positions, so `t_WL` cancels and must
+        NOT be added).  `yaw` is a heading about the common +z (L and W share it, `Calib` is a rotation
+        about z with a translation), so it is passed through -- `yaw_rad=None` means "take it from the
+        command", and an explicit value overrides it (the FSM's `--yaw-mode velocity` slews its own).
+
+        `cmd_l` is anything with `p`, `v`, `a` and `yaw` (a `planner.cmd_stream.CmdSample`, or a
+        `quadrotor_msgs` message converted to one).  Returns the NED triple it sent, for a test's benefit.
+        """
+        from common import frames
+        p_f = frames.l_to_wire(cmd_l.p, calib)
+        v_f = frames.l_to_wire_velocity(cmd_l.v, calib)
+        a_f = frames.l_to_wire_velocity(cmd_l.a, calib)
+        yaw = float(cmd_l.yaw if yaw_rad is None else yaw_rad)
+        x_ned, y_ned, z_ned = float(p_f[1]), float(p_f[0]), -float(p_f[2])
+        vx, vy, vz = float(v_f[1]), float(v_f[0]), -float(v_f[2])
+        ax, ay, az = float(a_f[1]), float(a_f[0]), -float(a_f[2])
+        self.mav.mav.set_position_target_local_ned_send(
+            0, self.mav.target_system, self.mav.target_component,
+            mavutil.mavlink.MAV_FRAME_LOCAL_NED, POS_VEL_ACC_YAW_MASK,
+            x_ned, y_ned, z_ned, vx, vy, vz, ax, ay, az, yaw, 0.0)
+        self._sent_positions += 1
+        return p_f
+
     def send_velocity(self, v_f, yaw_rad: float):
         x_ned, y_ned, z_ned = float(v_f[1]), float(v_f[0]), -float(v_f[2])
         self.mav.mav.set_position_target_local_ned_send(

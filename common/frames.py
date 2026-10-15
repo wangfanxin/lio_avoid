@@ -160,6 +160,45 @@ def world_to_wire(p_w, v_w, q_w_wxyz):
     return p_ned, v_ned, q_from_R(R_ned_frd)
 
 
+# --------------------------------------------------------------------------- L -> wire
+def l_to_wire(l, calib):
+    """L -> the WIRE frame, in ONE place: `permute(R_WL @ p_L + t_WL)`.
+
+    WHY THIS FUNCTION EXISTS.  `docs/ARCHITECTURE.md:206` and `bridge/base.py` both say the transport
+    "crosses the frame boundary exactly once", and until 2026-10-16 the mission's command did not: the
+    chain computed the position in THREE places -- `fsm/mission_fsm.py:446-449` did the L -> W step
+    (calling the result `p_f`) and `bridge/mavlink_impl.py:345`, `:361`, `:369` each did the W -> NED
+    permutation.  `F` in the code is `W` numerically (the EKF origin is the pad), so the two steps
+    happened to compose correctly, but "happened to" is not a contract: a second implementation of
+    either step, or a different EKF origin, and the double conversion that `bridge/base.py` says this
+    file exists to prevent would be exactly what happened.
+
+    `l` may be a position, a velocity or an acceleration -- they are all vectors in L and all cross with
+    the same rotation and offset.  A velocity crosses by the rotation alone; the caller does that, and
+    `bridge.mavlink_impl.send_cmd` documents where.
+
+    The rounding note that makes the S4 A/B provable with `atol = 0.0`: `Calib` is applied as
+    `R_WL @ p_L + t_WL` and the axis permutation is applied AFTERWARDS, by the caller.  Composing the
+    two into one `P_NED_ENU @ np.column_stack([R_WL, t_WL])` matrix would be mathematically identical
+    and NOT bit-identical, because the sum would accumulate in a different order; keeping them separate
+    is what lets the relocated expression be compared to the old one exactly (S4 of
+    `_stage/refactor-bridge-plan.md` section 6).
+    """
+    R, t = calib.R_WL, calib.t_WL
+    return np.asarray(R, dtype=float) @ np.asarray(l, dtype=float) + np.asarray(t, dtype=float)
+
+
+def l_to_wire_velocity(v_l, calib):
+    """L -> wire for a VELOCITY: the same rotation, and NO translation.
+
+    A velocity is a difference of two positions, so `Calib.t_WL` cancels: applying it here would add
+    about 0.1 m/s to a vehicle that is standing still, which is exactly the kind of "silently the wrong
+    number" this file is written to make impossible.  Kept as its own function rather than a `kind=`
+    switch so that a caller cannot get it wrong by passing the wrong flag.
+    """
+    return np.asarray(calib.R_WL, dtype=float) @ np.asarray(v_l, dtype=float)
+
+
 # --------------------------------------------------------------------------- the sensor
 def R_body_sensor(mount_pitch_deg=45.0, mount_roll_deg=0.0, mount_yaw_deg=0.0):
     """B (FLU) <- S: the housing's pose in the body frame.

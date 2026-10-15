@@ -23,6 +23,7 @@ import numpy as np
 sys.path.insert(0, "/mnt/d/distill_self/lio_avoid")
 from common import frames                        # noqa: E402
 from bridge import mavlink_impl as mi            # noqa: E402
+from planner import cmd_stream                   # noqa: E402
 
 
 class Recorder:
@@ -109,6 +110,47 @@ def main() -> int:
     ok &= check("  frame is LOCAL_NED", args[3], 1)
     ok &= check("  yaw is passed through in radians", args[14], math.radians(30.0), 1e-12)
     ok &= check("  yaw_rate is left at zero", args[15], 0.0)
+
+    # ---- THE L -> WIRE CROSSING, IN THE BRIDGE (S4) --------------------------------------------------
+    # `send_cmd` takes a command in L and puts it on the wire, so this is where the transport's own
+    # frame claim is checked: the numbers must be the same as the F-fed path's for the same physical
+    # point, and the FED frame is the one the old chain produced (L -> W).  The exhaustive,
+    # zero-tolerance A/B over 5000 cases and three calibrations is tools/test-s4-l-to-wire.py; what is
+    # asserted HERE is the bridge's side of it, next to the wire facts it belongs with.
+    calib = frames.Calib(R_WL=frames.R_z(math.radians(90.0)), t_WL=np.array([0.25, -0.5, 0.125]))
+    p_l = np.array([1.0, 2.0, 3.0])
+    v_l = np.array([0.4, -0.5, 0.6])
+    a_l = np.array([-0.1, 0.2, -0.3])
+    yaw = math.radians(30.0)
+    p_w = calib.R_WL @ p_l + calib.t_WL                      # what the mission used to compute
+    br = make_bridge()
+    br.send_position_velocity(p_w, calib.R_WL @ v_l, yaw, calib.R_WL @ a_l)
+    _, old_args, _ = br.mav.mav.calls[-1]
+    br = make_bridge()
+    sent = br.send_cmd(cmd_stream.CmdSample(p_l, v_l, a_l, yaw, 0.0, 1, 1), calib)
+    _, new_args, _ = br.mav.mav.calls[-1]
+    print("-- the L -> wire crossing, in the bridge (S4)")
+    ok &= check("  send_cmd returns the L point placed in F (L -> W)",
+                list(sent), list(p_w), 1e-12)
+    # `repr` equality, not `allclose`: the claim is BIT-identical
+    same = all(repr(x) == repr(y) for x, y in zip(old_args, new_args))
+    print("%-64s %s" % ("  every argument to pymavlink is the same BYTE as the F-fed path",
+                        "ok" if same else "FAIL old=%s new=%s" % (old_args, new_args)))
+    ok &= same
+    ok &= check("  the L command's position reaches the wire as NED of its W image",
+                [new_args[5], new_args[6], new_args[7]],
+                [float(p_w[1]), float(p_w[0]), -float(p_w[2])], 1e-12)
+    ok &= check("  the mask is POS_VEL_ACC_YAW (yaw rate ignored only)",
+                new_args[4], mi.POS_VEL_ACC_YAW_MASK)
+    # NEGATIVE CONTROL: the transpose the old ego adapter's self-test used.  It must move the numbers.
+    bad = frames.Calib(R_WL=frames.R_z(math.radians(90.0)).T, t_WL=calib.t_WL)
+    br = make_bridge()
+    br.send_cmd(cmd_stream.CmdSample(p_l, v_l, a_l, yaw, 0.0, 1, 1), bad)
+    _, bad_args, _ = br.mav.mav.calls[-1]
+    moved = any(repr(x) != repr(y) for x, y in zip(new_args[5:8], bad_args[5:8]))
+    print("%-64s %s" % ("  mutation 'R_WL transposed' moves the wire position",
+                        "ok" if moved else "FAIL -- the crossing is insensitive to R_WL"))
+    ok &= moved
 
     # the mutations must move the numbers that matter
     saved = frames.world_to_wire

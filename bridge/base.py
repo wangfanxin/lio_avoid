@@ -136,6 +136,21 @@ class Bridge:
         """The LIO's pose (and velocity) in F, ENU labels, z up.  This is what makes the EKF work."""
         raise NotImplementedError
 
+    def send_cmd(self, cmd_l, calib, yaw_rad=None):
+        """A command in **L** (`cmd_l.p` / `.v` / `.a` / `.yaw`), placed on the wire in ONE conversion:
+        `permute(R_WL @ p_L + t_WL)` for the position, the rotation alone for velocity and acceleration,
+        yaw passed through (L and W share +z).
+
+        This is the declaration of the crossing the target architecture wants: the PLAN box speaks L
+        (its own frame, the only one a planner can know), and the BRIDGE is the one place the frame
+        boundary is crossed.  `calib` is the SAME `common.frames.Calib` (W <- L) that the plan box and
+        the preflight measurement use; the transport does not own it, it applies it.
+
+        The assumption this makes explicit is "the EKF origin is the pad" (so `F` is `W` numerically).
+        It was inherited silently at `fsm/mission_fsm.py:446-449`; here it is named.
+        """
+        raise NotImplementedError
+
     # ---- state ------------------------------------------------------------------------------
     def state(self) -> LocalState:
         raise NotImplementedError
