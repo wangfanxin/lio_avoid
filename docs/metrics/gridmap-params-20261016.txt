@@ -1,0 +1,107 @@
+EVERY PARAMETER IN THIS PROJECT THAT TOUCHES THE 3D OCCUPANCY GRID, ITS DISTANCES, ITS INFLATION OR THE SAFETY
+THAT DEPENDS ON THEM -- read from the authoritative source of each  (2026-10-16, no flight)
+Extractor: `_stage/gridmap-param-inventory{,2,3}.sh`.  "Inert" = set, read by nothing on the path we fly.
+
+A. THE MAP'S LATTICE AND BOX -- `src/planner/ego_on_lio.launch.py`, ours
+    resolution .................. 0.1 m            the cell; everything below is in these units
+    map_size_x / y / z .......... 16 / 16 / 5 m     FIXED box centred on the L origin; outside it
+                                                    `getInflateOccupancy` returns -1, which every caller
+                                                    casts to bool -- i.e. OCCUPIED
+    local_update_range_x/y/z .... 5.5 / 5.5 / 4.5 m the rolling window `resetBuffer` clears each cloud
+    local_map_margin ............ 10 cells         the cut margin in `clearAndInflateLocalMap`
+    ground_height ............... -0.50 m          the map's z ORIGIN (was -0.02: a landed vehicle fell
+                                                    outside its own map -> the z-boundary deadlock)
+    virtual_ceil_height ......... 3.00 m           a CELLING SLAB the map writes -> marks itself
+    obstacles_inflation ......... 0.099 m          -> see B: it is ONE CELL, or a 27-cell cube
+    pose_type ................... 0                no depth camera
+    use_depth_filter ............ False
+    frame_id .................... lio_world        a LABEL on outgoing clouds only
+    unknown_flag ................ 0 (default)      a never-observed cell reads FREE
+    visually_truncate_height .... 1.8 m            visualisation only
+    INERT (depth-camera path, dead here): p_hit 0.65, p_miss 0.35, p_min 0.12, p_max 0.90, p_occ 0.80,
+      min_ray_length 0.1, max_ray_length 4.5, depth_filter_maxdist 5.0 / mindist 0.2 / tolerance 0.15 /
+      margin 2, skip_pixel 2, k_depth_scaling_factor 1000, cx/cy/fx/fy
+
+B. THE MAP'S INTERNALS -- ARE NOT PARAMETERS (source constants, which is why no file can tune them)
+    inf_step = ceil(obstacles_inflation / resolution)   grid_map.cpp:653, :841
+    inf_step_z = 1                                      HARDCODED at :842 (the z inflation ignores the
+                                                        parameter); a commented-out copy sits at :654
+    the inflation SHAPE is the full 27-CELL CUBE        `inflatePoint`'s active branch is
+                                                        `for x,y,z in -step..step`; the "+"/cross variant
+                                                        above it is COMMENTED OUT (grid_map.h)
+    a cloud point becomes a cell by DIRECT WRITE        `occupancy_buffer_inflate_[idx] = 1`
+                                                        (grid_map.cpp:686, :910) -- no ray casting, no
+                                                        probability update, no ESDF anywhere in the tree
+    the rolling reset                                   `resetBuffer(cam +- local_update_range)` per cloud
+                                                        message (:835); cells outside are never cleared
+    A* POOL ..................... Eigen::Vector3i(100,100,100) at planner_manager.cpp:43, on the 0.1 m
+                                  lattice => +-5 m per axis, re-centred per search
+    hardcoded 0.1 m steps ....... `AstarSearch(0.1, in, out)` (:581) and the intersection marches
+                                  (`a -= grid_map_->getResolution()`)
+    the THREE 2/3 sweeps ......... :1328 control-point scan (PATCHED 2026-10-16),
+                                  :1645 rebound acceptance (PATCHED),
+                                  **:1795 refine acceptance -- NOT PATCHED** (found by this inventory)
+    self-marks the map makes ..... the ceiling slab (:934-941) and the pad top, both of which land under
+                                  the camera and produced 4346 `the drone is in obstacle` in one sortie
+
+C. THE PLANNER'S DISTANCE / FEASIBILITY TERMS -- launch file
+    optimization/dist0 .......... 0.5 m      the SWARM chord distance; 0.8 was flown and reverted.
+                                             **INERT for one vehicle** -- nothing populates cps_.direction
+                                             until a distance field is fed (the field patches are reverted)
+    optimization/swarm_clearance  0.5 m      same, swarm-only => inert
+    optimization/lambda_collision 0.5        weight of that inert term (2.0 flown and reverted)
+    optimization/lambda_smooth .. 1.0        the ONLY cost that shapes the trajectory in practice
+    optimization/lambda_fitness . 1.0        pulls the spline onto the A* path (4.0 flown and reverted)
+    optimization/lambda_feasibility 0.1
+    optimization/max_vel ........ 2.0 m/s    SOFT quadratic penalty, not a constraint
+    optimization/max_acc ........ 3.0 m/s2   SOFT likewise; the plan reached 13.84 m/s2 peaks
+    manager/max_vel / max_acc ... 2.0 / 3.0  the manager's own copies
+    manager/max_jerk ............ 4.0 m/s3
+    manager/control_points_distance 0.4 m    the control-point spacing the B-spline is built on
+    manager/feasibility_tolerance 0.05       the time-reallocation tolerance
+    manager/planning_horizon .... 7.5 m      ALSO `fsm/planning_horizon` (both 7.5)
+    bspline/limit_vel ........... 2.0 m/s    the feasibility check's ceiling
+    bspline/limit_acc ........... 3.0 m/s2
+    bspline/limit_ratio ......... 1.1
+    fsm/planning_horizen_time ... 3.0 s      the replan horizon in TIME
+    fsm/thresh_replan_time ...... 1.0 s      the 1 Hz replan gate
+    fsm/thresh_no_replan_meter .. 1.0 m      "close enough" for the arrival/stall decision
+    fsm/emergency_time .......... 1.0 s      the emergency window inside `checkCollisionCallback`
+    fsm/fail_safe ............... true
+    fsm/vehicle_collision_check . true       NEW 2026-10-16: test odom_pos_ against the map
+
+D. OUR OWN BOXES
+    cloud_relay.py .............. --voxel 0.10 m (default) | --rate 5.0 Hz | --window 0.0 s (8.0 flown)
+                                  --self-blind 0.0 m | --crop 1 (ego's acceptance box, needs odometry)
+    ego_contract_shim.py ........ --arrive-m 0.30 m | --settle-mps 0.08 m/s | --hold-s 5.0 s
+                                  --goal-resend 1.0 s | --ref-clamp-m 0.0 (0.35 flown in Flight B)
+    supervisor.py ............... --geofence-m 4.60 (6.60 as flown) on the TRUTH | --nav-floor-hz 30
+                                  --plan-silence-s 3.0 | --climb-guard-m 1.0 (=> the 3.50 m absolute guard)
+    run-mission.sh .............. EGO_ARRIVE_M 0.30 | EGO_MAX_VEL 2.0 | EGO_MAX_ACC 3.0 |
+                                  EGO_CLOUD_WINDOW 0.0 | EGO_SELF_BLIND 0.0 | EGO_REF_CLAMP_M 0.0 |
+                                  RECT_HOLD_S 5.0 | BRIDGE_FIELDS posvel (ego) / pos (rectangle) |
+                                  EXTRA_PARM (none; the flown arm set guided_limits_fast.parm)
+    bridge_node.py .............. wire 50 Hz, nav 48 Hz, `type_mask` per field mode (2048 pos / 2496 posvel),
+                                  L -> LOCAL_NED (z becomes DOWN)
+
+E. THE FLIGHT CONTROLLER'S OWN LIMITS (they shape what we can ask for)
+    WP_ACC ...................... 2.5 m/s2   the shaper's horizontal acceleration limit (our new file: 6.0)
+    WP_SPD ...................... 2.0 m/s    the shaper's horizontal SPEED limit (new file: 4.0)
+    PSC_NE_JERK ................. 5.0 m/s3   how fast the reference may reach WP_ACC (new file: 30)
+    ATC_ANGLE_MAX ............... 30 deg     geometric ceiling g*tan(tilt) = 5.66 m/s2 (new file: 40 deg)
+    ATC_ACC_P_MAX ............... 1100 deg/s2 (default; far above what 40 deg can use)
+    LOIT_SPEED_MS / ACC_MAX_M ... 2.0 / 3.0  ours (phase_a_mission_fast.parm)
+    LOIT_BRK_ACC_M / JRK_M ...... 3.0 / 3.0
+    PSC_ACCZ_P .................. 0.5        vertical
+    GUID_OPTIONS / GUID_TIMEOUT . 8 / 3.0 s
+    and the numbers the ACCEPTANCE uses: C2 = 0.20 m footprint; C2-ego = 0.10 m standoff for >= 95 % AND
+    0 samples inside a body
+
+THE MEASURED CONSEQUENCE OF A+B, WHICH IS WHY THIS LIST MATTERS
+    the parameter says a mark should reach ~0.399 m from a pillar's axis (surface 0.300 + one cell)
+    PREDICTED outer mark with cell + cube diagonal: 0.540 m
+    MEASURED, from the run's own occupancy slices: 0.540 m (median last mark; first mark 0.120 m)
+    => the map's obstacle is 0.42 m thick on a 0.30 m radius, the free corridor between two pillars
+       1.414 m apart is 0.334 m, and free space reaches 0.180 m INSIDE the pillar.
+    With `obstacles_inflation` -> 0.0 the outer mark falls to 0.400 m and the corridor to 0.614 m;
+    with `resolution` 0.05 + inflation 0.049 it is 0.419 m / 0.575 m (8x memory + the A* pool edit).
