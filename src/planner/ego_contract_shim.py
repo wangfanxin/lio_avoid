@@ -68,7 +68,8 @@ class TourSequencer:
 
     def __init__(self, targets_l, arrive_m=0.30, hold_s=5.0, settle_mps=0.08, goal_resend_s=1.0,
                  log=None, ego_driven=False, ref_clamp_m=0.0, leg_timeout_s=0.0, leg_abort_s=0.0,
-                 arrive_z_m=1.00, start_alt_m=0.0, ref_z_clamp_m=0.0, ref_slew_mps=0.0):
+                 arrive_z_m=1.00, start_alt_m=0.0, ref_z_clamp_m=0.0, ref_slew_mps=0.0,
+                 corner_m=0.0, corner_mps=1.0):
         self.targets = np.asarray(targets_l, dtype=float).reshape(-1, 3)
         self.arrive_m = float(arrive_m)
         self.hold_s = float(hold_s)
@@ -149,6 +150,13 @@ class TourSequencer:
         self.n_slewed = 0
         self.t_last_fwd = None
         self.last_fwd = None
+        #: the 1 Hz "waiting for the first pose" note (see `goal_to_send`)
+        self.t_last_no_odom = None
+        #: THE CORNER GOVERNOR (see `rewrite`): within `corner_m` of the corner the reference may not move
+        #: faster than `corner_mps`, and the velocity it carries is capped with it.
+        self.corner_m = float(corner_m)
+        self.corner_mps = float(corner_mps)
+        self.n_corner_capped = 0
     # ---- inputs ---------------------------------------------------------------------------------------
     def on_odom(self, p_l, v_l=None, now=0.0):
         self.p = np.asarray(p_l, dtype=float).reshape(3)
@@ -276,6 +284,20 @@ class TourSequencer:
         AND NOTHING IS SENT AFTER A TIMEOUT either: the watchdog's whole signal is the silence."""
         if self.ego_driven or self.done or self.abort:
             return None
+        # THE FIRST GOAL WAITS FOR THE FIRST POSE.  MEASURED Flight K (2026-10-17): the shell published goal 1
+        # about 0.2 s after it started, the FSM was still in INIT with no odometry, its own guard logged
+        # "waypoint ignored: no odometry yet (REPLAN_TRAJ with no trajectory segfaults)", the state went
+        # INIT -> REPLAN_TRAJ, and NOTHING ever planned again: 20 s later the supervisor's own "the plan box is
+        # not talking" rule ended the sortie at t=40.7 s.  The vehicle state needed to sequence a tour is the
+        # same state the shell already subscribes to, so the gate is free -- and it is NOT the same thing as
+        # `start_alt_m` (Flight G), which withheld goals for 20 s and starved the one topic this box publishes.
+        if self.p is None:
+            if self.t_last_no_odom is None or (now - self.t_last_no_odom) >= 1.0:
+                self.t_last_no_odom = now
+                self.log("shim: no pose on the odometry topic yet -- goal %d/%d is being HELD (the FSM must not "
+                         "be handed a target before it has odometry; Flight K lost a whole sortie to that race)"
+                         % (self.i_goal + 1, len(self.targets)))
+            return None
         # THE START-ALTITUDE GATE (see `start_alt_m`): nothing is sent while the vehicle is still on the pad,
         # so ego's first plan is made from an AIRBORNE state instead of a 19 s-old climb nobody was following.
         if self.start_alt_m > 0.0:
@@ -366,11 +388,28 @@ class TourSequencer:
         # ---- THE REFERENCE'S OWN SPEED LIMIT, last, so it sees exactly what would have gone out ----
         if self.ref_slew_mps > 0.0:
             p = np.array([float(msg.position.x), float(msg.position.y), float(msg.position.z)])
+            # THE CORNER GOVERNOR.  MEASURED (Flights J and K, `_stage/corner-forensics.py`): every pillar
+            # contact of both sorties is OUTSIDE the rectangle -- (4.58,-1.55), (4.68,0.54), (4.30,2.45),
+            # (2.53,4.49), (3.50,-4.50) against corners at (+-3,+-4) -- i.e. the aircraft OVERSHOOTS each corner
+            # by 1-1.7 m, out into the pillar ring, at |v_ref| 1.8-2.4 m/s.  Slow the reference down as it
+            # arrives: within `corner_m` of the corner the forwarded point may not move faster than
+            # `corner_mps`, and the velocity it carries is capped with it, so the flight controller is not
+            # told "2.4 m/s" while being handed a point that is standing still.
+            rate = self.ref_slew_mps
+            if self.corner_m > 0.0 and self.p is not None:
+                if float(np.linalg.norm((self.p - self.target)[:2])) < self.corner_m:
+                    rate = min(rate, self.corner_mps)
+                    v = np.array([float(msg.velocity.x), float(msg.velocity.y), float(msg.velocity.z)])
+                    vn = float(np.linalg.norm(v))
+                    if vn > self.corner_mps:
+                        v = v * (self.corner_mps / vn)
+                        msg.velocity.x, msg.velocity.y, msg.velocity.z = float(v[0]), float(v[1]), float(v[2])
+                        self.n_corner_capped += 1
             if self.last_fwd is not None and self.t_last_fwd is not None:
                 dt = max(now - self.t_last_fwd, 1e-4)
                 d = p - self.last_fwd
                 dist = float(np.linalg.norm(d))
-                cap = self.ref_slew_mps * dt
+                cap = rate * dt
                 if dist > cap:
                     p = self.last_fwd + d * (cap / dist)
                     msg.position.x, msg.position.y, msg.position.z = float(p[0]), float(p[1]), float(p[2])
@@ -563,7 +602,7 @@ def _selftest() -> int:
     for field in ("world", "calib_file", "z", "hold_s", "arrive_m", "settle_mps", "in_topic", "cmd_topic",
                   "goal_topic", "odom_topic", "trace_csv", "tour_source", "wp_index_topic",
                   "leg_timeout_s", "leg_abort_s", "arrive_z_m", "start_alt_m", "ref_z_clamp_m",
-                  "ref_slew_mps"):
+                  "ref_slew_mps", "corner_m", "corner_mps"):
         if not hasattr(a, field):
             bad.append("the start-up banner's argument surface has no %r -- main() would raise AttributeError "
                        "at start-up, in the flown mode, before the node spins" % field)
@@ -704,6 +743,46 @@ def _selftest() -> int:
         bad.append("with the slew limiter OFF the reference was changed -- the flown behaviour must stay "
                    "byte-identical when the knob is 0")
 
+    g5 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None)
+    pre = sum(1 for k in range(10) if g5.goal_to_send(now=t0 + 0.1 * k) is not None)
+    g5.on_odom([0.0, 0.0, 0.1], [0.0, 0.0, 0.0], now=t0 + 1.0)
+    post = sum(1 for k in range(10) if g5.goal_to_send(now=t0 + 1.0 + 0.1 * k) is not None)
+    print("   first-goal gate: %d goal(s) before any pose, %d once the pose arrives" % (pre, post))
+    if pre != 0 or post == 0:
+        bad.append("a goal was published before the first pose (before %d, after %d) -- MEASURED Flight K: the "
+                   "FSM was in INIT, ignored the goal with 'no odometry yet', went to REPLAN_TRAJ and never "
+                   "planned again, and the sortie died on the supervisor's 20 s rule" % (pre, post))
+
+    # ---- THE CORNER GOVERNOR: the reference must SLOW as it arrives, not arrive at speed ----
+    cg = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None, ref_slew_mps=6.0,
+                       corner_m=1.50, corner_mps=0.60)
+    cg.on_odom([1.00, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0)          # 1.00 m from waypoint 1 (0,0,2)
+    mc = M()
+    mc.trajectory_id, mc.trajectory_flag = 0, 0
+    mc.position, mc.velocity, mc.acceleration = Vec(), Vec(), Vec()
+    mc.position.x, mc.position.z = 1.2, 2.0
+    mc.velocity.x = 2.40                                          # the speed Flight K arrived at
+    cg.rewrite(mc, now=t0 + 0.1)
+    print("   corner governor: at 1.00 m from the corner a 2.40 m/s reference was forwarded at %.3f m/s and "
+          "x = %.3f m (%d cap(s))" % (float(mc.velocity.x), float(mc.position.x), cg.n_corner_capped))
+    if abs(float(mc.velocity.x) - 0.60) > 1e-9 or cg.n_corner_capped != 1:
+        bad.append("the corner governor did not cap a 2.40 m/s reference to 0.60 (got %.3f m/s, %d cap(s))"
+                   % (float(mc.velocity.x), cg.n_corner_capped))
+    cg2 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None, ref_slew_mps=6.0,
+                        corner_m=1.50, corner_mps=0.60)
+    cg2.on_odom([3.00, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0)         # 3.00 m out: outside the radius
+    mc2 = M()
+    mc2.trajectory_id, mc2.trajectory_flag = 0, 0
+    mc2.position, mc2.velocity, mc2.acceleration = Vec(), Vec(), Vec()
+    mc2.position.x, mc2.position.z = 2.5, 2.0
+    mc2.velocity.x = 2.40
+    cg2.rewrite(mc2, now=t0 + 0.1)
+    print("   corner governor: at 3.00 m out the same reference is forwarded at %.3f m/s (%d cap(s))"
+          % (float(mc2.velocity.x), cg2.n_corner_capped))
+    if abs(float(mc2.velocity.x) - 2.40) > 1e-9 or cg2.n_corner_capped != 0:
+        bad.append("the corner governor capped the reference FAR from the corner (%.3f m/s) -- it must only act "
+                   "inside its radius" % float(mc2.velocity.x))
+
     if bad:
         print("\nCONTRACT SHIM SELFTEST FAILED (%d problem(s)):" % len(bad))
         for b in bad:
@@ -744,6 +823,13 @@ def _parser() -> "argparse.ArgumentParser":
                     help="never forward an altitude more than this far ABOVE the tour's own z (0 = off, one-sided "
                          "on purpose so the climb off the pad is untouched).  Flight F's reference ran to 3.25 m "
                          "for a 1.884 m tour and the aircraft followed it")
+    ap.add_argument("--corner-m", type=float, default=0.0,
+                    help="THE CORNER GOVERNOR (0 = off), with --corner-mps: within this distance of the tour's "
+                         "current corner the forwarded reference may not move faster than --corner-mps and the "
+                         "velocity it carries is capped with it.  MEASURED Flights J and K: every pillar contact "
+                         "is OUTSIDE the rectangle, 1-1.7 m past a corner, at |v_ref| 1.8-2.4 m/s.")
+    ap.add_argument("--corner-mps", type=float, default=1.0,
+                    help="the reference's speed limit inside the corner governor's radius (m/s)")
     ap.add_argument("--ref-slew-mps", type=float, default=0.0,
                     help="the forwarded reference's own SPEED LIMIT (0 = off).  The sampler restarts its clock at "
                          "every re-plan, so the point jumps; this turns each jump into a short, continuous ramp "
@@ -840,7 +926,8 @@ def main() -> int:
                         ego_driven=ego_driven, ref_clamp_m=args.ref_clamp_m,
                         leg_timeout_s=args.leg_timeout_s, leg_abort_s=args.leg_abort_s,
                         arrive_z_m=args.arrive_z_m, start_alt_m=args.start_alt_m,
-                        ref_z_clamp_m=args.ref_z_clamp_m, ref_slew_mps=args.ref_slew_mps)
+                        ref_z_clamp_m=args.ref_z_clamp_m, ref_slew_mps=args.ref_slew_mps,
+                        corner_m=args.corner_m, corner_mps=args.corner_mps)
     print("shim: %d waypoint(s) in L from %s" % (len(targets_l), args.world))
     for i, t in enumerate(targets_l):
         print("shim: waypoint %d -> %s (L)" % (i + 1, np.round(t, 3)))

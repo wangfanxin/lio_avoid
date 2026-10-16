@@ -191,6 +191,12 @@ EGO_INFLATION="${EGO_INFLATION:-0.099}"
 #: `fsm/thresh_replan_time`: how long a committed spline is executed before the FSM re-plans from its own tail.
 #: Every re-plan also restarts `traj_server`'s clock, so this is "how much of each spline the aircraft flies".
 EGO_REPLAN_S="${EGO_REPLAN_S:-1.0}"
+#: THE FSM'S ARRIVAL METER (`fsm/thresh_no_replan_meter`, default 1.0 m).  It is the distance at which ego
+#: STOPS PLANNING and hands the rest to a controller holding a FIXED point -- so at 1.0 m an aircraft doing
+#: 2.5 m/s crosses the goal at speed, overshoots it and loops back.  MEASURED Flight J: the shell's own arrival
+#: lines read |v| 1.06-2.92 m/s AT the corner, and every corner in the figure carries the loop.  The floor is
+#: ~0.30 m: `planner_manager.cpp:55` refuses to plan when the start is within 0.2 m of the local target.
+EGO_NOREPLAN_M="${EGO_NOREPLAN_M:-1.0}"
 #: THE ARRIVAL GATE AN EGO PLANNER CAN ACTUALLY MEET, and the number is not a preference.
 #: `EGOPlannerManager::reboundReplan` REFUSES to plan when the replan's start is within 0.2 m of its local
 #: target -- `planner_manager.cpp:55`, whose own patch comment calls it "a DELIBERATE refusal to plan when the
@@ -223,6 +229,13 @@ EGO_REF_Z_CLAMP_M="${EGO_REF_Z_CLAMP_M:-0.0}"
 #: they are exactly where a 0.10-0.20 m real margin disappears.  A legitimate 3 m/s reference advances 0.03 m
 #: per 100 Hz message, so a 6 m/s cap touches nothing but the steps.
 EGO_REF_SLEW_MPS="${EGO_REF_SLEW_MPS:-0.0}"
+#: THE CORNER GOVERNOR (0 = off): within `EGO_CORNER_M` of the tour's current corner the forwarded reference may
+#: not move faster than `EGO_CORNER_MPS`, and the velocity the message carries is capped with it.  MEASURED
+#: (`_stage/corner-forensics.py`, Flights J and K): EVERY pillar contact of both sorties is OUTSIDE the
+#: rectangle -- (4.58,-1.55), (4.68,0.54), (4.30,2.45), (2.53,4.49), (3.50,-4.50) against corners at (+-3,+-4)
+#: -- i.e. the aircraft OVERSHOOTS each corner by 1-1.7 m into the pillar ring, arriving at |v_ref| 1.8-2.4 m/s.
+EGO_CORNER_M="${EGO_CORNER_M:-0.0}"
+EGO_CORNER_MPS="${EGO_CORNER_MPS:-1.0}"
 #: NO GOAL IS PUBLISHED UNTIL THE VEHICLE IS THIS HIGH (metres; 0 = off).  Route B's twin of PATCH 0008's
 #: `fsm/waypoint_start_alt`; without it ego plans a climb for the whole take-off that nothing is following
 #: (Flight F: goals from t=1.9 s, 87 "First 3 control points in obstacles" before the trigger at t=20.4 s).
@@ -313,7 +326,7 @@ case "$PLANNER" in
             PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S --arrive-m $EGO_ARRIVE_M \
 --settle-mps $EGO_SETTLE_MPS --leg-timeout-s $EGO_LEG_TIMEOUT_S --leg-abort-s $EGO_LEG_ABORT_S \
 --arrive-z-m $EGO_ARRIVE_Z_M --start-alt-m $EGO_START_ALT_M --ref-z-clamp-m $EGO_REF_Z_CLAMP_M \
---ref-slew-mps $EGO_REF_SLEW_MPS \
+--ref-slew-mps $EGO_REF_SLEW_MPS --corner-m $EGO_CORNER_M --corner-mps $EGO_CORNER_MPS \
 --odom-topic /ego/odom_fcu --ref-clamp-m $EGO_REF_CLAMP_M --trace-csv $OUT/shim_trace.csv ${CMD_ARGS:-}"
             PLANNER_WHAT="ego's OWN traj_server samples the plan (p+v+a) + the contract shell (tour, ids, COMPLETED)"
             PLANNER_TOPIC="/plan/cmd"
@@ -712,6 +725,7 @@ if [ "$EGO_STACK" = "1" ]; then
         odom_vel_topic:="$EGO_ODOM_VEL_TOPIC" odom_topic:="$EGO_ODOM_TOPIC" cloud_topic:="$EGO_CLOUD_TOPIC" \
         max_vel:="$EGO_MAX_VEL" max_acc:="$EGO_MAX_ACC" \
         obstacles_inflation:="$EGO_INFLATION" thresh_replan_time:="$EGO_REPLAN_S" \
+        thresh_no_replan_meter:="$EGO_NOREPLAN_M" \
         > "$OUT/ego_planner.log" 2>&1 &
     EGO_LAUNCH_PID=$!
     echo "   ego stack : contract $EGO_CONTRACT; cloud_relay pid $EGO_RELAY_PID -> $EGO_CLOUD_TOPIC;"

@@ -83,3 +83,89 @@ STILL OPEN, stated plainly:
    * `EGO_START_ALT_M` exists but is OFF, and the reason is recorded: this shell is a FORWARDER, so withholding
      the goal withholds the only thing it publishes -- Flight G went completely silent and the supervisor's own
      20 s "not talking" rule ended it at t=40.7 s.
+
+============================================================================================================
+ROUND 2 (same day): THE CORNER, AND THE SPEED THE MARGIN ALLOWS.  Four more sorties, J -> K -> L -> M, each one
+variable, and the last one is the best measured on every axis at once.
+============================================================================================================
+
+WHAT THE FORENSICS SAID ABOUT J AND K (`_stage/corner-forensics.py`, which tests the frame before comparing --
+cmd/fcu are W(x=East,y=North), median gap 0.171 m in J, 0.144 in K -- and prints, for every truth sample within
+0.02 m of a pillar surface, the SAME instant's reference and the gap between them):
+
+    Flight J   4 episodes, truth min -0.112 (50 Hz; -0.233 at 1200 Hz), REFERENCE CLEAR in 2 of 4
+    Flight K   8 episodes, truth min -0.297, REFERENCE CLEAR in 1 of 8 -- the plan itself is inside the pillar
+               in 7 of them (clr_ref -0.048 .. -0.243), at a tracking gap of p50 0.100 m, i.e. the aircraft is
+               EXACTLY where it was told to be
+
+    AND EVERY EPISODE OF BOTH IS OUTSIDE THE RECTANGLE:
+        (4.58,-1.55)  (4.68,0.54)  (4.30,2.45)  (3.50,-4.50)  (2.53,4.49)  (2.60,-3.39)  (-2.38,3.60)
+    against corners at (+-3,+-4).  The aircraft OVERSHOOTS each corner by 1-1.7 m, out into the pillar ring,
+    at |v_ref| 1.8-2.4 m/s -- and the shell's own arrival lines say the same thing from the other side:
+    J `|v| 1.06 / 1.50 / 1.66 / 1.73 / 2.10 / 2.92`, K `0.87 / 1.08 / 1.55 / 1.71 / 1.74 / 1.85 / 2.46` m/s
+    AT the corner.  Arrivals at speed, then 1-1.7 m of overshoot.
+
+THE TWO CHANGES MADE IN RESPONSE, AND WHAT THEY BOUGHT:
+
+1. `EGO_REF_Z_CLAMP_M`-style GOVERNOR ON SPEED NEAR A CORNER -- the shell's `--corner-m` / `--corner-mps`:
+   inside that radius of the tour's current corner the forwarded reference may not move faster than the cap,
+   and the VELOCITY the message carries is capped with it.
+
+2. `EGO_NOREPLAN_M` (the FSM's `fsm/thresh_no_replan_meter`, 1.00 m in every sortie before this) was tried at
+   **0.30 m** in Flight K and put back to 1.00 in L and M: with 0.30 the FSM never declares the goal reached,
+   so it keeps re-planning THROUGH the corner while the shell's gate advances the goal underneath it.  K's legs
+   were the fastest of the four (4 of 7 under 6 s) and its contacts the worst (8 episodes, -0.297 m).
+
+3. AND A RACE THAT COST A WHOLE SORTIE: K's first attempt died because the shell published goal 1 about 0.2 s
+   after it started, while the FSM was still in INIT with no odometry -- its own guard logged "waypoint ignored:
+   no odometry yet (REPLAN_TRAJ with no trajectory segfaults)", the state went INIT -> REPLAN_TRAJ and NOTHING
+   ever planned again; 20 s later the supervisor's "the plan box is not talking within 20 s of the trigger" rule
+   ended the sortie at t=40.7 s.  The shell now holds the first goal until its own odometry topic has produced a
+   pose, and says so once a second while it waits (selftested).
+
+    THE FOUR SORTIES, side by side:
+    ------------------------------------------------------------------------------------------------------
+    arm                          legs under 6 s   max leg   contacts   truth min   reference clear
+    J   2.5 m/s, no governor      2 of 8          8.59 s    4 eps      -0.233 m    2 of 4
+    K   2.5 m/s, ego meter 0.30   4 of 7         12.60 s    8 eps      -0.297 m    1 of 8
+    L   2.5 m/s, governor 1.6/0.70 1 of 8         9.66 s    5 eps      -0.259 m    5 of 5
+    M   2.0 m/s, governor 1.2/1.20 4 of 8         8.90 s    3 eps      -0.058 m*   3 of 3
+    ------------------------------------------------------------------------------------------------------
+    * 50 Hz sampling; the 1200 Hz metrics row for M reads -0.239 m.  All four COMPLETED the two laps (8 of 8).
+
+FLIGHT L IS THE ONE THAT NAMES THE MECHANISM.  With the governor on, the REFERENCE was CLEAR AT 5 OF 5 CONTACT
+EPISODES (min +0.151 m) while the truth was not, at a tracking gap of p50 0.584 / max 0.772 m.  The plan had
+become clean and THE AIRCRAFT WAS THE ERROR -- and two of the five happened at |v_ref| 2.02 and 2.80 m/s, i.e.
+just OUTSIDE the governor's radius: the moment the tour advances, the vehicle is far from the NEW corner, the
+governor releases, and the reference is back at 2.5 m/s while the aircraft is still carrying momentum through a
+90 degree turn.
+
+WHY 2.5 m/s CANNOT MEET THE BUDGET, IN ONE ARITHMETIC LINE.  An axis-aligned leg runs 0.500 m from the pillar
+AXES (the widest this checkerboard allows -- pillars every 1.0 m in x and y, so the best a straight line can do
+is midway between two rows), so its TIGHTEST point is 0.500 - 0.300 = **0.200 m from a surface**, once per metre
+along the leg.  The project's own measurements of the tracking error against speed are 0.047 m at 0.5-1.0 m/s,
+0.185 m at 1.0-1.5, 0.346 m at 1.5-2.0 (STATUS 151) and p50 0.161 / p90 0.487 at 2.5 (Flight L).  0.200 m of
+budget minus 0.35-0.49 m of error is negative, whatever the plan does -- which is exactly the pattern: at 2.5 m/s
+the reference is clean and the aircraft is not.
+
+FLIGHT M, THEREFORE: 2.0 m/s and 2.0 m/s2, the governor reduced to a turn aid (1.20 m / 1.20 m/s), ego's own
+arrival meter back at 1.00 m, everything else established by the earlier flights.  Its numbers:
+
+    legs        1.25 / 7.71 / 6.23 / 5.69 / 5.93 / 5.04 / 6.97 / 8.90 s   -- 4 of 8 under the owner's 6.0 s,
+                max 8.90 s, against Flight E's 21.2-31.0 s and a 374.3 s freeze
+    arrivals    0.82 / 0.46 / 1.29 / 1.05 / 1.01 / 1.33 / 1.60 / 0.91 m/s -- against J's 1.06-2.92
+    B1 extents  E 6.514 / N 8.589 m against the 6.10 / 8.10 bound -- the closest of any sortie (J 7.922/10.380,
+                K 8.600/9.790, L 7.927/8.427)
+    A1 / A2     13.03 mm / 6.23 mm rms (bounds 20 / 50)
+    C1          the aircraft stopped 0.386 m from the last commanded point
+    contacts    3 episodes, the REFERENCE CLEAR IN ALL THREE (min +0.001 m), tracking gap 0.46-0.54 m at
+                1.69-1.88 m/s
+    C2-ego      NOT MET: 1200 Hz truth minimum -0.239 m, 1.94 % of samples inside a body, 5.76 % below 0.10 m
+                (Flight E: -0.063 / 0.18 %; J: -0.233 / 3.87 %; K: -0.297 / --; L: -0.259 / --)
+
+WHAT IS STILL MISSING, AND IT IS ONE THING WITH TWO FACES.  The budget is 0.20 m; the aircraft's own cross-track
+error is 0.14 m at the median and 0.46 m at p90 even at 2.0 m/s, and every remaining contact happens where that
+tail is spent -- so the last two moves are (a) the tracking tail, which is a control problem (the reference is
+continuous now, the shaper has authority, the plan is clean at 3 of 3), and (b) the four legs still over 6 s,
+which are the ones whose corners cost 2-3 s.  The figure shows both: the truth follows the rectangle, with a
+bulge at each corner where it comes back.

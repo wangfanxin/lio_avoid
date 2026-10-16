@@ -106,6 +106,18 @@ def generate_launch_description():
                                           "the odometry start can land in an obstacle at all.  0.0 is the only "
                                           "other value the integer `inf_step = ceil(inflation/resolution)` can "
                                           "express besides one cell, and it is the point of Flight F."),
+        DeclareLaunchArgument('thresh_no_replan_meter', default_value='1.0',
+                              description="`fsm/thresh_no_replan_meter`: the FSM's ARRIVAL METER -- it declares the "
+                                          "goal reached when the plan's clock is out AND the vehicle is within this "
+                                          "distance of it (`ego_replan_fsm.cpp:968`), and stops planning there.  "
+                                          "Exposed on 2026-10-17 because that is what makes the aircraft OVERSHOOT "
+                                          "a corner: MEASURED Flight J, the shell's own log records arrivals at "
+                                          "|v| 1.06-2.92 m/s -- at 1.0 m the planner hands the last metre to a "
+                                          "controller holding a FIXED point, so the aircraft crosses it at speed, "
+                                          "loops back (the loop is visible at every corner in the figure) and, "
+                                          "past the corner, cuts into the pillar the map has not seen yet.  The "
+                                          "floor is 0.20-0.30 m: `planner_manager.cpp:55` REFUSES to plan when the "
+                                          "replan's start is within 0.2 m of its local target."),
         DeclareLaunchArgument('thresh_replan_time', default_value='1.0',
                               description="`fsm/thresh_replan_time`: how long a committed spline is EXECUTED "
                                           "before the FSM re-plans from its own tail.  Exposed because a re-plan "
@@ -159,7 +171,7 @@ def generate_launch_description():
         'fsm/flight_type': LaunchConfiguration('flight_type'),
         'fsm/realworld_experiment': LaunchConfiguration('realworld_experiment'),
         'fsm/thresh_replan_time': LaunchConfiguration('thresh_replan_time'),
-        'fsm/thresh_no_replan_meter': 1.0,
+        'fsm/thresh_no_replan_meter': LaunchConfiguration('thresh_no_replan_meter'),
         'fsm/planning_horizon': LaunchConfiguration('planning_horizon'),
         'fsm/planning_horizen_time': 3.0,
         'fsm/emergency_time': 1.0,
