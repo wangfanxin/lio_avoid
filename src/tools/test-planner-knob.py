@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 
@@ -133,6 +134,60 @@ def main() -> int:
         bad.append("PLANNER=ego names a file that does not exist: %s" % pf)
     if "--approach-shaping-m" in argv or "--vertical-first-m" in argv:
         bad.append("PLANNER=ego carries the rectangle's own flags, which it does not accept: %r" % argv)
+    print()
+
+    # ---------------------------------------------------------------- 3b. WHAT THE WIRE CARRIES (round 76)
+    #     `--fields` decides which of position / velocity / acceleration the FCU receives, and the two planners
+    #     need DIFFERENT answers: ego's reference has a velocity and an acceleration, the rectangle's has
+    #     neither (its v/a are zero by construction, so pva would order the FCU to brake).  Checked in all four
+    #     directions -- the frozen default, ego's new default, an override, and a value that is not a mode.
+    for env, want, label in (({}, "pos", "rectangle (the frozen mission) keeps pos"),
+                             ({"PLANNER": "ego"}, "posvelacc", "ego defaults to pva"),
+                             ({"PLANNER": "ego", "BRIDGE_FIELDS": "posvel"}, "posvel", "and it is overridable"),
+                             ({"TAKEOFF_COMMAND_M": "0.2", "VERTICAL_FIRST": "1"}, "pos",
+                              "the promoted take-off profile does not change it")):
+        rc, out, argv = dry_run(env)
+        got = field(out, "wire fields").split()[0] if field(out, "wire fields") else "(absent)"
+        print("wire fields, %-46s -> %s" % (label, got))
+        if rc != 0:
+            bad.append("%s: the harness exits %d" % (label, rc))
+        if got != want:
+            bad.append("wire fields: %s gave %r, expected %r" % (label, got, want))
+    rc, out, _argv = dry_run({"PLANNER": "ego", "BRIDGE_FIELDS": "bogus"})
+    print("wire fields, a value that is not a mode                  -> rc=%d (must be non-zero)" % rc)
+    if rc == 0:
+        bad.append("BRIDGE_FIELDS=bogus was accepted; a knob with three values must refuse a fourth")
+    print()
+
+    # ---------------------------------------------------------------- 3c. WHOSE SAMPLER (round 76, Route B)
+    #     `EGO_CONTRACT` chooses between our adapter sampling ego's spline and ego's OWN `traj_server` doing it.
+    #     The default must stay the flown path until the new one is verified on the bench, and the Route B branch
+    #     must name BOTH of the processes it adds -- a missing one is a sortie that looks healthy and flies
+    #     nothing.
+    rc, out, argv = dry_run({"PLANNER": "ego"})
+    got = re.search(r"contract (\w+)", out)
+    print("ego contract, default                                   -> %s"
+          % (got.group(1) if got else "(absent)"))
+    if not got or got.group(1) != "adapter":
+        bad.append("the default ego contract is %r, not 'adapter'" % (got.group(1) if got else None))
+    rc, out, argv = dry_run({"PLANNER": "ego", "EGO_CONTRACT": "shim"})
+    print("ego contract, EGO_CONTRACT=shim                         -> rc=%d file=%s"
+          % (rc, os.path.basename(field(out, "file"))))
+    if rc != 0:
+        bad.append("EGO_CONTRACT=shim exits %d" % rc)
+    if not field(out, "file").endswith("planner/ego_contract_shim.py"):
+        bad.append("EGO_CONTRACT=shim does not select planner/ego_contract_shim.py (got %r)"
+                   % field(out, "file"))
+    for want in ("--odom-topic /ego/odom_fcu", "--trace-csv", "--arrive-m 0.30"):
+        if want not in argv:
+            bad.append("EGO_CONTRACT=shim's argv is missing %r: %r" % (want, argv))
+    for want in ("traj_server", "fcu_pose_feed.py", "time_forward:=1.0"):
+        if want not in out:
+            bad.append("EGO_CONTRACT=shim does not say it would start %r" % want)
+    rc, out, _argv = dry_run({"PLANNER": "ego", "EGO_CONTRACT": "bogus"})
+    print("ego contract, a value that is not a mode                -> rc=%d (must be non-zero)" % rc)
+    if rc == 0:
+        bad.append("EGO_CONTRACT=bogus was accepted")
     print()
 
     # ---------------------------------------------------------------- 4. the ego stack follows the planner

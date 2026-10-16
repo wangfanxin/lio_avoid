@@ -194,6 +194,20 @@ EGO_ARRIVE_M="${EGO_ARRIVE_M:-0.30}"
 #: WHETHER THE EGO STACK IS STARTED, decided HERE so that the banner below can tell the truth about it.
 #: `PLANNER=ego` implies it; `EGO_STACK=0` overrides it for an ego that is already running elsewhere.
 EGO_STACK="${EGO_STACK:-$([ "$PLANNER" = "ego" ] && echo 1 || echo 0)}"
+#: WHOSE SAMPLER PRODUCES `/plan/cmd` WHEN THE EGO STACK RUNS (the owner's call, round 76).  Defined HERE, in the
+#: parameter block, so the planner's argv and the banner below both read the SAME decision.
+#:   * `adapter` -- `planner/ego_source.py` samples ego's B-spline itself (every sortie up to round 75);
+#:   * `shim`    -- ROUTE B: ego's OWN `traj_server` samples it -- the reference ego wrote, position AND velocity
+#:                  AND acceleration -- and `planner/ego_contract_shim.py` owns only the tour and rewrites
+#:                  `trajectory_id`/`trajectory_flag` on the way through.  It also brings two processes:
+#:                  `traj_server` (`time_forward:=1.0`; its own default is -1.0, a yaw look-ahead into the PAST)
+#:                  and `planner/fcu_pose_feed.py`, which feeds ego the FCU'S OWN estimate (W -> L) so that the
+#:                  planner and the controller close their loops on the same state instead of on the raw LIO.
+EGO_CONTRACT="${EGO_CONTRACT:-adapter}"
+case "$EGO_CONTRACT" in
+    adapter|shim) ;;
+    *) echo "EGO_CONTRACT='$EGO_CONTRACT' -- use adapter or shim" >&2; exit 4 ;;
+esac
 EGO_CLOUD_TOPIC="${EGO_CLOUD_TOPIC:-/ego/cloud}"
 #: HOW MANY SECONDS OF SCANS THE RELAY UNIONS INTO EACH MESSAGE (0 = one scan, the behaviour every round up to
 #: and including 8 was flown with).  This is the fix round 8's measurement asks for: ego's map is a single-scan
@@ -226,8 +240,18 @@ case "$PLANNER" in
         EGO_SAMPLE_CSV="${EGO_SAMPLE_CSV-$OUT/ego_samples.csv}"
         EGO_SAMPLE_ARG=""
         [ -n "$EGO_SAMPLE_CSV" ] && EGO_SAMPLE_ARG="--sample-csv $EGO_SAMPLE_CSV"
-        PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S --arrive-m $EGO_ARRIVE_M $EGO_SAMPLE_ARG ${CMD_ARGS:-}"
-        PLANNER_WHAT="ego-planner-swarm behind the /plan/cmd contract (adapter; arrival gate ${EGO_ARRIVE_M} m = the planner's own floor)"
+        if [ "${EGO_CONTRACT:-adapter}" = "shim" ]; then
+            # ROUTE B (the owner's call): ego's OWN `traj_server` produces the reference; this process owns only
+            # the tour and the contract's `trajectory_id` / `trajectory_flag` (see the knob block above).
+            PLANNER_FILE="$REPO/planner/ego_contract_shim.py"
+            PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S --arrive-m $EGO_ARRIVE_M \
+--odom-topic /ego/odom_fcu --trace-csv $OUT/shim_trace.csv ${CMD_ARGS:-}"
+            PLANNER_WHAT="ego's OWN traj_server samples the plan (p+v+a) + the contract shell (tour, ids, COMPLETED)"
+            PLANNER_TOPIC="/plan/cmd"
+        else
+            PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S --arrive-m $EGO_ARRIVE_M $EGO_SAMPLE_ARG ${CMD_ARGS:-}"
+            PLANNER_WHAT="ego-planner-swarm behind the /plan/cmd contract (adapter; arrival gate ${EGO_ARRIVE_M} m = the planner's own floor)"
+        fi
         ;;
     */*|*.py)
         PLANNER_FILE="$PLANNER"
@@ -249,6 +273,31 @@ case "$PLANNER" in
     rectangle|ego) ;;
     *) PLANNER="custom" ;;
 esac
+# ------------------------------------------------------------------ WHAT THE WIRE CARRIES (owner's call, round 76)
+# `--fields` selects which of position / velocity / acceleration the FCU receives.  The bridge has always
+# supported all three (`bridge/mavlink_impl.py:455-469`, masks POS_YAW / POS_VEL_YAW / POS_VEL_ACC_YAW) and the
+# FCU uses them -- this ArduPilot has `ModeGuided::set_pos_vel_accel_NED_m(pos, vel, accel, ...)`
+# (`ArduCopter/mode_guided.cpp:618`) and `AC_PosControl::input_pos_vel_accel_NE_m(pos, vel, accel, ...)`
+# (`AC_AttitudeControl/AC_PosControl.h:163`), i.e. the acceleration is a controller INPUT, not a field that is
+# accepted and dropped.  The default was `pos`, which is why every sortie so far fed the FCU a position with no
+# feed-forward -- measured cost, round 72: the aircraft ran ~1 m off its reference at the 95th percentile.
+#
+# WHY IT IS NOT GLOBAL: the rectangle planner publishes ZERO velocity and acceleration by construction
+# (`planner/rectangle_source.py` has no velocity model), so `--fields posvelacc` on THAT arm would order the FCU
+# to hold v = 0, a = 0 while chasing a position -- a brake.  The frozen mission's behaviour must not change, so
+# ego gets pva and the rectangle keeps pos, both overridable:
+#     BRIDGE_FIELDS=posvel  bash src/tools/diagonal-fly.sh ego <TAG>
+if [ "${PLANNER:-}" = "ego" ]; then
+    BRIDGE_FIELDS="${BRIDGE_FIELDS:-posvelacc}"
+else
+    BRIDGE_FIELDS="${BRIDGE_FIELDS:-pos}"
+fi
+case "$BRIDGE_FIELDS" in
+    pos|posvel|posvelacc) ;;
+    *) echo "BRIDGE_FIELDS='$BRIDGE_FIELDS' -- use pos, posvel or posvelacc" >&2; exit 4 ;;
+esac
+BRIDGE_ARGS="--fields $BRIDGE_FIELDS ${BRIDGE_ARGS:-}"
+
 # A KNOB THAT CANNOT BE CHECKED BREAKS SILENTLY, and this one did.  MEASURED 2026-10-16 while writing it:
 # the first version of the block above stood ~40 lines EARLIER, where `$VERTICAL_ARG` and `$TRAJ_CALIB_ARG`
 # did not exist yet, so under `set -u` the harness died on the first unbound variable -- `PLANNER=rectangle`,
@@ -261,11 +310,16 @@ if [ "${PLANNER_DRY_RUN:-0}" = "1" ]; then
     echo "   file           : $PLANNER_FILE"
     echo "   topic          : $PLANNER_TOPIC (quadrotor_msgs/PositionCommand, frame lio_world)"
     echo "   argv           : $PLANNER_ARGS"
+    echo "   wire fields    : $BRIDGE_FIELDS (position, velocity, acceleration the FCU receives)"
     echo "   what would run : python3 $PLANNER_FILE $PLANNER_ARGS"
-    echo "   ego stack      : $EGO_STACK (cloud_relay /lio/cloud_world -> $EGO_CLOUD_TOPIC; ego max_vel $EGO_MAX_VEL max_acc $EGO_MAX_ACC; cloud window ${EGO_CLOUD_WINDOW}s, self-blind ${EGO_SELF_BLIND}m)"
+    echo "   ego stack      : $EGO_STACK (contract $EGO_CONTRACT; cloud_relay /lio/cloud_world -> $EGO_CLOUD_TOPIC; ego max_vel $EGO_MAX_VEL max_acc $EGO_MAX_ACC; cloud window ${EGO_CLOUD_WINDOW}s, self-blind ${EGO_SELF_BLIND}m)"
     if [ "$EGO_STACK" = "1" ]; then
         echo "                    would also run: ros2 launch ego_planner ego_on_lio.launch.py"
         echo "                                   python3 $REPO/planner/cloud_relay.py --out $EGO_CLOUD_TOPIC --window $EGO_CLOUD_WINDOW --self-blind $EGO_SELF_BLIND"
+        if [ "$EGO_CONTRACT" = "shim" ]; then
+            echo "                    ROUTE B: ros2 run ego_planner traj_server -p traj_server/time_forward:=1.0"
+            echo "                             python3 $REPO/planner/fcu_pose_feed.py --in /sim/truth/odom --out /ego/odom_fcu"
+        fi
     fi
     exit 0
 fi
@@ -392,7 +446,7 @@ cd - > /dev/null
 stop_stack() {
     # THE EGO STACK IS STOPPED FIRST when it exists, because `ros2 launch` owns a child of its own and the
     # planner it feeds is the process that must not be left publishing into a dead stack.
-    for p in "${EGO_LAUNCH_PID:-}" "${EGO_RELAY_PID:-}"; do
+    for p in "${EGO_LAUNCH_PID:-}" "${EGO_RELAY_PID:-}" "${EGO_TRAJ_SERVER_PID:-}" "${EGO_FCU_POSE_PID:-}"; do
         [ -n "$p" ] && kill "$p" 2>/dev/null
     done
     for p in "${FSM_PID:-}" "${BRIDGE_PID:-}" "${TRAJ_PID:-}" "${LIO_PID:-}" "${SENSOR_PID:-}" "${RECT_PID:-}"; do
@@ -534,7 +588,7 @@ echo "== flying =="
 # (`ROSWrapper.cpp:338-340`), so nothing here is about QoS; it is about how much work one callback does.
 # `EGO_STACK` can be forced to 0 to run `PLANNER=ego` with a hand-started ego (e.g. one already running
 # outside the harness).  The decision itself is made in the parameter block, so the banner states it.
-EGO_LAUNCH_PID=""; EGO_RELAY_PID=""
+EGO_LAUNCH_PID=""; EGO_RELAY_PID=""; EGO_TRAJ_SERVER_PID=""; EGO_FCU_POSE_PID=""
 if [ "$EGO_STACK" = "1" ]; then
     set +u
     source "$WS/install/setup.bash" 2>/dev/null || true
@@ -545,12 +599,29 @@ if [ "$EGO_STACK" = "1" ]; then
         --window "$EGO_CLOUD_WINDOW" --self-blind "$EGO_SELF_BLIND" \
         > "$OUT/ego_relay.log" 2>&1 &
     EGO_RELAY_PID=$!
+    EGO_ODOM_TOPIC="/lio/robo/odom"
+    EGO_ODOM_VEL_TOPIC="/lio/odom"
+    if [ "$EGO_CONTRACT" = "shim" ]; then
+        EGO_ODOM_TOPIC="/ego/odom_fcu"
+        EGO_ODOM_VEL_TOPIC="/ego/odom_fcu"
+        python3 "$REPO/planner/fcu_pose_feed.py" --calib-file "$CALIB" \
+            --in /sim/truth/odom --out /ego/odom_fcu > "$OUT/fcu_pose_feed.log" 2>&1 &
+        EGO_FCU_POSE_PID=$!
+        ros2 run ego_planner traj_server --ros-args -p traj_server/time_forward:=1.0 \
+            > "$OUT/traj_server.log" 2>&1 &
+        EGO_TRAJ_SERVER_PID=$!
+        sleep 2
+        kill -0 "$EGO_TRAJ_SERVER_PID" 2>/dev/null || { echo "traj_server died:"; tail -20 "$OUT/traj_server.log"; exit 1; }
+    fi
     ros2 launch ego_planner ego_on_lio.launch.py \
-        odom_vel_topic:=/lio/odom odom_topic:=/lio/robo/odom cloud_topic:="$EGO_CLOUD_TOPIC" \
+        odom_vel_topic:="$EGO_ODOM_VEL_TOPIC" odom_topic:="$EGO_ODOM_TOPIC" cloud_topic:="$EGO_CLOUD_TOPIC" \
         max_vel:="$EGO_MAX_VEL" max_acc:="$EGO_MAX_ACC" \
         > "$OUT/ego_planner.log" 2>&1 &
     EGO_LAUNCH_PID=$!
-    echo "   ego stack : cloud_relay pid $EGO_RELAY_PID -> $EGO_CLOUD_TOPIC, ego_planner pid $EGO_LAUNCH_PID"
+    echo "   ego stack : contract $EGO_CONTRACT; cloud_relay pid $EGO_RELAY_PID -> $EGO_CLOUD_TOPIC;"
+    echo "               ego_planner pid $EGO_LAUNCH_PID, odom $EGO_ODOM_TOPIC (twist: $EGO_ODOM_VEL_TOPIC)"
+    [ -n "$EGO_TRAJ_SERVER_PID" ] && echo "               traj_server pid $EGO_TRAJ_SERVER_PID (time_forward 1.0)"
+    [ -n "$EGO_FCU_POSE_PID" ] && echo "               fcu_pose_feed pid $EGO_FCU_POSE_PID (/sim/truth/odom -> /ego/odom_fcu)"
     sleep 6
     kill -0 "$EGO_RELAY_PID" 2>/dev/null || { echo "the cloud relay died:"; tail -20 "$OUT/ego_relay.log"; exit 1; }
     kill -0 "$EGO_LAUNCH_PID" 2>/dev/null || { echo "the ego launch died:"; tail -20 "$OUT/ego_planner.log"; exit 1; }

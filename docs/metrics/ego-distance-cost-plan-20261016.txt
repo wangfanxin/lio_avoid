@@ -1189,3 +1189,86 @@ with its prediction written first: the inside-tour 95th error should fall below 
 move to within 0.02 m of the plan's.
 
 Figures: `docs/figures/traj-xy-DIAG32-flies-the-plan.png` sha256 409fdc015a7987d4e8d91578bb504027423e135268461240c33c310cdb09c0e7 (S6's crossing: the aircraft flying the plan's own penetration) and `docs/figures/round75/three-runs-inside-tour.png` sha256 58deda2833ec0bb4513c02e5d33b2537d4c5f4016360e21d2e6e0f8315aab8b0 (the three runs' inside-tour error).
+
+=== ROUND 76: ROUTE B, BUILT AND VERIFIED ON THE BENCH -- AND A CORRECTION ABOUT THE SAWTOOTH =============
+
+The owner's decisions, all four, and what was built for each.  Nothing here flew: every claim below comes from the
+parked rig (`_stage/s7-parked-routeb.sh`) with the vehicle on the pad.
+
+R1 -- **EGO IS FED THE FCU'S OWN POSE** (`src/planner/fcu_pose_feed.py`, new).  `/sim/truth/odom` is the tap of
+the FCU's `LOCAL_POSITION_NED` -- position AND velocity -- republished in W by `sim/truth_rx.py:334-355`; the feed
+converts it W -> L with the same `frames.Calib` the rest of the repo uses (`p_L = R_WL^T (p_W - t_WL)`,
+`v_L = R_WL^T v_W`, and the translation is NOT applied to the velocity, `frames.py:191-196`) and publishes ONE
+topic, `/ego/odom_fcu`, in frame `lio_world`.  Both of ego's odometry inputs point at it -- the map reads pose
+only (`grid_map.cpp:799-801`), the FSM reads pose AND twist (`ego_replan_fsm.cpp:443-445`) -- because one topic
+cannot disagree with itself.
+  * **the honest size of the benefit**: on this stack the LIO and the FCU's estimate agree to **6.58 mm** (metric
+    A1 of the acceptance report), so this is NOT an accuracy change.  What changes is failure behaviour: an LIO
+    that flies away moves ego's world immediately, while the FCU's estimate moves only as far as its innovation
+    gates allow, and the supervisor's own geofence/climb gates watch the FCU rather than the LIO;
+  * SELFTEST: the round trip L->W->L closes to 1e-9, and a velocity's magnitude survives the conversion.
+
+R2 -- **pva IS THE DEFAULT FOR EGO** (and only for ego).  `--fields` now defaults to `posvelacc` on the ego arm and
+stays `pos` on the rectangle, because the rectangle publishes ZERO velocity and acceleration by construction, so
+pva there would order the FCU to hold v = 0, a = 0 -- a brake -- while chasing a position.  The frozen mission's
+behaviour is therefore unchanged, and `BRIDGE_FIELDS` overrides both.
+  * the FCU really does use them: `ModeGuided::set_pos_vel_accel_NED_m(pos, vel, accel, ...)`
+    (`ArduCopter/mode_guided.cpp:618`) and `AC_PosControl::input_pos_vel_accel_NE_m(pos, vel, accel, ...)`
+    (`AC_AttitudeControl/AC_PosControl.h:163`) -- the acceleration is a controller INPUT;
+  * `tools/test-planner-knob.py` now asserts the default in five directions (rectangle pos, ego posvelacc,
+    override, take-off profile unchanged, and a fourth value refused).
+
+R3 -- **THE CONTRACT SHELL** (`src/planner/ego_contract_shim.py`, new, ~200 lines with its selftest).  ego's OWN
+`traj_server` samples the plan; the shell owns only the TOUR and the CONTRACT:
+  * one goal at a time on `/move_base_simple/goal` (L, re-sent every 1 s -- ego's FSM returns to WAIT_TARGET when
+    it decides a plan has stalled and only a new goal pulls it out), arrival gate 0.30 m + slow, dwell 5 s;
+  * `/position_cmd` -> `/plan/cmd` VERBATIM except `trajectory_id = waypoint index + 1` and
+    `trajectory_flag = READY` while flying / `COMPLETED` once the last waypoint is reached and settled -- and it
+    KEEPS TALKING afterwards, which is the rule that lets the supervisor tell "done" from "dead";
+  * the frame is passed through as `world` (the bridge accepts both names for this frame,
+    `bridge/bridge_node.py:54-57`), and every forwarded message goes to `--trace-csv` so the forwarding can be
+    CHECKED rather than trusted;
+  * `EGO_CONTRACT=adapter|shim` decides which of the two paths runs, defined in the parameter block so the argv
+    and the banner read the same value; **`adapter` is still the default** until the bench and a flight say
+    otherwise.  `tools/test-planner-knob.py` asserts both values, the argv, the two extra processes and the
+    refusal of a third value.
+
+R4 -- **THE PARKED VERIFICATION PASSED, ITEM BY ITEM** (`_stage/s7-evidence.py`, `_stage/s7-sawtooth.py`):
+
+    /position_cmd (ego's own traj_server)   7761 messages, **100.0 Hz over 77.6 s**, frame `world`
+      velocity   : NON-ZERO on every sample, |v| max 2.99 m/s, mean 0.98 m/s
+      acceleration: NON-ZERO on every sample, |a| max 4.05 m/s^2, mean 1.88 m/s^2
+    /plan/cmd (the contract, through the shell)  7785 messages, frame `world`, id 1, flag 1
+    forwarding check: max |dp| **0.000000 m**, max |dv| **0.000000 m/s**, max |da| **0.000000 m/s^2**
+      -> the shell changes ONLY id and flag, which is exactly its job
+    ego planned on the FCU's pose: 143 EXEC_TRAJ / 66 REPLAN_TRAJ / 9 GEN_NEW_TRAJ, no "no odom." storm
+    fcu_pose_feed: 94 -> 187 -> ... messages, i.e. ~94 Hz, p_L at the pad
+
+  TWO INSTRUMENT NOTES, both found by things being quiet rather than wrong:
+  * **the CONTRACT's recorder cannot hear `/position_cmd`**: `traj_server` publishes it VOLATILE
+    (`create_publisher<PositionCommand>("/position_cmd", 50)`, the integer overload) while
+    `tools/record-traj.py` subscribes TRANSIENT_LOCAL for the latched `/plan/cmd` contract.  Both processes say so
+    in their own logs ("Last incompatible policy: DURABILITY").  The shell CAN hear it, because it subscribes with
+    the matching profile -- so the route works and only the recorder needs a volatile mode;
+  * **the shell's banner never reached its log**: plain `print` without `flush` is lost when the process is
+    SIGTERMed at teardown.  The `--trace-csv` is what made the run readable; the banner should be flushed too.
+
+AND THE CORRECTION THIS ROUND OWES -- **THE SAWTOOTH IS EGO'S OWN SAMPLING RULE, NOT MINE.**  Round 73 measured
+the published reference sweeping out to ~1 m and then SNAPPING BACK to the vehicle once a second, and fixed it in
+OUR adapter.  The parked Route B trace shows **ego's own `traj_server` doing the same thing**:
+
+    |p| sweeps smoothly 0.243 -> 0.330 -> ... -> 1.298 m (steps ~0.02 m per message)
+    then at t = 1.020 s: |p| = 0.016 m -- a 1.426 m step in ONE message -- back to where the vehicle is
+    7 such resets in 77.6 s (median interval 10.9 s parked, where ego replans slowly; ~1/s in flight)
+
+The rule is `t_cur = now - start_time_` (`traj_server.cpp:171-172`) -- THE AGE OF THE NEWEST SPLINE -- which is
+exactly what `planner/ego_source.py` did before round 73.  The adapter was not inventing a bug; it was faithfully
+copying ego's.  **So Route B, as it stands, flies the same reference SHAPE the adapter did before round 73** -- it
+is better on fidelity (p+v+a, ego's own code) and worse on nothing, but it does NOT by itself fix the crookedness.
+
+THE DECISION THAT FOLLOWS, put to the owner rather than taken: to get BOTH ego's reference and continuity, the
+sampling rule itself has to change -- a ~6-line patch to `traj_server.cpp` (re-anchor on a new spline to the point
+we last published, then advance monotonically, plus the same 0.5 s lookahead), reversible and recorded like every
+other patch.  The alternative is to fly Route B as-is and MEASURE what pva alone does.
+
+Figure `docs/figures/round76/traj-server-sawtooth.png`, sha256 7816de183aa5d3fa7b132d9dd90b10cb64507e2c354e0b98cbdc1ee4a8373f04 -- ego's own sampler, parked, with the resets marked.
