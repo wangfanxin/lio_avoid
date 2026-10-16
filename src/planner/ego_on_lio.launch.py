@@ -50,7 +50,7 @@ usage:  ros2 launch ego_planner ego_on_lio.launch.py
         (the goals come from `src/planner/ego_source.py`, which also produces /plan/cmd)
 """
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, LogInfo
+from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -91,24 +91,67 @@ def generate_launch_description():
                               description='SOFT: a quadratic penalty, not a constraint'),
         DeclareLaunchArgument('max_acc', default_value='3.0', description='SOFT, likewise'),
         DeclareLaunchArgument('planning_horizon', default_value='7.5', description='both fsm/ and manager/'),
+        DeclareLaunchArgument('flight_type', default_value='1',
+                              description="1 = MANUAL_TARGET (one goal at a time on /move_base_simple/goal, our "
+                                          "shell owns the tour); 2 = PRESET_TARGET (ego's own sequencer walks "
+                                          "the `waypoints` list, Plan X).  Kept as an argument because the "
+                                          "PRESET path cannot be reached otherwise without editing this file."),
+        DeclareLaunchArgument('waypoints', default_value='',
+                              description="THE PRESET TOUR, in L: \"x,y,z;x,y,z;...\".  Empty means 'no tour', "
+                                          "which under `flight_type 1` is exactly right (the list is not read) "
+                                          "and under `flight_type 2` is a refusal to fly, not a silent default."),
+        DeclareLaunchArgument('waypoint_start_alt', default_value='0.0',
+                              description="PATCH 0008's START-ALTITUDE GATE: with a value > 0 the tour is armed "
+                                          "by the FSM loop once odometry z reaches it, instead of in the "
+                                          "constructor while the vehicle is still on the pad (a first plan "
+                                          "taken there leaves the FSM in GEN_NEW_TRAJ, 599 replans, 0 "
+                                          "successes).  0 disables the gate and arms immediately."),
+        DeclareLaunchArgument('waypoint_advance_m', default_value='-1.0',
+                              description='PATCH 0008: how far before a waypoint the next leg is planned; -1.0 '
+                                          'keeps the node\'s own default'),
+        DeclareLaunchArgument('waypoint_loop', default_value='false',
+                              description='PATCH 0008: repeat the tour for ever (false = one pass)'),
+        DeclareLaunchArgument('realworld_experiment', default_value='false',
+                              description="FEEDS `fsm/realworld_experiment`, i.e. `have_trigger_ = "
+                                          "!flag_realworld_experiment_` (`ego_replan_fsm.cpp:35`).  Default "
+                                          "FALSE on 2026-10-16 (was True).  WHAT IT DOES NOT DO, because the "
+                                          "review that asked for it expected otherwise: under "
+                                          "`flight_type: 1` (MANUAL) it is BEHAVIOUR-NEUTRAL.  Every "
+                                          "`have_trigger_` gate on the MANUAL path is either unreachable or "
+                                          "redundant -- `:180` sits inside the PRESET branch, `:702`/"
+                                          "`:715` need `have_target_` which an arrival clears, and the FSM "
+                                          "leaves WAIT_TARGET from the goal CALLBACK "
+                                          "(`planNextWaypoint` -> `changeFSMExecState(GEN_NEW_TRAJ, "
+                                          "\"TRIG\")`), not from the FSM tick.  So the transition counts do "
+                                          "NOT move (bench A/B, `docs/metrics/fsm-trigger-20261016.txt`: "
+                                          "22/0/22/9 either way) and the '1 Hz resend drags the FSM' story is "
+                                          "not what this flag fixes.  WHAT IT DOES DO: it is REQUIRED for "
+                                          "`flight_type: 2` (PRESET), where the constructor BLOCKS at `:180` "
+                                          "(`while (!have_odom_ || !have_trigger_) rclcpp::spin_some(...)`) "
+                                          "waiting for a `/traj_start_trigger` nothing in this stack "
+                                          "publishes -- and `spin_some` on a node the main executor already "
+                                          "owns ABORTS the process (PATCH B/3).  Evidence: "
+                                          "`docs/metrics/review-egoplanner-20261016.txt` P1-1."),
     ]
 
     params = {
         # ---- the FSM: one goal at a time on /move_base_simple/goal, and it must WAIT for one
-        'fsm/flight_type': 1,              # MANUAL_TARGET: our adapter owns the tour (upstream: 2, preset)
-        'fsm/realworld_experiment': True,  # have_trigger_ = !flag_realworld_experiment_ (`ego_replan_fsm.cpp:35`)
+        'fsm/flight_type': LaunchConfiguration('flight_type'),
+        'fsm/realworld_experiment': LaunchConfiguration('realworld_experiment'),
         'fsm/thresh_replan_time': 1.0,
         'fsm/thresh_no_replan_meter': 1.0,
         'fsm/planning_horizon': LaunchConfiguration('planning_horizon'),
         'fsm/planning_horizen_time': 3.0,
         'fsm/emergency_time': 1.0,
         'fsm/fail_safe': True,
-        # kept in the upstream shape, but inert under flight_type 1 (the preset list is not read).  The
-        # in-tree patch's own additions (`fsm/waypoint0_dwell_s`, `waypoint_advance_m`, `waypoint_loop`,
-        # `waypoint_start_alt`) are DELIBERATELY left at their declared defaults: they belong to the patched
-        # waypoint sequencer, which `flight_type 1` does not enter.
-        'fsm/waypoint_num': 1,
-        'fsm/waypoint0_x': 0.0, 'fsm/waypoint0_y': 0.0, 'fsm/waypoint0_z': 0.0,
+        # THE PRESET TOUR (Plan X).  Inert under `flight_type 1` (MANUAL): the sequencer is entered only by
+        # `flight_type 2`, which is why the list used to be a single dummy waypoint at the origin.  Under
+        # `flight_type 2` the patched additions matter, and each is an argument here so the tour can be moved
+        # WITHOUT editing this file: `waypoint_start_alt` gates the arming until the vehicle has actually
+        # climbed off the pad (PATCH 0008 -- a first plan taken on the pad leaves the FSM in GEN_NEW_TRAJ with
+        # 599 replans and 0 successes), `waypoint_advance_m` -1.0 keeps the node's own default advance,
+        # `waypoint_loop` 0 is a single pass.  The waypoints are parsed from ONE argument, `waypoints`, because
+        # a launch file cannot declare a variable number of them: "x,y,z;x,y,z;...".
 
         # ---- the map: a boolean inflated grid, 0.1 m voxels, and NO distance query anywhere
         'grid_map/resolution': 0.1,
@@ -260,14 +303,31 @@ def generate_launch_description():
         ('a_star_list', ['drone_', LaunchConfiguration('drone_id'), '_plan_vis/a_star_list']),
     ]
 
-    node = Node(
-        package='ego_planner',
-        executable='ego_planner_node',
-        name=['drone_', LaunchConfiguration('drone_id'), '_ego_planner_node'],
-        output='screen',
-        parameters=[params],
-        remappings=remaps,
-    )
+    # THE TOUR LIST -> `fsm/waypoint_num` + `fsm/waypoint{i}_{x,y,z}`.  This has to happen at EXECUTION time,
+    # inside an OpaqueFunction, because a launch argument's value is only known then -- and a launch file
+    # cannot declare a variable number of arguments.  The parsing is strict on purpose: a malformed list must
+    # stop the launch, not silently fly a shorter tour.
+    def make_node(context):
+        wps = [w.strip() for w in context.launch_configurations.get('waypoints', '').split(';') if w.strip()]
+        for i, w in enumerate(wps):
+            parts = [p.strip() for p in w.split(',')]
+            if len(parts) != 3:
+                raise RuntimeError('waypoints: entry %d is %r -- expected "x,y,z"' % (i, w))
+            params['fsm/waypoint%d_x' % i] = float(parts[0])
+            params['fsm/waypoint%d_y' % i] = float(parts[1])
+            params['fsm/waypoint%d_z' % i] = float(parts[2])
+        params['fsm/waypoint_num'] = len(wps)
+        params['fsm/waypoint_start_alt'] = LaunchConfiguration('waypoint_start_alt')
+        params['fsm/waypoint_advance_m'] = LaunchConfiguration('waypoint_advance_m')
+        params['fsm/waypoint_loop'] = LaunchConfiguration('waypoint_loop')
+        return [Node(
+            package='ego_planner',
+            executable='ego_planner_node',
+            name=['drone_', LaunchConfiguration('drone_id'), '_ego_planner_node'],
+            output='screen',
+            parameters=[params],
+            remappings=remaps,
+        )]
 
     note = LogInfo(msg=[
         'ego_on_lio: ONE node (ego_planner_node).  NOT started, on purpose: traj_server (the contract is '
@@ -279,4 +339,4 @@ def generate_launch_description():
         ' (must be in L: there is no TF).',
     ])
 
-    return LaunchDescription(args + [note, node])
+    return LaunchDescription(args + [note, OpaqueFunction(function=make_node)])

@@ -322,6 +322,17 @@ def main() -> int:
         print("shim: waypoint %d -> %s (L)" % (i + 1, np.round(t, 3)))
     print("shim: TRAJ_SERVER's %s is forwarded to %s with trajectory_id per waypoint and a real COMPLETED"
           % (args.in_topic, args.cmd_topic))
+    # P3-2 OF THE MISSION-B REVIEW: "任务结束" is decided in THREE places whose thresholds differ, and two of
+    # them were only discoverable by reading three files.  They are printed HERE, once, at start-up, with the
+    # source of each -- so a run's own log says which rule ended it.  (The fourth number, the supervisor's
+    # SILENCE window, is a FAILURE rule, not an arrival rule, and is listed with the others so the difference
+    # is visible.)
+    print("shim: ARRIVAL RULES IN THIS STACK -- (1) EGO's own: `plan_done && wp_d_veh < "
+          "fsm/waypoint_advance_m` (`ego_replan_fsm.cpp:879`, launch default 1.000 m, PATCH 0008's advance); "
+          "(2) THIS SHELL's: d <= %.3f m AND |v| < %.3f m/s, held %.1f s (`--arrive-m/--settle-mps/--hold-s`); "
+          "(3) the SUPERVISOR's: the contract's `trajectory_flag = COMPLETED` (`supervisor.py:295`) -- silence "
+          "is NOT completion.  The supervisor's 3.0 s plan-silence window is a FAILURE rule, not an arrival "
+          "rule." % (args.arrive_m, args.settle_mps, args.hold_s))
 
     # the CONTRACT's QoS is not negotiable: RELIABLE + KEEP_LAST(5) + TRANSIENT_LOCAL, exactly as
     # `planner/ego_source.py:421-424` publishes it (a latched subscriber must still find the newest sample)

@@ -120,7 +120,13 @@ def main() -> int:
         bad.append("SHAPING_M=0.30 makes the harness exit %d" % rc)
     print()
 
-    # ---------------------------------------------------------------- 3. ego selects the adapter, not a copy
+    # ---------------------------------------------------------------- 3. ego selects the CONTRACT's own file
+    #     UPDATED 2026-10-16: this check used to say "ego selects the adapter", which was true while
+    #     `EGO_CONTRACT` defaulted to `adapter`.  It defaults to `shim` since commit edec403 (Route B is the
+    #     flown path), and the check was left behind -- `test-planner-knob.py` had been RED since that commit
+    #     and this round is the first to run it again.  So the assertion is now CONTRACT-AWARE: whatever the
+    #     default is, `PLANNER=ego` must select the file that contract names, and the OTHER arm must still be
+    #     reachable by naming it explicitly (a default that changes must not orphan the other arm).
     rc, out, argv = dry_run({"PLANNER": "ego"})
     print("PLANNER=ego")
     print("   rc=%d   file=%s" % (rc, field(out, "file")))
@@ -128,12 +134,23 @@ def main() -> int:
     if rc != 0:
         bad.append("PLANNER=ego exits %d" % rc)
     pf = field(out, "file")
-    if not pf.endswith("planner/ego_source.py"):
-        bad.append("PLANNER=ego does not select planner/ego_source.py (got %r)" % pf)
+    if not pf.endswith("planner/ego_contract_shim.py"):
+        bad.append("PLANNER=ego does not select the DEFAULT contract's file "
+                   "(planner/ego_contract_shim.py, got %r)" % pf)
     if not os.path.isfile(pf):
         bad.append("PLANNER=ego names a file that does not exist: %s" % pf)
     if "--approach-shaping-m" in argv or "--vertical-first-m" in argv:
         bad.append("PLANNER=ego carries the rectangle's own flags, which it does not accept: %r" % argv)
+    rc, out, argv = dry_run({"PLANNER": "ego", "EGO_CONTRACT": "adapter"})
+    pf = field(out, "file")
+    print("PLANNER=ego EGO_CONTRACT=adapter")
+    print("   rc=%d   file=%s" % (rc, pf))
+    if rc != 0:
+        bad.append("PLANNER=ego EGO_CONTRACT=adapter exits %d" % rc)
+    if not pf.endswith("planner/ego_source.py"):
+        bad.append("EGO_CONTRACT=adapter does not select planner/ego_source.py (got %r)" % pf)
+    if not os.path.isfile(pf):
+        bad.append("EGO_CONTRACT=adapter names a file that does not exist: %s" % pf)
     print()
 
     # ---------------------------------------------------------------- 3b. WHAT THE WIRE CARRIES (round 76)
@@ -167,11 +184,14 @@ def main() -> int:
     #     must name BOTH of the processes it adds -- a missing one is a sortie that looks healthy and flies
     #     nothing.
     rc, out, argv = dry_run({"PLANNER": "ego"})
-    got = re.search(r"contract (\w+)", out)
+    # The banner says `contract <adapter|shim>;` -- matched EXPLICITLY, because the looser `contract (\w+)`
+    # this test used to use also matches the PROSE in the dry-run's own description ("... + the contract shell
+    # (tour, ids, COMPLETED)"), which is how it reported the default as 'shell'.
+    got = re.search(r"contract (adapter|shim)", out)
     print("ego contract, default                                   -> %s"
           % (got.group(1) if got else "(absent)"))
-    if not got or got.group(1) != "adapter":
-        bad.append("the default ego contract is %r, not 'adapter'" % (got.group(1) if got else None))
+    if not got or got.group(1) != "shim":
+        bad.append("the default ego contract is %r, not 'shim' (Route B; `run-mission.sh:210`)" % (got.group(1) if got else None))
     rc, out, argv = dry_run({"PLANNER": "ego", "EGO_CONTRACT": "shim"})
     print("ego contract, EGO_CONTRACT=shim                         -> rc=%d file=%s"
           % (rc, os.path.basename(field(out, "file"))))
@@ -257,8 +277,9 @@ def main() -> int:
         for b in bad:
             print("   - %s" % b)
         return 1
-    print("PLANNER-KNOB TEST PASSED: the default is the flown planner with the flown argv, ego selects the "
-          "adapter, and every wrong name is refused before anything starts")
+    print("PLANNER-KNOB TEST PASSED: the default is the flown planner with the flown argv, ego selects the file "
+          "its contract names (shim by default, adapter when asked for), and every wrong name is refused "
+          "before anything starts")
     return 0
 
 

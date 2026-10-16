@@ -1,0 +1,85 @@
+FSM TRIGGER AND THE REVIEW'S STEP 2: WHAT `fsm/realworld_experiment` ACTUALLY GATES  (2026-10-16, no flight)
+
+WHAT WAS ASKED, AND BY WHOM
+  The mission-B review (`docs/metrics/review-egoplanner-20261016.txt`, P1-1 and step 2 of its fix list) found
+  that `fsm/realworld_experiment=True` + `flight_type=1` leaves `have_trigger_` false for ever
+  (`ego_replan_fsm.cpp:35`), so the FSM's own `WAIT_TARGET -> SEQUENTIAL_START` exit at `:702` is dead, and
+  concluded that the FSM is dragged out of WAIT_TARGET by our 1 Hz goal resend.  It proposed one line --
+  `realworld_experiment: False` -- and predicted the observable:
+
+      "ego 日志里 `WAIT_TARGET→GEN_NEW_TRAJ` 计数下降、`SEQUENTIAL_START` 出现"
+
+  The change itself is right and is now in the launch file (`realworld_experiment` is a launch argument,
+  default FALSE).  **The prediction is wrong, and the reason matters more than the count.**
+
+WHY THE PREDICTION CANNOT HOLD, FROM THE CODE
+  * The FSM leaves WAIT_TARGET from the GOAL CALLBACK, not from the FSM tick:
+    `waypointCallback` -> `planNextWaypoint` -> `if (exec_state_ == WAIT_TARGET) changeFSMExecState(GEN_NEW_TRAJ,
+    "TRIG")` (`ego_replan_fsm.cpp:449-455`).  With `flight_type 1` that path is taken on every new goal.
+  * The `:702` exit that the flag would enable ALSO requires `have_target_`, and an arrival CLEARS it
+    (`:980`, the comment says so explicitly: "REACHED: have_target_ = false, have_trigger_ = false,
+    WAIT_TARGET").  While the FSM sits in WAIT_TARGET, `have_target_` is false -- so the exit stays dead even
+    with `have_trigger_` true.
+  * Every other `have_trigger_` gate is on the PRESET path: `:180` (the constructor's blocking wait), `:715`
+    (SEQUENTIAL_START, reachable only from the `:702` exit), `:259/:269` (`armTour`), `:361`
+    (`triggerCallback`).  Under MANUAL none of them is on the route.
+
+ARM A/B, MANUAL, ON THE BENCH (`_stage/fsm-trigger-ab.sh`, `_stage/fsm-trigger-count.sh`)
+  Two parked runs, same scripted pose, same shell, same tour, ONE parameter apart: A = `true` (the old value),
+  B = `false` (the new default).  Run dir `logs/fsm-trigger-20261016_172040`.
+
+      transition / counter                       A (true)   B (false)
+      from WAIT_TARGET to GEN_NEW_TRAJ                  1          1
+      from WAIT_TARGET to SEQUENTIAL_START              0          0
+      Triggered!                                       16         16
+      WAYPOINT-REPEAT                                   1          1
+      PLANNER-STALL                                    42         42
+      from GEN_NEW_TRAJ to GEN_NEW_TRAJ              3137       3120
+      the shell's own arrivals                          2          2
+
+  **Identical.**  The 3137 vs 3120 (0.5 %) is run-to-run jitter, not an effect.  So the review's step 2 is
+  behaviour-neutral under `flight_type 1` -- and, because the FSM really is pulled out of WAIT_TARGET by the
+  goal callback, the story it tells ("1 Hz resend 硬拽") describes a mechanism that was already there by
+  design in MANUAL mode, not a defect the flag fixes.
+
+  The bench's ABSOLUTE counts are not flight counts (the scripted pose steps between waypoints, which is what
+  the 42 `PLANNER-STALL` lines are); only the A/B comparison is meaningful, and it is exactly the comparison
+  the review asked for.
+
+WHERE THE FLAG *DOES* BITE: THE PRESET PATH (`_stage/preset-gate.sh`, `_stage/preset-gate-launch.sh`)
+  * `flight_type 2` + `realworld_experiment true`: the constructor prints `Wait for 1 second.` and NEVER
+    reaches `readGivenWps()` -- it is parked in `while (!have_odom_ || !have_trigger_)` (`:180`) waiting for a
+    `/traj_start_trigger` that nothing in this stack publishes (confirmed: the only `traj_start_trigger`
+    strings in the repository are the subscription and a comment about it).
+  * `flight_type 2` + `realworld_experiment false`: the same run reaches the tour (`WP-INDEX: sequence armed,
+    starting the tour at z=2.00 m (gate 1.28 m, 2 waypoints)`).
+  * **So the flag is a PREREQUISITE FOR PLAN X, and the review's step 2 is worth keeping for that reason
+    alone** -- not for the transition counts.
+
+A FINDING THE TEST PRODUCED THAT WAS NOT BEING LOOKED FOR
+  In BOTH preset arms the tour was armed **from the FSM timer tick running INSIDE the constructor's spin
+  waits** -- the tick is created before the PRESET branch, and `:180`'s `rclcpp::spin_some(node_)` executes it,
+  so `WAIT_TARGET`'s start-altitude gate can call `armTour()` before the constructor has returned.  Measured
+  order in `logs/preset-launch-20261016_172838/ego-A.log`: `sequence armed: 2 waypoints` -> `Wait for 1
+  second.` -> `sequence armed, starting the tour at z=2.00 m` -- with no `Waiting for trigger` line at all in
+  arm A, i.e. the tour was armed during the one-second spin.  That is a reentrancy the PRESET path has never
+  been exercised enough to show, and it is recorded here rather than explained: this bench had no map and no
+  cloud, so the plan that followed was not the plan a real sortie would make.  Plan X's evaluation proper
+  needs the full stack parked, and that is the next round's work.
+
+ONE INSTRUMENT FAULT, OF THE USUAL FAMILY
+  The first version of the preset test drove the node with `ros2 run` and set ~10 parameters by hand, leaving
+  ~60 at their defaults: `fsm/drone_id` came out **-1**, both arms died with `std::length_error`, and the
+  signal drowned.  Worse, it published the fake pose on `/ego/odom_fcu` and set `-p odom_world:=...` -- but
+  the FSM's odometry topic is the HARD-CODED relative name `odom_world` (`ego_replan_fsm.cpp:104`) remapped by
+  the launch file, NOT a parameter, so neither arm received odometry and both "blocked".  The rewrite goes
+  through the launch file, which is the faithful configuration.  (The same trap as the earlier finding that
+  `bspline_topic` cannot be renamed by parameter: two of ego's inputs are wired by remap, and only one of them
+  is reachable as a parameter.)
+
+EVIDENCE FILES
+  logs/fsm-trigger-20261016_172040/      the MANUAL A/B (both ego logs kept)
+  logs/preset-gate-20261016_172434/      the hand-rolled preset test (kept: it is what found the odom trap)
+  logs/preset-launch-20261016_172838/    the launch-file preset test (the arming order quoted above)
+  tools: `_stage/fsm-trigger-ab.sh`, `_stage/fsm-trigger-count.sh`, `_stage/preset-gate.sh`,
+         `_stage/preset-gate-launch.sh`
