@@ -1457,3 +1457,63 @@ THE PICTURE, WITH FIVE RUNS IN ONE FRAME (inside each tour window, same-instant 
     rule) spent **36.0%** of its tour below 0.30 m on the ground sweep, while this run -- the same rule, ego's own
     code -- spent **0.0%**.  The difference is not the rule; it is something else between those two sorties
     (the plan's own z profile, the window, or the adapter's stale-hold branch commanding a stop).  It stays open.
+
+=== ROUND 78c: THE ROUTE B OBJECTIVE, CLOSED ITEM BY ITEM ================================================
+Each item with the evidence it rests on -- files, printed numbers, and the commit that carries them.
+
+  R1  EGO IS FED THE FCU'S OWN POSE  **done**.  `src/planner/fcu_pose_feed.py` (+ its selftest: the L->W->L round
+      trip closes to 1e-9 and a velocity's magnitude survives the conversion).  In flight it ran and was read
+      back: `fcu_pose_feed: in 7439 out 7439`, i.e. 7439 messages of the FCU's `LOCAL_POSITION_NED` converted to
+      L, and BOTH of ego's odometry inputs point at it (`run-mission.sh`, the Route B branch).  The honest size of
+      the benefit is IN THE RECORD (row 131): the LIO and the FCU's estimate agree to 6.58 mm, so this is failure
+      behaviour -- the EKF's gates stand between the sensor and the planner -- not accuracy.
+
+  R2  pva BY DEFAULT, AND THE MASK CHECKED  **done as specified, then refuted by flight, then adjusted** -- and
+      each of those three states has its own evidence:
+        * the mask really differed between the two sorties, from the wire logs themselves:
+              DIAG33-routeb      fields=posvelacc   type_mask=**2048** on 707 of 707  (acceleration ON the wire)
+              DIAG34-routeb-pv   fields=posvel      type_mask=**2496** on 2273 of 2273 (acceleration masked off)
+          (`2048 = IGNORE_YAW_RATE` = `POS_VEL_ACC_YAW_MASK`; `2496 = 2048 | 64 | 128 | 256` =
+          `POS_VEL_YAW_MASK`.  A trap worth recording: the wire log's `acc_*` COLUMN is what the message
+          contained, not what the FCU used -- the `type_mask` is the authority.)
+        * with pva the sortie was ABORTED BY NAME: `ABORT: geofence: truth at [-5.65 -6.61]` at 32.66 s, and the
+          reference's own numbers say why: acceleration steps up to **22.22 m/s^2** with alternating sign, because
+          the age rule evaluates two different splines in consecutive messages;
+        * so the ego arm's default is now **`posvel`** (position + velocity), the rectangle keeps `pos`, and
+          `posvelacc` is one knob away for when the sampler is continuous -- asserted in all four directions by
+          `tools/test-planner-knob.py`.
+
+  R3  THE CONTRACT SHELL  **done**.  `src/planner/ego_contract_shim.py` + selftest + `EGO_CONTRACT=adapter|shim`
+      in the harness (both asserted by the knob test).  Verified in FLIGHT, which is stronger than the selftest:
+      the shell forwarded 5216 messages, `trajectory_id` = [1, 2] (one per waypoint), `trajectory_flag` = [1, 3],
+      and COMPLETED was carried for the remaining **6.7 s** -- it keeps talking.
+
+  R4  THE PARKED VERIFICATION  **done**, item by item (`_stage/s7-parked-routeb.sh`, `_stage/s7-evidence.py`):
+      `/position_cmd` 7761 messages at **100.0 Hz** over 77.6 s, frame `world`, velocity and acceleration
+      NON-ZERO on every sample (max 2.99 m/s, 4.05 m/s^2 -- parked, so small); the contract's own recording of
+      `/plan/cmd` agrees with what the shell received to **0.000000 m / 0.000000 m/s / 0.000000 m/s^2**, i.e. the
+      shell changes only id and flag; ego planned on the FCU's pose (143 EXEC_TRAJ / 66 REPLAN_TRAJ, no
+      "no odom." storm).  Two instrument findings came out of it and are recorded: the CONTRACT recorder
+      subscribes TRANSIENT_LOCAL and therefore cannot hear traj_server's VOLATILE `/position_cmd` (the shell can,
+      with the matching profile), and a shell banner without `flush` is lost to SIGTERM.
+
+  R5  THE COMPARISON FLIGHT  **done, twice**, with the predictions written before each:
+        DIAG33-routeb   (pva)     ABORTED by the geofence, 95th error 3.039 m, > 1 m share 47.38%;
+        DIAG34-routeb-pv (posvel) COMPLETED, no abort, 95th **1.629 m**, > 1 m share **13.26%**, and the
+                                   plan/flown gap **0.015 m** -- the tightest of any sortie.
+      The five-run table is in row 133.  R5's own predictions (95th < 0.5 m, > 1 m share < 1%, gap < 0.05 m):
+      two of the three were REFUTED, and the refutation is the round's result -- velocity feed-forward alone does
+      not close the tail, because the reference still steps by up to 1.5 m between messages.
+
+THE STATE OF ROUTE B, in one sentence: **it flies the mission, it delivers the contract, it carries ego's own
+velocity feed-forward and it follows the plan more tightly than anything before it -- and its remaining fault is
+ego's own sampling rule, which steps the reference up to ~1.5 m once every few seconds.**  The fix for that (a
+~25-line, reversible continuity patch to `traj_server`: re-anchor + monotone + 0.5 s lookahead) is a decision the
+owner reserved -- he asked for the ORIGINAL traj_server -- so it is not taken here; the adapter path
+(rounds 73-75) remains the flight-verified alternative with the better tail (0.943-0.975 m) and no feed-forward.
+
+One observation this objective leaves OPEN, recorded rather than smoothed: round 69 (the adapter, the SAME age
+rule) spent 36.0% of its tour below 0.30 m; this run (ego's own age rule) spent 0.0%.  Same rule, different
+outcome -- so the ground sweep is not explained by the sampling rule alone.
+
+Figure `docs/figures/traj-xy-DIAG34-routeb-pv.png`, sha256 daa258c10874db9e6a84636360a8e6122a3faad4aa38625d15fabb54b21d0c38 -- Route B's first complete mission, plan and truth on the pillar field.
