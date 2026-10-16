@@ -1,0 +1,77 @@
+FLIGHT A -- ROUTE B + THE POST-COMPLETED HOLD, FLOWN AND SCORED AGAINST ITS PRE-REGISTRATION  (2026-10-16)
+
+TAG/run:  FLIGHTA-routeb-hold   (logs/missionA-FLIGHTA-routeb-hold), flown 17:52:44, watchdog 420 s, rc=0
+ARM:      PLANNER=ego, EGO_CONTRACT=shim, EGO_CLOUD_WINDOW=8.0 (DIAG34's value, so the delta is the HOLD),
+          EGO_SELF_BLIND=0.0, BRIDGE_FIELDS=posvel, ego on the FCU's own estimate, one cell of inflation.
+          Verified BEFORE arming: the launch file's `realworld_experiment` default is false and the repo and
+          flight copies hash identically; the arm's four values were echoed into the flight log.
+PRE-REG:  docs/metrics/flightA-prereg-20261016.txt -- written, with a falsifier per prediction, BEFORE the
+          aircraft was armed.  Scorer: `_stage/flightA-verdict.py`.
+
+THE SCORE: 4 OF 6 HOLD
+
+  P1  0 `WAIT_TARGET -> SEQUENTIAL_START` transitions                HOLDS  (0 measured)
+  P2  post-COMPLETED hold: step <= 0.001 m, |v| = 0                  HOLDS  (641 held messages; largest step
+                                                                            after the transition 0.000000 m; the
+                                                                            step INTO the hold was 0.0896 m)
+  P3  2-5 % inside a body, 5-9 % below 0.10 m, min -0.20..-0.30      FALSIFIED, IN THE BETTER DIRECTION:
+                                                                      0.42 % inside a body, 1.81 % below
+                                                                      0.10 m, min **-0.136 m** -- C2-ego is
+                                                                      still NOT met (0 samples inside required)
+  P4  TELEM and NEW-SPLINE present, 0 INVALID-TIME                   HOLDS  (54 TELEM, 30 NEW-SPLINE, 0)
+  P5  pre-COMPLETED p99 jump keeps its 1.5 m-scale tail              FALSIFIED (median 0.0011, p99 0.0226,
+                                                                      max 0.9945 m)
+  P6  two arrivals, TOUR COMPLETE, landed, no ABORT                  HOLDS  (0 ABORT lines, 2 arrivals,
+                                                                      TOUR COMPLETE, `landed: armed=False
+                                                                      mode=LAND`, `phase -> done`)
+
+THE MISSION ITSELF, FROM ITS OWN LOGS
+  * the shell: `ARRIVED at waypoint 1 of 2 (0.190 m)`, `ARRIVED at waypoint 2 of 2 (0.114 m)`,
+    `TOUR COMPLETE -- trajectory_flag becomes COMPLETED and the stream KEEPS TALKING`
+  * the supervisor: `the plan box has DECLARED THE TOUR COMPLETE (trajectory_flag = COMPLETED after waypoint
+    2): 30.3 s of route, 1659 setpoints relayed by the bridge`, then `landed: armed=False mode=LAND`,
+    `phase -> done`; the FCU's last words `Arming motors | SIM Hit ground at 0.488755 m/s | Disarming motors`
+  * truth: 93 571 samples over 77.9 s, closest approach **-0.136 m** at t=57.1 s, 397 of 93 571 samples
+    inside a pillar body (0.42 %)
+
+WHERE THE PENETRATION IS, AND AN OPEN DISCREPANCY ABOUT ROW 138
+  * It is a SINGLE LOCALIZED EPISODE, near the end of the tour, at 1.73 m altitude, at (E -2.57, N -4.35) --
+    0.17 m from the centre of the pillar at (-2.50, -4.50) and 1.8 m OFF the leg it was flying.  DIAG34's
+    episode is the same shape at a different place: (E +0.48, N -1.52) at 1.85 m, 0.91 m off its leg.
+  * Per-leg, over the airborne samples: this run's whole excursion is one cluster; the ground samples
+    (U <= 0.30 m, 50 952 of them) keep **+0.200 m** of clearance, so nothing is entered while landing.
+  * **But**: DIAG34's own `shim_trace.csv` -- the stream row 138 described as being "thrown around" after
+    COMPLETED -- ends with **671 messages over 6.7 s that are completely STATIC** (x -1.0009..-1.0009,
+    y 0.9842..0.9842).  Row 138's evidence came from `setpoints.csv` (2273 rows, the bridge's own stream) over
+    "sim 58-76 s", and that file's clock (`t_sim_us`) has NOT been aligned to the trace's (`t_wall`), so the
+    wander row 138 measured cannot yet be placed relative to the COMPLETED flag.  Two honest possibilities
+    remain: the wander is BEFORE COMPLETED (in which case the hold does not address it and P5's falsification
+    is simply that the sawtooth is not in the pre-COMPLETED stream either), or the two files describe
+    different processes.  **This is recorded as an open discrepancy, not resolved**: it concerns a previous
+    round's conclusion, and resolving it needs the clock alignment (the supervisor already builds one for its
+    own A4 row) rather than another reading of the same numbers.
+
+WHAT IMPROVED, AND WHY I AM NOT CALLING IT AN EFFECT
+  Sample-for-sample: inside-a-body 3511 -> 397 (8.8x fewer) and depth -0.271 -> -0.136 m (2x shallower).  **No
+  mechanism in this arm explains an avoidance change**: the hold acts only after COMPLETED (and the penetration
+  is inside the tour), the flag is behaviour-neutral under MANUAL (P1), the clock change is defensive, and the
+  map sees exactly what DIAG34's map saw (same relay window, same cell of inflation, same pose source).  The
+  project's own measured run-to-run spread on this mission is sd 0.143 m, i.e. LARGER than the difference
+  between these two runs.  So the improvement is recorded as VARIATION, not as the hold's doing -- and the
+  claim the hold DOES earn is P2, measured in the air for the first time.
+
+INSTRUMENT FIXES THIS ROUND (all found by the work above, none of them cosmetic)
+  1. `_stage/s12-fake-odom.py` TELEPORTED (5.65 m jumps with a zero twist).  It now travels at `--speed`
+     (1.0 m/s default, `--speed 0` = the old behaviour) and publishes the twist that moves it.  Plan X's
+     round-1 failure was this instrument, not the design.
+  2. The bench rigs killed `$TS_PID`/`$LIO_PID`, which are the `ros2 run` WRAPPERS -- the executables survived.
+     MEASURED: Flight A's pre-flight cleanup found THREE leftover `traj_server` processes and three
+     `super_lio_node`s.  Both rigs now also `pkill -f` the bench's own executables.  (`_stage/planx-ab.sh`'s
+     A/B was checked for the contamination this could have caused -- `_stage/planx-contamination.py`: the
+     forwards step at the tracking scale, p99 0.008 m, and each log's committed ids are strictly increasing --
+     so the A/B stands.)
+  3. Three bugs in my OWN scorers, each of the "no data read as a value" family this project keeps meeting:
+     the tour/landing split was applied the wrong way round (it put 100 % of the penetration in the landing
+     window, the exact opposite of the truth), the shell's log was looked for as `shim.log` (bench name only --
+     in flight runs `run-mission.sh` captures it into `traj.log`, so P6 was scored FALSIFIED on a file that
+     does not exist), and `LAND` was grepped from the supervisor's text instead of its own `landed:` line.

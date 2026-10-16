@@ -1,0 +1,54 @@
+FLIGHT A -- PRE-REGISTRATION, WRITTEN BEFORE THE AIRCRAFT IS ARMED  (2026-10-16)
+
+WHAT IT IS.  Route B, unchanged in every way that the map can see, plus the two corrections that have not yet
+been in the air: the post-COMPLETED HOLD (round 81's fix, bench-proven at 17:30 and never flown) and
+`fsm/realworld_experiment = false` (behaviour-neutral under MANUAL by the bench A/B, carried because it is now
+the launch default and Plan X's prerequisite).  `traj_server`'s REVIEW DEFENCE/1 rides along (clock source,
+early return on invalid time, telemetry).
+
+THE CONFIGURATION, WITH ITS PROVENANCE -- the point of a pre-registration is that the aircraft flies the arm
+this file names and not whatever the shell happens to inherit:
+  * `PLANNER=ego`, `EGO_CONTRACT=shim` (ego's own `traj_server` samples the spline; `run-mission.sh:210`)
+  * `EGO_CLOUD_WINDOW=8.0` -- the SAME value DIAG34 flew, so the delta against DIAG34 is the hold and not the
+    relay (the measured best of 0/3/8/15 s, and the arm that gave +0.150 m on the crossing that gave -0.164 at 0)
+  * `EGO_SELF_BLIND=0.0`, `BRIDGE_FIELDS=posvel` (both defaults; `posvelacc` was refuted by DIAG33's abort)
+  * ego's pose source: the FCU's OWN estimate (`fcu_pose_feed --in /fcu/odom`, R1), NOT the simulator's truth
+  * one cell of inflation, `dist0` 0.5, `ground_height` -0.50 -- all documented defaults, none re-decided here
+  * the tour: `worlds/diagonal.yaml`'s two corners, pad -> W(-4,-4) -> W(-1,-1), vertical-first take-off
+
+PREDICTIONS, EACH WITH ITS FALSIFIER.  A prediction whose falsifier cannot be read off a log is not one.
+  P1  `realworld_experiment=false` changes NOTHING in flight: `WAIT_TARGET -> SEQUENTIAL_START` appears **0**
+      times and the transition set matches DIAG34's shape.
+      FALSIFIER: any `SEQUENTIAL_START` transition, or a transition count that moves by more than run jitter.
+  P2  THE HOLD WORKS IN THE AIR: from the first COMPLETED message onwards, `shim_trace.csv`'s `jump_m` is
+      <= 0.001 m and |v| = 0 for the rest of the run.
+      FALSIFIER: any post-COMPLETED step above 0.01 m, or a non-zero |v| after COMPLETED.
+      (DIAG34's same window: the command went to (-2.5,-1.2), (+0.4,-1.25), (+1.1,-2.0) and back at 1.4-2.1 m/s,
+       with the implied speed reaching 4.25 m/s at p95.)
+  P3  C2-ego is **NOT** met by this arm, and its numbers stay close to DIAG34's: of the truth samples,
+      **2-5 % inside a pillar body** and **5-9 % below 0.10 m**, minimum around -0.20 to -0.30 m.
+      FALSIFIER: 0 samples inside a body AND >= 95 % at >= 0.10 m (i.e. the arm passes, which would mean the
+      hold or the clock change moved avoidance -- neither touches the map, so this is a genuine surprise).
+      The reasoning is that nothing in this arm changes what the map sees: same relay window, same one cell of
+      inflation, same sampler, same pose source as DIAG34 (which measured 3.20 % inside and 6.63 % below 0.10 m).
+  P4  `traj_server`'s telemetry appears in the flight log for the first time: `TELEM:` and `NEW-SPLINE:` lines
+      are present, `INVALID-TIME` is **0**.
+      FALSIFIER: 0 TELEM lines, or any INVALID-TIME line.
+  P5  THE SAWTOOTH IS UNCHANGED, because review step 5 (the continuity patch) is NOT applied: the
+      pre-COMPLETED `jump_m` distribution keeps its 1.5 m-scale tail.
+      FALSIFIER: a pre-COMPLETED p99 jump under 0.05 m.
+  P6  The mission completes: the shell logs two arrivals and `TOUR COMPLETE`, the supervisor records the tour
+      as finished, and the flight ends with LAND + disarm rather than a supervisor abort.
+      FALSIFIER: any `ABORT:` line in `supervisor.log`, or a watchdog kill (rc=143 / hung=1).
+
+WHAT WOULD MAKE THE FLIGHT WORTHLESS RATHER THAN NEGATIVE (decided now, so it cannot be decided after the
+fact by whoever is looking at the numbers): if `EGO_CLOUD_WINDOW` did not actually reach 8.0, or if
+`EGO_CONTRACT` was not `shim`, or if the truth tap did not record, the run is an INVALID arm and gets recorded
+as such -- not as evidence about the hold.
+
+EVIDENCE THIS FILE WILL BE CHECKED AGAINST
+  logs/missionA-<TAG>/supervisor.log      the abort lines, the tour's end, the phase log
+  logs/missionA-<TAG>/shim_trace.csv      ids, flags, jump_m, |v| -- P2 and P5 live here
+  logs/missionA-<TAG>/traj_server.log     P4
+  logs/missionA-<TAG>/tap.csv             the truth, for C2-ego (`_stage/c2-prime.py`)
+  logs/missionA-<TAG>/ego_planner.log     P1 (the FSM's transition lines)
