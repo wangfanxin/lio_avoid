@@ -1651,3 +1651,52 @@ TWO FIXES, and they are separable:
   * **THE STRUCTURAL ONE, STILL THE OWNER'S CALL**: the `traj_server` continuity patch (re-anchor on a new spline +
     monotone advance + lookahead), which removes the sweep-and-restart for the whole flight rather than only
     after the tour.
+
+=== ROUND 82: FIX 1 IS IN -- AFTER COMPLETED THE CONTRACT HOLDS ==========================================
+
+The owner asked for the cheap fix of round 81, and it is done, tested and benched.
+
+WHAT CHANGED (`src/planner/ego_contract_shim.py`):
+  * `rewrite()` now pins the forwarded message to the LAST WAYPOINT the moment `done` is set, with velocity and
+    acceleration zeroed and the yaw LATCHED at whatever the first post-COMPLETED message carried (a yaw jump during
+    the landing would be a spin command).  Before COMPLETED the forwarding is still verbatim: the shell keeps its
+    one job of `trajectory_id` per waypoint and a real `trajectory_flag`, and the hold is the single deliberate
+    exception, documented in the file's header and in `rewrite()`'s docstring;
+  * a second, LATENT defect came out of writing the test: the odom callback passed `None` whenever the reported
+    twist was exactly (0,0,0), and the sequencer reads `None` as "speed unknown" -- which is NOT "slow" and
+    therefore BLOCKS the arrival.  A stationary vehicle reporting a clean zero would have stalled the whole tour;
+    in flight it only worked because the FCU's velocity noise is never exactly zero.  The callback now passes the
+    twist through as it is.
+
+THE BENCH (`_stage/s12-rig.sh`, parked, no arming): a SCRIPTED pose (`_stage/s12-fake-odom.py`) drives the
+itinerary pad -> waypoint 1 -> waypoint 2 -> stay, so the shell really completes a real tour while ego and ego's
+own `traj_server` run and `/position_cmd` really flows.  The itinerary is taken from the WORLD FILE through the
+SAME conversion the shell uses (`_targets_from_world`) -- the first version of the bench passed W coordinates by
+hand, the shell's targets are in L (waypoint 1 is (-4,+4) there), and the mismatch cost one whole bench run.  The
+frame conversion is now shared rather than retyped.
+
+RESULT, from the shell's own trace:
+
+    shim: ARRIVED at waypoint 1 of 2 (0.116 m), dwelling 5.0 s
+    shim: next waypoint 2 of 2
+    shim: ARRIVED at waypoint 2 of 2 (0.116 m), dwelling 5.0 s
+    shim: TOUR COMPLETE -- trajectory_flag becomes COMPLETED and the stream KEEPS TALKING
+
+    the contract, sampled every ~2.7 s:      wp 1 flag 1 (moving, |v| up to 1.89 m/s -- untouched)
+                                             wp 2 flag 1
+                                             wp 2 flag 3   <-- COMPLETED, and from here:
+    AFTER COMPLETED (2364 messages over 23.6 s):
+      the point spans x -0.995039..-0.995039   y 1.000068..1.000068   z 1.884430..1.884430
+        -- a POINT, not a sweep: the reference is pinned
+      |v| max 0.000000 m/s, acceleration zero, yaw latched
+      the stream kept publishing COMPLETED for the whole 23.6 s
+
+  the one 0.1156 m step in that window is the transition itself -- the moment the sweeping reference is replaced by
+  the pinned hold -- and after it the point does not move at all.  Compare round 78b, where the same window had the
+  commanded point going to (-2.5,-1.2), (+0.4,-1.25), (+1.1,-2.0) and back at 1.4-2.1 m/s with implied command
+  speeds up to 14.5 m/s: that is what this fix removes.
+
+STILL OPEN, and it is fix 2: the sweep BEFORE and DURING the flight is ego's own sampling rule
+(`t_cur = now - start_time`), so the reference still steps up to ~1.5 m between messages while the mission is
+running (round 78b: 12 steps above 0.5 m in 52.5 s, the stream travelling 45.3 m for a ~10 m route).  The
+`traj_server` continuity patch (re-anchor + monotone + lookahead) remains the owner's call.

@@ -18,11 +18,16 @@ SO THIS SHELL DOES EXACTLY TWO THINGS, and nothing else:
   2. it REWRITES THE CONTRACT on the way through -- copies `/position_cmd` to `/plan/cmd` verbatim, except
      `trajectory_id = waypoint index + 1` and `trajectory_flag = READY` while flying, `COMPLETED` once the last
      waypoint is reached and settled -- and it KEEPS TALKING after COMPLETED, because that rule is what let the
-     supervisor tell "done" from "dead" in the first place.
+     supervisor tell "done" from "dead" in the first place.  **From COMPLETED on it also HOLDS**: the forwarded
+     point is pinned to the last waypoint with zero velocity, zero acceleration and a latched yaw.  The contract
+     asks the stream to keep TALKING, not to keep FLYING, and the sortie that showed the difference spent ~20 s of
+     its landing window being thrown around by ego's own sweeping reference (round 81).
 
-IT DOES NOT SAMPLE, FILTER, RATE-LIMIT OR PREDICT ANYTHING.  If the numbers on the wire differ from ego's own,
-that is a bug in this file, not a design choice -- which is why every forwarded message is also written to a CSV
-(`--trace-csv`), so the forwarding can be checked against `/position_cmd` afterwards rather than trusted.
+IT DOES NOT SAMPLE, FILTER, RATE-LIMIT OR PREDICT ANYTHING -- before COMPLETED.  If the numbers on the wire differ
+from ego's own there, that is a bug in this file, not a design choice -- which is why every forwarded message is
+also written to a CSV (`--trace-csv`), so the forwarding can be checked against `/position_cmd` rather than
+trusted.  The post-COMPLETED hold is the ONE deliberate exception, it is a few lines, and the bench measures it:
+after the flag turns COMPLETED the forwarded point is a single coordinate with |v| = 0 (`_stage/s12-rig.sh`).
 
 THE POSE IT USES for arrival/dwell is the same state the planner is fed (`/ego/odom_fcu`, the FCU's own estimate
 in L) -- the owner's call: the mission must not be sequenced on a different estimate from the one it plans on.
@@ -78,6 +83,10 @@ class TourSequencer:
         self.goals_sent = 0
         self.n_ready = 0
         self.n_completed = 0
+        #: the yaw latched when the tour completed, so the post-COMPLETED hold cannot command a spin
+        self._hold_yaw = None
+        #: how many forwarded messages were rewritten to the hold (round 81)
+        self.n_held_after = 0
 
     # ---- inputs ---------------------------------------------------------------------------------------
     def on_odom(self, p_l, v_l=None, now=0.0):
@@ -129,19 +138,40 @@ class TourSequencer:
         (the adapter's rule, `ego_source.py:195`).  Everything else in the message is ego's own and is not
         touched -- including `header.frame_id`, which stays what `traj_server` wrote (`world`); the bridge
         accepts both names for this frame (`bridge/bridge_node.py:54-57`).
+
+        ONE EXCEPTION, AND IT IS MEASURED (round 81): **after the tour is complete the message is rewritten to a
+        HOLD.**  The contract requires the stream to keep TALKING after COMPLETED, not to keep FLYING, and the
+        sortie that showed the difference (`DIAG34-routeb-pv`) spent **~20 s of the landing window being thrown
+        around**: `setpoints.csv` records the commanded point going to (-2.5,-1.2), then (+0.4,-1.25), then
+        (+1.1,-2.0) and back at 1.4-2.1 m/s, with the command's implied speed between messages reaching 4.25 m/s
+        at the 95th percentile and 14.5 m/s at the maximum (median 0).  That was ego's own age rule sweeping and
+        snapping (`traj_server.cpp:171-172`) -- motion the mission was over.  So from the moment `done` is set,
+        the forwarded position is pinned to the LAST WAYPOINT (the point the aircraft has just arrived at, within
+        the arrival gate), the velocity and acceleration are zeroed, and the yaw is latched at whatever the first
+        post-COMPLETED message carried, so nothing spins during the landing.  Before COMPLETED the forwarding is
+        still verbatim.
         """
         msg.trajectory_id = int(self.i_goal) + 1
         if self.done:
+            if self._hold_yaw is None:
+                self._hold_yaw = float(msg.yaw)          # latch once: a yaw jump mid-landing is a spin command
+            p = self.targets[-1]
+            msg.position.x, msg.position.y, msg.position.z = float(p[0]), float(p[1]), float(p[2])
+            msg.velocity.x = msg.velocity.y = msg.velocity.z = 0.0
+            msg.acceleration.x = msg.acceleration.y = msg.acceleration.z = 0.0
+            msg.yaw, msg.yaw_dot = self._hold_yaw, 0.0
             msg.trajectory_flag = TRAJECTORY_STATUS_COMPLETED
             self.n_completed += 1
+            self.n_held_after += 1
         else:
             msg.trajectory_flag = TRAJECTORY_STATUS_READY
             self.n_ready += 1
         return msg
 
     def summary(self):
-        return ("shim: %d waypoint(s), %d goal(s) sent, %d READY and %d COMPLETED messages forwarded, %s"
-                % (len(self.targets), self.goals_sent, self.n_ready, self.n_completed,
+        return ("shim: %d waypoint(s), %d goal(s) sent, %d READY and %d COMPLETED messages forwarded "
+                "(%d of them held at the last waypoint), %s"
+                % (len(self.targets), self.goals_sent, self.n_ready, self.n_completed, self.n_held_after,
                    "TOUR COMPLETE" if self.done else "waypoint %d" % (self.i_goal + 1)))
 
 
@@ -158,9 +188,17 @@ def _selftest() -> int:
     t0 = 1000.0
     seq = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], arrive_m=0.30, hold_s=1.0, log=lambda s: print("   " + s))
 
-    class M:                                        # a stand-in for PositionCommand
-        trajectory_id = 0
-        trajectory_flag = 0
+    class Vec:                                      # the shape of PositionCommand's x/y/z triples
+        def __init__(self):
+            self.x = self.y = self.z = 0.0
+
+    class M:                                        # a stand-in for PositionCommand, fields and all: the hold
+        def __init__(self):                         # rewrite touches position/velocity/acceleration/yaw, so a
+            self.trajectory_id = 0                  # two-field stub cannot exercise it (it raised AttributeError
+            self.trajectory_flag = 0                # the first time this test ran, which is the test working)
+            self.position, self.velocity, self.acceleration = Vec(), Vec(), Vec()
+            self.yaw = 0.0
+            self.yaw_dot = 0.0
 
     m = M()
     # THE FLIGHT'S OWN ORDER, because the first version of this test teleported the vehicle and asserted a
@@ -194,10 +232,36 @@ def _selftest() -> int:
                    % (m.trajectory_id, m.trajectory_flag))
     if seq.goal_to_send(now=t0 + 3.0) is not None:
         bad.append("a goal was offered after the tour was complete")
-    # IT KEEPS TALKING: further messages are still forwarded, still COMPLETED
-    seq.rewrite(m, now=t0 + 4.0)
-    if m.trajectory_flag != TRAJECTORY_STATUS_COMPLETED:
+    # IT KEEPS TALKING: further messages are still forwarded, still COMPLETED -- AND IT NO LONGER MOVES (round 81)
+    msg = m                                          # the same stand-in, reused with its new fields
+    msg.position.x, msg.position.y, msg.position.z = 9.0, 9.0, 9.0
+    msg.velocity.x, msg.velocity.y, msg.velocity.z = 3.0, 3.0, 3.0
+    msg.acceleration.x, msg.acceleration.y = 5.0, 5.0
+    msg.yaw = 1.234
+    seq.rewrite(msg, now=t0 + 4.0)
+    if msg.trajectory_flag != TRAJECTORY_STATUS_COMPLETED:
         bad.append("the stream stopped saying COMPLETED -- the supervisor needs it on every message")
+    last_wp = seq.targets[-1]
+    held = (float(msg.position.x), float(msg.position.y), float(msg.position.z))
+    if max(abs(held[k] - float(last_wp[k])) for k in range(3)) > 1e-9:
+        bad.append("after COMPLETED the forwarded point is not the last waypoint: %s vs %s"
+                   % (held, tuple(float(x) for x in last_wp)))
+    if any(abs(v) > 1e-12 for v in (msg.velocity.x, msg.velocity.y, msg.velocity.z)):
+        bad.append("after COMPLETED the forwarded VELOCITY is not zero: %s"
+                   % (msg.velocity.x, msg.velocity.y, msg.velocity.z))
+    if any(abs(a) > 1e-12 for a in (msg.acceleration.x, msg.acceleration.y, msg.acceleration.z)):
+        bad.append("after COMPLETED the forwarded ACCELERATION is not zero")
+    yaw1 = float(msg.yaw)
+    msg.position.x = -7.0
+    msg.yaw = -3.0
+    seq.rewrite(msg, now=t0 + 4.1)
+    print("   after COMPLETED: point pinned to the last waypoint %s, |v| = 0, yaw latched at %.3f (second"
+          " message keeps %.3f)"
+          % (tuple(round(float(x), 3) for x in last_wp), yaw1, float(msg.yaw)))
+    if abs(float(msg.yaw) - yaw1) > 1e-12:
+        bad.append("the post-COMPLETED hold let the yaw move (%.3f -> %.3f)" % (yaw1, float(msg.yaw)))
+    if seq.n_held_after < 2:
+        bad.append("the hold counter did not move (%d)" % seq.n_held_after)
     # and the goal cadence
     seq2 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], goal_resend_s=1.0, log=lambda s: None)
     seq2.on_odom([0.0, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0)
@@ -210,7 +274,8 @@ def _selftest() -> int:
         for b in bad:
             print("   - %s" % b)
         return 1
-    print("\nCONTRACT SHIM SELFTEST PASSED: id per waypoint, COMPLETED keeps talking, goal cadence")
+    print("\nCONTRACT SHIM SELFTEST PASSED: id per waypoint, COMPLETED keeps talking WITHOUT moving, yaw latched, "
+          "goal cadence")
     return 0
 
 
@@ -273,9 +338,14 @@ def main() -> int:
     n = {"fwd": 0}
 
     def on_odom(m: Odometry):
+        # A REPORTED ZERO IS "SLOW", NOT "UNKNOWN".  The first version passed `None` whenever the twist was
+        # (0,0,0), and the sequencer reads `None` as "speed unknown" -- which BLOCKS the arrival and therefore the
+        # whole tour.  In flight it worked only because the FCU's velocity noise is never exactly zero; a
+        # stationary vehicle reporting a clean zero would have stalled the mission.  A message callback always
+        # HAS a twist, so it is passed through as it is.
         v = [m.twist.twist.linear.x, m.twist.twist.linear.y, m.twist.twist.linear.z]
         seq.on_odom([m.pose.pose.position.x, m.pose.pose.position.y, m.pose.pose.position.z],
-                    v if float(np.linalg.norm(v)) > 1e-9 else None, now=node.get_clock().now().nanoseconds * 1e-9)
+                    v, now=node.get_clock().now().nanoseconds * 1e-9)
 
     def on_cmd(m: PositionCommand):
         seq.rewrite(m, now=node.get_clock().now().nanoseconds * 1e-9)
