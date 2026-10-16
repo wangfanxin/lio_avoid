@@ -1,0 +1,57 @@
+FLIGHT C: THE CLEAN PLANNER + A SMALL REFERENCE + THE PLAN'S OWN HEADING -- AND THE FIRST RUN THAT NEVER
+ENTERED A PILLAR  (2026-10-16)
+
+Run `logs/missionA-FLIGHTC-clean-slow`, rc=0, 82 s of truth, landed, no abort.
+Arm: the tree AFTER the minimum-diff pass (`_stage/apply-cleanup1.py`: CLEARANCE/1 removed, COLLISION-FIX/1 H3
+removed, six stale `.pre-*` copies removed, the dead `diag_msgs` counter made to count, the duplicated
+`publishWaypointIndex()` removed -- **928 added / 22 removed lines over 6 files against upstream HEAD, 523 of
+them code**), KEEPING H1 (the FSM checks the vehicle), H2 (the safety re-commit is tagged), the 0.35 m reference
+clamp, the raised flight-controller limits, and the plan's own heading; NEW: `EGO_MAX_VEL=0.8` / `EGO_MAX_ACC=1.0`
+(the reference's own speed and acceleration ceilings, which feed all four `optimization/`+`manager/` copies and
+both `bspline/limit_*` terms).
+
+THE RESULT
+
+    measurement                    Flight A     Flight B     **Flight C**
+    truth minimum clearance        -0.136 m     -0.242 m     **+0.168 m**
+    samples inside a pillar body     0.42 %       2.72 %       **0.00 %**
+    samples below the 0.10 m bar     1.81 %       4.29 %       **0.00 %**
+    inside the old 0.20 m footprint 2.99 %       5.75 %       0.909 %
+    **C2-ego**                      NOT MET      NOT MET      **MET**
+
+`C2-ego` is the goal's own criterion: >= 95 % of truth samples at >= 0.10 m from every pillar surface **and** 0
+samples inside a body.  With a minimum of **+0.168 m**, 100 % of the 98 323 samples satisfy the first half and
+none violates the second.  **This is the first time in this investigation that the aircraft has flown the
+diagonal field without entering a pillar**, and it is the first run whose C2-ego verdict is MET.
+
+The other rows are unmoved where they should be: A1 4.92 mm (<= 20), A2 1.97 mm (<= 50), C1 0.014 m from the last
+commanded point.  The harness also prints `*** WENT THROUGH A PILLAR ***` on this run -- that line is its verdict
+on the OLD 0.20 m footprint row (894 of 54 107 samples inside 0.20 m), not a penetration, and the acceptance row
+for the ego arm was restated on 2026-10-16 precisely because this planner cannot hold 0.20 m in a 0.81 m field
+(`docs/metrics/c2-prime-channel-20261016.txt`).
+
+WHAT IS ATTRIBUTABLE TO WHAT (the arm had four parts, and the earlier flights separate them)
+  * the two plan-side changes made in Flight B (the A* clearance cost and the whole-spline acceptance test)
+    REGRESSED it there -- 148 plans with negative clearance -- and removing them is the single biggest
+    difference between B and C;
+  * the tracking-side changes were already measured good in B (reference max step 0.9945 -> 0.3576 m, tracking
+    error p95 0.514 -> 0.356, max 0.922 -> 0.392 m);
+  * the small reference (0.8 m/s / 1.0 m/s²) additionally puts the demanded speed into the band where the
+    tracking error is 0.047 m, i.e. inside the plan's own 5-17 cm margin;
+  * and the plan's own heading now reaches the FCU instead of being replaced by 0 (this is the first flight in
+    which the aircraft turned toward its next waypoint rather than flying a fixed heading).
+  So the honest statement is that the outcome changed when the two plan-side experiments came out and the
+  reference was made small -- not that any single one of those four is sufficient on its own.
+
+NOT ESTABLISHED
+  * C2-ego is MET ON ONE RUN.  This project's own measured run-to-run spread on this mission is sd 0.143 m on the
+    clearance minimum, which is comparable to the whole margin (0.168 m), so a reproduction is required before
+    this counts as a property of the configuration rather than of the run.
+  * The 0.20 m footprint row is still not met (0.909 % inside), which is expected and was the reason the ego
+    arm's row was restated.
+  * Nothing here says WTHe raised flight-controller limits (C1) helped: their own observable -- the FCU's internal
+    reference against the wire -- has still not been read.
+
+Figure: `docs/figures/traj-xy-FLIGHTC-clean-slow.png` (truth in red, every committed plan in light blue, 45 plans,
+the numbers on the figure).  Evidence: this file, `docs/metrics/flightB-20261016.txt`,
+`_stage/AUDIT-planner-minimum-diff-20261016.md`.

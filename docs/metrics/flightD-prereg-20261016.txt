@@ -1,0 +1,50 @@
+FLIGHT D -- PRE-REGISTRATION: THE ACCELERATION GOES ON THE WIRE  (2026-10-16, written before arming)
+
+THE OWNER'S INSTRUCTION: "Mask 改好,a 也要" -- send the acceleration feed-forward too.
+
+WHAT CHANGES, AND ONLY THIS: `BRIDGE_FIELDS=posvelacc`, i.e. the MAVLink `type_mask` goes from
+`POS_VEL_YAW_MASK` (2496 = position+velocity+yaw, with AFX/AFY/AFZ set to IGNORE, `mavlink_impl.py:55`) to
+`POS_VEL_ACC_YAW_MASK` (**2048 = IGNORE_YAW_RATE only**, `:57`), so the acceleration column that has always been
+in the message is finally used by the flight controller.  Everything else is Flight C, which is the first run in
+this investigation that never entered a pillar: the cleaned tree (928 added lines over 6 files after
+`_stage/apply-cleanup1.py`), H1 (the FSM checks the vehicle), H2 (the safety re-commit is tagged), the 0.35 m
+reference clamp, the raised flight-controller limits, the plan's own heading, and `EGO_MAX_VEL=0.8` /
+`EGO_MAX_ACC=1.0`.
+
+WHY THIS IS WORTH DOING NOW, WHEN IT WAS REFUTED BEFORE.  `posvelacc` was refuted by DIAG33, which ABORTED on the
+geofence with the reference acceleration alternating at 22 m/s² -- because the age rule was jumping the sampled
+point and differentiating across the jump.  Three things have changed since: the reference is clamped to 0.35 m
+(a measured max step of 0.3576 m against 0.9945 m), the plan's own acceleration ceiling is 1.0 m/s² instead of a
+soft 3.0, and the flight controller's shaper limits are raised (WP_ACC 2.5 -> 6.0, `PSC_NE_JERK` 5 -> 30,
+`ATC_ANGLE_MAX` 30 -> 40 deg) so it can actually act on what we send.  The point of the arm is that the FCU's
+acceleration-limited reference model has been *reconstructing* an acceleration it was never given; with the mask
+open it is given the plan's own.
+
+PREDICTIONS, EACH WITH ITS FALSIFIER
+  D1  the wire carries it: `wire.csv`'s `type_mask` is **2048** on every row and the acceleration column is
+      non-zero, against `0.000000` in the `posvel` arms (`flight.BIN`'s `GUIP` aX/aY/aZ is the FCU's own record
+      of what it received, and the command-path audit used exactly that message to prove the 2496 arm sent
+      zeros).
+      FALSIFIER: any row with mask 2496, or all-zero acceleration columns.
+  D2  THE REASON FOR THE ARM: the FCU's internal reference tracks the wire closer than in the `posvel` arms.
+      Measured the same way the audits did it -- `flight.BIN` `PSCN` `_pos_desired` against the wire's point:
+      p90 was **0.287 m** and max 0.591 m in Flight A.
+      FALSIFIER: p90 stays above 0.20 m, which would mean the shaper was never the binding term.
+  D3  NO REPEAT OF DIAG33: no abort (the supervisor gates are geofence 6.60 m on the truth, nav floor 30 Hz,
+      plan silence 3.0 s, climb guard 3.50 m) and the commanded acceleration stays small -- `max_acc` is 1.0
+      and the reference is clamped, so the wire's |a| should stay in the low single digits rather than the 22
+      m/s² that aborted DIAG33.
+      FALSIFIER: any `ABORT:` line, or any wire acceleration above ~5 m/s².
+  D4  AVOIDANCE IS NOT WORSE THAN FLIGHT C: truth minimum clearance >= +0.10 m and **0 samples inside a pillar
+      body** (Flight C: +0.168 m, 0 inside, 894 of 98323 inside the old 0.20 m footprint).
+      FALSIFIER: any sample inside a body -- which would say the acceleration feed-forward, on top of everything
+      else, buys tracking at the cost of the margin that Flight C finally had.
+
+THE ACCEPTANCE MEASUREMENT IS UNCHANGED: C2-ego = >= 95 % of truth samples at >= 0.10 m from every pillar surface
+AND 0 samples inside a body.
+
+WHAT WOULD MAKE THE FLIGHT WORTHLESS RATHER THAN NEGATIVE: if `wire.csv` does not show mask 2048 (the arm was not
+the arm), or if the truth tap did not record, then the run is an INVALID ARM and is recorded as one.
+
+EVIDENCE: `wire.csv` + `flight.BIN` `GUIP` (D1), `flight.BIN` `PSCN` vs the wire (D2), `supervisor.log` +
+`setpoints.csv`'s acceleration column (D3), `tap.csv` via `_stage/top-view.py` and `c2-prime` (D4).
