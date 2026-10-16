@@ -44,7 +44,7 @@ box commands `position = the corner, velocity = 0` for `--hold-s`, after the veh
 | 14 | **The vehicle spawns facing North** | user's call (2026-10-13), `FRAMES.md` §2: the FCU local NED is the textbook `(N, E, -U)` permutation with no yaw anywhere, and L = W rotated -90 deg.  The spawn condition is **asserted from the truth tap before every take-off**, never assumed |
 | 15 | **Mission A flies with `EK3_SRC1_POSZ = 1` / `VELZ = 0` first; the LIO's z follows immediately after** | user's call (2026-10-13): "先 a 后 b，最后一定得是 b 通过的".  **Both are now flown**: `params/phase_a_posz_baro.parm` is step (a), `params/phase_a_posz_lio.parm` — `POSZ = VELZ = POSXY = YAW = 6` — is step (b), and every flight in `docs/metrics/stepB-rectangle-20261013.txt` is step (b) |
 | 16 | **The frozen mission-A set** (49 files, `frozen/mission_a.manifest`) | user's instruction *"mission A之前的任务和rviz的地图都保存好，冻结，不搞了"*.  The five worlds it was flown in, its parameter sets, `rviz/mission_a.rviz`, its figures and the metric dumps that carry its numbers are byte-frozen; `src/tools/frozen-check.py` recomputes every SHA-256 and must print `49 of 49 files unchanged` before every commit |
-| 17 | **The clearance contract is 0.20 m** | user's decision 2026-10-14 (*"我希望这个值是0.2m"*), down from 0.35 m.  Measured by `src/tools/metrics.py` C2 on the tap's truth, against the world file's analytic cylinders |
+| 17 | **The clearance contract is 0.20 m** | user's decision 2026-10-14 (*"我希望这个值是0.2m"*), down from 0.35 m.  Measured by `src/tools/metrics.py` C2 on the tap's truth, against the world file's analytic cylinders.  **AMENDED 2026-10-16 (owner's decision)**: the 0.20 m contract stands unchanged for the stack's own arm, and the EGO arm is now judged by its own row, **C2-ego** -- *>= 95 % of truth samples at >= 0.10 m from every pillar surface, and 0 samples inside a pillar body*.  **0.10 m is not a rounded-down 0.20 m: it is ONE MAP CELL, and at this field's tightest pair it IS the free channel ego's own map leaves** (0.814 m face to face, `obstacles_inflation` 0.099 m at 0.1 m resolution = one cell, so `inf_step = 1`, and the inflation is a 27-cell **cube**: 0.616 m of channel on the axes, 0.532 m at 45 deg where the cube's corner reaches 0.141 m).  Reason it moved: **0 of 32 ego crossings meet 0.20 m**, and a row no crossing can meet measures nothing -- while the restated row discriminates (23 of 32 for the fraction, 10 of 32 for the body count).  Recorded as a RELAXATION, with what it does *not* claim, in `docs/metrics/c2-prime-channel-20261016.txt` |
 
 ## 3. Acceptance numbers
 
@@ -62,7 +62,8 @@ BIN), offline and after the flight.  Every line prints its denominator.
 | B3 corner arrival | <= 100 mm | truth to the commanded corner |
 | B4 landing | LAND + disarm, no failsafe | the phase log + the BIN's modes and statustext |
 | C1 final point | reported, not gated | distance from the last commanded point when the mission ends |
-| **C2 obstacle clearance** | **0 samples inside the 0.20 m footprint** | every truth sample above 0.30 m against the world file's 46 cylinders |
+| **C2 obstacle clearance** (stack arm: rectangle / FSM) | **0 samples inside the 0.20 m footprint** | every truth sample above 0.30 m against the world file's 46 cylinders |
+| **C2-ego** (ego arm) | **>= 95 % of samples at >= 0.10 m from every pillar surface, and 0 samples inside a pillar body** | same truth and same analytic cylinders, from `_stage/c2-prime.py`; 0.10 m is one map cell and equals the free channel at this field's tightest pair (decision 17).  Historical record under this row: **23 of 32** ego crossings for the fraction, **10 of 32** for the body count -- against **0 of 32** for the old 0.20 m.  The map-frame form of the same sentence ("never in a cell ego's map marks OCCUPIED") is a DIAGNOSTIC, not the bar: an unmarked pillar is a free cell, so a blind map passes it |
 | rates | launched / took off / completed / diverged, for every line | `src/tools/run-mission-batch.sh` + `src/tools/batch-summary.py` |
 
 Prior evidence that these are achievable: with GPS as the source the accepted configuration flew 10 of 11
@@ -143,8 +144,11 @@ reason.  Every one of those decisions is made from `/lio/robo/odom` — the plan
 **What the interface deliberately does not carry**: a republish rate a slow planner can meet, a
 WITHHOLD-with-a-reason for an expired plan, the re-projection of a plan onto the vehicle, the station
 sequence and its observer.  All of it went in the 2026-10-15 cleanup.  The clearance contract is unchanged
-and still enforced where it always was: **C2 measures it on the flight's own truth**, and the square's own
-geometry holds **0.600 m** to the nearest pillar by construction.  The PLAN's own clearance column is
+for this arm and still enforced where it always was: **C2 measures it on the flight's own truth**, and the
+square's own geometry holds **0.600 m** to the nearest pillar by construction.  (The EGO arm got its own row
+on 2026-10-16, decision 17: C2-ego, 0.10 m for >= 95 % of samples plus 0 in a pillar body -- the same truth
+and the same cylinders, a different number, because 0 of 32 ego crossings meet this arm's 0.20 m.)
+The PLAN's own clearance column is
 `traj.csv`'s `clr_m`, which F1 re-pointed at this stream in the same change (§7 risk R5).
 
 Why the adopted type and not a bespoke one: it is what ego already publishes and what upstream's own

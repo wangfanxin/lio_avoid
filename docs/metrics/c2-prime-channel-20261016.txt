@@ -1,0 +1,245 @@
+C2-PRIME: JUDGING THE EGO ARM BY THE CHANNEL ITS OWN MAP LEAVES  (2026-10-16, no flight)
+
+WHAT THIS FILE IS
+  The owner's call of 2026-10-16: "0.8 m is too hard to satisfy -- is there a way to make the narrowest
+  passage about 0.6 m?"  The answer adopted is a RESTATEMENT of the acceptance row, not a change to the
+  world, the planner or the map.  This file records the arithmetic that makes 0.6 m the honest number, the
+  distribution measured over every crossing that exists, and exactly what the restatement does and does not
+  claim.  It is computed offline from recordings the runs already left behind; **no sortie was flown for it**.
+
+THE ARITHMETIC (all of it from files in this repository, none of it estimated)
+  * The field `worlds/diagonal.yaml` holds 46 pillars, r = 0.30 m.  The tightest 68 pairs sit 1.414 m apart
+    between centres (a sqrt(2) lattice), i.e. **0.814 m face to face** -- measured from the yaml by the tool,
+    not quoted from memory.
+  * The planner never sees 0.814 m.  It sees a boolean inflated grid: `grid_map/resolution` 0.1 m,
+    `grid_map/obstacles_inflation` 0.099 m, so `inf_step = ceil(0.099/0.1) = 1`
+    (`plan_env/src/grid_map.cpp:653`) and `cloudCallback` hard-codes `inf_step_z = 1` (`:841`).  The
+    inflation is therefore a **27-cell CUBE** around every marked voxel, not a sphere: +0.10 m on the axes
+    but +0.1*sqrt(2) = **+0.141 m at the in-plane corner**.
+  * So the free channel the planner works with at the tightest pair is
+
+        0.814 - 2*(0.099) = 0.616 m   (5-6 cells of 0.10 m)  -- an axis-aligned corridor
+        0.814 - 2*(0.141) = 0.532 m                            -- a 45 deg corridor, the cube's corner
+
+    and the owner's "0.6 m" is not a relaxation of the task: it is the width the task already has in the
+    only frame the planner uses.
+  * Consequence: a standoff of **0.10 m from a pillar surface IS one map cell IS the edge of the channel**.
+    "Stay in the channel your own map declares free" and "keep >= 0.10 m" are the same sentence, which is
+    why the restated bar is 0.10 m and not an arbitrary smaller number.
+
+WHY A DISTRIBUTION AND NOT THE MINIMUM
+  The old row judged the MINIMUM over the whole run.  A crossing is 90 000-150 000 truth samples and the
+  minimum is one instant of it, so the row turned on a single worst moment and on nothing else -- it cannot
+  distinguish "grazed one pillar once" from "flew along the pillars for a minute".  This file therefore
+  reports min, p1, p5, median and the FRACTIONS below 0.00 / 0.10 / 0.20 m, and scores four candidate bars,
+  so that whichever bar is adopted is adopted with its own pass count on the record.
+
+INSTRUMENT
+  `_stage/c2-prime.py` -- truth from `tap.csv` (SITL truth tap, mapped exactly as `src/tools/metrics.py`
+  maps it for C2), plan from `traj.csv.points.csv` (the per-plan SUMMARY `traj.csv` carries `clr_m`, one
+  number per committed plan; the points are beside it), pillars from the world file's analytic cylinders with
+  their z0/z1.  Restricted to the DIAG series, i.e. to sorties actually flown on THIS field -- measuring an
+  older sortie from another world against this pillar list would report numbers about nothing.
+
+C2-PRIME -- judge a crossing by the channel ego's own map leaves, and by the DISTRIBUTION
+field: 46 pillars r=0.30  |  tightest pair: 1.414 m centre to centre, 0.814 m face to face
+channel ego actually sees: 0.616 m (axis) .. 0.532 m (45 deg, cube-inflation corner) = 5.3-6.2 cells
+
+TRUTH (what flew)
+run                            arm        n      min      p1      p5  median   <0.00   <0.10   <0.20
+----------------------------------------------------------------------------------------------------
+DIAG21-window8-repro           EGO    95528   +0.167  +0.179  +0.242  +0.581   0.00%   0.00%   1.98%
+DIAG24-window15                EGO    91729   +0.155  +0.178  +0.296  +0.640   0.00%   0.00%   2.21%
+DIAG27-dist0-08                EGO    97625   +0.154  +0.160  +0.218  +0.756   0.00%   0.00%   4.34%
+DIAG9-window3                  EGO   100120   +0.150  +0.182  +0.240  +0.539   0.00%   0.00%   2.11%
+DIAG23-window8-arm4            EGO    94075   +0.089  +0.155  +0.276  +0.536   0.00%   0.30%   2.67%
+DIAG15-fitness4                EGO   100143   +0.068  +0.196  +0.244  +0.485   0.00%   0.41%   1.23%
+DIAG29-distance-cost           EGO   139718   +0.058  +0.065  +0.107  +0.387   0.00%   4.87%  13.61%
+DIAG20-window8                 EGO    92977   +0.058  +0.111  +0.199  +0.612   0.00%   0.77%   5.11%
+DIAG10-window3-repro           EGO   106581   +0.056  +0.109  +0.149  +0.459   0.00%   0.86%  11.29%
+DIAG11-kill-plan-ego           EGO    65872   +0.016  +0.018  +0.051  +1.281   0.00%  18.66%  21.18%
+DIAG12-inflate020              EGO   496963   -0.031  +0.099  +0.099  +0.099   0.15%  89.62%  90.23%
+DIAG18-clearance1              EGO    91400   -0.057  +0.120  +0.244  +0.756   0.40%   0.79%   3.28%
+DIAG4-ego-map                  EGO    93200   -0.071  +0.143  +0.249  +0.603   0.39%   0.74%   2.42%
+DIAG33-routeb                  EGO    70840   -0.075  +0.022  +0.193  +1.281   0.62%   1.73%   5.17%
+DIAG17-fitness4-repro          EGO   106248   -0.078  +0.026  +0.190  +0.507   0.79%   2.48%   6.34%
+DIAG16-twocell-bubble          EGO   176899   -0.100  -0.042  +0.017  +0.403   3.63%  10.98%  15.83%
+DIAG13-inflate020-fixed        EGO   502921   -0.106  +0.123  +0.326  +0.326   0.23%   0.89%   1.32%
+DIAG6-map-census               EGO    89266   -0.129  +0.026  +0.183  +0.944   0.64%   3.39%   5.74%
+DIAG8-map-slice                EGO    94124   -0.164  -0.099  +0.124  +0.514   2.18%   4.07%   5.69%
+DIAG3-ego-map                  EGO    95615   -0.169  -0.001  +0.218  +0.532   1.05%   2.56%   4.73%
+DIAG32-stale-follow            EGO    90582   -0.196  -0.084  +0.189  +0.625   1.66%   2.94%   5.89%
+DIAG14-onecell-groundfix       EGO    95056   -0.222  -0.014  +0.238  +0.581   1.12%   1.95%   3.56%
+DIAG26-coverage1               EGO   143522   -0.237  +0.095  +0.095  +1.281   0.41%  11.57%  12.62%
+DIAG31-ref-lookahead           EGO    84058   -0.257  -0.075  +0.241  +1.281   2.05%   3.01%   4.01%
+DIAG7-inflate-030              EGO   502434   -0.262  +0.095  +0.208  +0.412   0.29%   1.05%   4.76%
+DIAG34-routeb-pv               EGO   109712   -0.271  -0.117  +0.050  +0.625   3.20%   6.63%   8.98%
+DIAG19-clearance1-repro        EGO   280824   -0.276  -0.114  -0.032  +0.515   6.34%  11.11%  13.93%
+DIAG22-window8-arm3            EGO    97522   -0.276  +0.093  +0.316  +1.134   0.48%   1.08%   2.68%
+DIAG5-map-census               EGO   105281   -0.277  -0.060  +0.135  +0.434   1.68%   3.87%  10.88%
+DIAG25-window15b               EGO   145382   -0.278  -0.181  +0.019  +1.245   4.64%   7.73%  10.80%
+DIAG2-ego-avoidance            EGO   114198   -0.279  -0.076  +0.012  +0.444   4.62%   7.94%  13.90%
+DIAG28-dist0-08-real           EGO    91745   -0.291  -0.146  +0.058  +0.495   3.04%   9.45%  14.48%
+DIAG1-rect-control             RECT   91160   -0.299  -0.231  +0.028  +0.411   4.53%   6.37%  10.57%
+
+PLAN (what ego asked for)
+run                            arm        n      min      p1      p5  median   <0.00   <0.10   <0.20
+----------------------------------------------------------------------------------------------------
+DIAG27-dist0-08                EGO   385215   +0.108  +0.156  +0.245  +0.521   0.00%   0.00%   3.78%
+DIAG23-window8-arm4            EGO   369257   +0.084  +0.119  +0.239  +0.459   0.00%   0.45%   3.07%
+DIAG9-window3                  EGO   513283   +0.061  +0.138  +0.236  +0.531   0.00%   0.49%   2.32%
+DIAG24-window15                EGO   364510   +0.039  +0.149  +0.247  +0.440   0.00%   0.46%   2.24%
+DIAG20-window8                 EGO   366025   -0.016  +0.047  +0.172  +0.419   0.31%   1.96%   6.77%
+DIAG22-window8-arm3            EGO   417131   -0.094  +0.084  +0.262  +0.923   0.56%   1.18%   2.96%
+DIAG29-distance-cost           EGO   560349   -0.107  +0.033  +0.081  +0.391   0.38%   6.25%  14.36%
+DIAG11-kill-plan-ego           EGO   310273   -0.130  +0.044  +0.109  +1.134   0.35%   4.29%  11.52%
+DIAG6-map-census               EGO   451774   -0.143  -0.043  +0.155  +0.619   1.37%   3.23%   7.47%
+DIAG4-ego-map                  EGO   480458   -0.171  +0.070  +0.235  +0.568   0.51%   1.39%   2.75%
+DIAG31-ref-lookahead           EGO   166247   -0.201  -0.024  +0.218  +0.430   1.13%   2.21%   4.34%
+DIAG16-twocell-bubble          EGO   904456   -0.205  -0.024  +0.024  +0.389   2.72%  10.33%  16.92%
+DIAG21-window8-repro           EGO   375418   -0.209  +0.096  +0.225  +0.459   0.57%   1.14%   2.81%
+DIAG25-window15b               EGO   663975   -0.209  -0.130  -0.027  +0.983   5.53%   7.95%  10.21%
+DIAG10-window3-repro           EGO   523686   -0.212  +0.038  +0.163  +0.488   0.85%   1.66%   7.83%
+DIAG26-coverage1               EGO   707304   -0.223  -0.081  +0.120  +1.281   1.48%   3.18%   9.36%
+DIAG32-stale-follow            EGO   101405   -0.231  -0.043  +0.202  +1.280   1.52%   3.22%   4.96%
+DIAG3-ego-map                  EGO   492982   -0.274  -0.079  +0.139  +0.523   2.14%   3.83%   6.45%
+DIAG2-ego-avoidance            EGO   566510   -0.274  -0.190  -0.020  +0.443   5.81%   9.93%  18.53%
+DIAG5-map-census               EGO   516313   -0.278  -0.071  +0.094  +0.438   2.77%   5.13%  12.88%
+DIAG7-inflate-030              EGO   2275329   -0.282  +0.101  +0.262  +0.411   0.15%   0.99%   4.25%
+DIAG19-clearance1-repro        EGO   1650341   -0.283  -0.103  -0.010  +0.406   5.37%  11.67%  21.37%
+DIAG14-onecell-groundfix       EGO   408950   -0.284  -0.069  +0.130  +0.429   1.86%   3.76%   7.65%
+DIAG8-map-slice                EGO   487528   -0.285  -0.102  +0.075  +0.501   2.69%   5.73%   8.13%
+DIAG15-fitness4                EGO   393901   -0.285  +0.027  +0.230  +0.435   0.89%   1.30%   2.39%
+DIAG13-inflate020-fixed        EGO   1722051   -0.286  +0.042  +0.330  +0.332   0.75%   1.47%   2.90%
+DIAG34-routeb-pv               EGO   219171   -0.286  -0.002  +0.168  +0.401   1.03%   2.88%   6.20%
+DIAG17-fitness4-repro          EGO   453390   -0.286  -0.067  +0.146  +0.446   1.59%   3.56%   7.88%
+DIAG18-clearance1              EGO   401375   -0.288  -0.089  +0.128  +0.442   2.08%   3.80%   7.62%
+DIAG33-routeb                  EGO   158773   -0.289  +0.239  +0.268  +0.854   0.06%   0.12%   0.44%
+DIAG28-dist0-08-real           EGO   386427   -0.292  -0.169  -0.019  +0.448   5.83%  10.56%  14.83%
+DIAG12-inflate020              EGO   1720536   -0.293  -0.200  -0.074  +0.103   8.59%  18.33%  77.23%
+DIAG1-rect-control             RECT     304   -0.300  -0.286  -0.270  +0.089  38.16%  51.32%  64.47%
+
+PLAN, per committed plan (`traj.csv`'s `clr_m`, the column rows 73/79/88 quote)
+run                            arm      plans      min      <0.00      <0.10
+--------------------------------------------------------------------
+DIAG1-rect-control             RECT      6646   -0.300         3          3
+DIAG12-inflate020              EGO      39758   -0.293      1520       3250
+DIAG28-dist0-08-real           EGO       6234   -0.292       262        466
+DIAG33-routeb                  EGO       2107   -0.289         3          4
+DIAG18-clearance1              EGO       6129   -0.288        89        165
+DIAG17-fitness4-repro          EGO       7256   -0.286        77        172
+DIAG34-routeb-pv               EGO       5245   -0.286        27         75
+DIAG13-inflate020-fixed        EGO      40305   -0.286       151        278
+DIAG15-fitness4                EGO       6759   -0.285        38         54
+DIAG8-map-slice                EGO       6327   -0.285       154        304
+DIAG14-onecell-groundfix       EGO       6332   -0.284        82        161
+DIAG19-clearance1-repro        EGO      21901   -0.283      1355       2663
+DIAG7-inflate-030              EGO      40272   -0.282        37        322
+DIAG5-map-census               EGO       7331   -0.278       151        272
+DIAG2-ego-avoidance            EGO       7913   -0.274       569        804
+DIAG3-ego-map                  EGO       6429   -0.274       107        194
+DIAG32-stale-follow            EGO       5961   -0.231       138        218
+DIAG26-coverage1               EGO      10383   -0.223       206        564
+DIAG10-window3-repro           EGO       7425   -0.212        46        108
+DIAG25-window15b               EGO      10646   -0.209       674        896
+DIAG21-window8-repro           EGO       6354   -0.209        23         46
+DIAG16-twocell-bubble          EGO      13131   -0.205       592       1658
+DIAG31-ref-lookahead           EGO       5437   -0.201        59        114
+DIAG4-ego-map                  EGO       6229   -0.171        27         72
+DIAG6-map-census               EGO       5899   -0.143        64        151
+DIAG11-kill-plan-ego           EGO       3073   -0.130        13        138
+DIAG29-distance-cost           EGO      10133   -0.107        23        488
+DIAG22-window8-arm3            EGO       6599   -0.094        27         56
+DIAG20-window8                 EGO       6161   -0.016        13         78
+DIAG24-window15                EGO       6005   +0.039         0         19
+DIAG9-window3                  EGO       6727   +0.061         0         27
+DIAG23-window8-arm4            EGO       6234   +0.084         0         26
+DIAG27-dist0-08                EGO       6530   +0.108         0          0
+
+candidate bars, scored on the TRUTH of every EGO run with a tap.csv
+(B0 'never inside a body' is the goal's own re-defined criterion 3; B3 is printed so that its failure is
+ on the record -- the strict 'min >= +0.10 m' reading does NOT hold for this planner on this mission)
+
+run                            B0     B1     B2     B3     old C2     B0&B2
+----------------------------------------------------------------------------------
+DIAG10-window3-repro           PASS   PASS   PASS   fail   fail       PASS
+DIAG11-kill-plan-ego           PASS   PASS   fail   fail   fail       fail
+DIAG12-inflate020              fail   PASS   fail   fail   fail       fail
+DIAG13-inflate020-fixed        fail   PASS   PASS   fail   fail       fail
+DIAG14-onecell-groundfix       fail   fail   PASS   fail   fail       fail
+DIAG15-fitness4                PASS   PASS   PASS   fail   fail       PASS
+DIAG16-twocell-bubble          fail   fail   fail   fail   fail       fail
+DIAG17-fitness4-repro          fail   PASS   PASS   fail   fail       fail
+DIAG18-clearance1              fail   PASS   PASS   fail   fail       fail
+DIAG19-clearance1-repro        fail   fail   fail   fail   fail       fail
+DIAG2-ego-avoidance            fail   fail   fail   fail   fail       fail
+DIAG20-window8                 PASS   PASS   PASS   fail   fail       PASS
+DIAG21-window8-repro           PASS   PASS   PASS   PASS   fail       PASS
+DIAG22-window8-arm3            fail   PASS   PASS   fail   fail       fail
+DIAG23-window8-arm4            PASS   PASS   PASS   fail   fail       PASS
+DIAG24-window15                PASS   PASS   PASS   PASS   fail       PASS
+DIAG25-window15b               fail   fail   fail   fail   fail       fail
+DIAG26-coverage1               fail   PASS   fail   fail   fail       fail
+DIAG27-dist0-08                PASS   PASS   PASS   PASS   fail       PASS
+DIAG28-dist0-08-real           fail   fail   fail   fail   fail       fail
+DIAG29-distance-cost           PASS   PASS   PASS   fail   fail       PASS
+DIAG3-ego-map                  fail   fail   PASS   fail   fail       fail
+DIAG31-ref-lookahead           fail   fail   PASS   fail   fail       fail
+DIAG32-stale-follow            fail   fail   PASS   fail   fail       fail
+DIAG33-routeb                  fail   PASS   PASS   fail   fail       fail
+DIAG34-routeb-pv               fail   fail   fail   fail   fail       fail
+DIAG4-ego-map                  fail   PASS   PASS   fail   fail       fail
+DIAG5-map-census               fail   fail   PASS   fail   fail       fail
+DIAG6-map-census               fail   PASS   PASS   fail   fail       fail
+DIAG7-inflate-030              fail   PASS   PASS   fail   fail       fail
+DIAG8-map-slice                fail   fail   PASS   fail   fail       fail
+DIAG9-window3                  PASS   PASS   PASS   PASS   fail       PASS
+----------------------------------------------------------------------------------
+TOTAL of 32 ego crossings      10     20     23     4      0          9
+
+READ THIS: 'old C2' (min >= +0.20 m) is met by 0 of 32 crossings -- the bar is not hard, it is
+unreachable for THIS planner on THIS field (mean -0.101 m, sd 0.143 m over the eleven crossings measured
+before this table existed).  B2 is the channel restatement: the tightest pair leaves 0.53-0.62 m of free
+map, i.e. one cell (0.10 m) of standoff IS the channel, so 'stay in the channel' == 'keep >= 0.10 m'.
+
+WHAT IS ADOPTED (owner's decision, 2026-10-16) -- one row becomes two
+  * **C2, unchanged, for the arm that meets it**: 0 samples inside the 0.20 m footprint.  The rectangle/FSM
+    arm holds this by a wide margin (0.562 m with 0 of 56 696 samples inside, `PLAN.md` line 172) and
+    nothing here weakens it.
+  * **C2-ego, new, for the ego arm**: (a) **95 % or more of truth samples at >= 0.10 m** from every pillar
+    surface -- the channel's own margin, one map cell -- and (b) **0 samples inside a pillar body** (the
+    goal's own re-defined criterion 3).  Measured by `_stage/c2-prime.py`, printed with its denominator.
+
+WHAT THIS DOES **NOT** CLAIM
+  1. It is a RELAXATION and is recorded as one: 0.10 m is half of 0.20 m, and it was chosen because
+     0 of 32 existing crossings meet 0.20 m, not because 0.20 m was shown to be geometrically impossible.
+     In a 0.814 m gap a 0.20 m standoff leaves a 0.414 m band for the vehicle's centre while the channel is
+     0.616 m wide, so the old row was satisfiable in principle; what it is not satisfiable by is THIS planner
+     on THIS field (0 of 32, mean -0.101 m, sd 0.143 m), for the two reasons rows 73-88 established: the
+     search returns the shortest path through a corridor because every A* step costs a constant
+     (`dyn_a_star.cpp:217`) and this swarm variant has no obstacle-distance cost at all
+     (`calcDistanceCostRebound` measures against other drones' points -- empty for one vehicle), and the map
+     is a single-scan shell rebuilt per message, so a pillar closer than ~0.50 m is often not marked at all.
+  2. It does NOT say the current ego arm passes.  The newest crossing, `DIAG34-routeb-pv`, FAILS the restated
+     bar too: 3.20 % of samples inside a pillar body and 6.63 % below 0.10 m.  The restatement moves the
+     question from an unreachable row to a discriminating one -- it does not answer it.
+  3. It deliberately does NOT use the map-frame form of the same sentence ("the truth never enters a cell
+     ego's own map marks OCCUPIED") as the bar.  That form is measurable from the DIAG/2 slices and is
+     reported as a DIAGNOSTIC, but it can be satisfied by blindness -- an unmarked pillar is a free cell --
+     and a bar that a blind map can pass is exactly the kind of instrument this investigation has had to
+     correct three times.
+  4. The pass counts below are the HISTORICAL record, not a fresh A/B: the runs differ in configuration
+     (relay window 0/3/8/15 s, `dist0` 0.5/0.8, inflation 1/2/3 cells, four different samplers), so they must
+     not be read as a comparison of those configurations against each other.  What they are is the field's
+     measured distribution under the new row.
+
+THE TALLIES, 32 ego crossings of worlds/diagonal.yaml
+  old C2   (min >= +0.20 m, 0 samples < 0.20 m) ..........  0 of 32
+  B0       never inside a body (min >= 0.00 m) .......... 10 of 32
+  B1       >= 99 % of samples >= 0.00 m ................ 20 of 32
+  B2       >= 95 % of samples >= 0.10 m ................ 23 of 32   <- adopted as C2-ego (a)
+  B3       min >= +0.10 m (the strict reading) ..........  4 of 32   <- printed so its failure is on record
+  B0 & B2  both of the adopted pair ....................  9 of 32
+
+REPRODUCTION (one command, ~40 s, no simulator)
+  python3 /mnt/d/distill_self/_stage/c2-prime.py
