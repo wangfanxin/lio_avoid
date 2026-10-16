@@ -673,8 +673,20 @@ TRAJ_PID=$!
 # LIO and the plan's setpoints (84), and it sends NO class-76 command.  It waits for the supervisor's
 # /plan/trigger before it puts a setpoint on the wire, and it takes the plan OFF the wire when the stream
 # says COMPLETED or when the FCU leaves GUIDED.
+# THE HEADING, PER ARM, STATED HERE RATHER THAN LEFT TO A DEFAULT.  `bridge_node.py`'s `--yaw` used to default to
+# 0.0, so every setpoint carried a FIXED heading and the plan's own yaw -- which `traj_server` computes toward the
+# point `time_forward_` (1.0 s) ahead along the spline, i.e. toward the next waypoint -- was discarded on every
+# message (MEASURED: `wire.csv` `yaw_l` swept +-3.14 rad while `yaw_out` was 0.000000 for all 1664 rows of the
+# last flight).  The default is now None = "use the plan's yaw", and the RECTANGLE arm states its 0.0 EXPLICITLY
+# because that is what every mission-A sortie flew and what its acceptance numbers were measured under
+# (`planner/cmd_stream.py` says so).  So: the ego arm follows its path, mission A is byte-identical to before.
+if [ "$PLANNER" = "rectangle" ]; then
+    YAW_ARG="--yaw 0.0"
+else
+    YAW_ARG=""
+fi
 python3 "$REPO/bridge/bridge_node.py" --mav "tcp:127.0.0.1:5760" $CALIB_ARG \
-    --nav-hz 48 --wire-hz 50 ${BRIDGE_ARGS:-} \
+    --nav-hz 48 --wire-hz 50 $YAW_ARG ${BRIDGE_ARGS:-} \
     --setpoint-log "$OUT/setpoints.csv" --wire-log "$OUT/wire.csv" \
     > "$OUT/bridge.log" 2>&1 &
 BRIDGE_PID=$!

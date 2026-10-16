@@ -632,7 +632,17 @@ def bridge_main(argv=None) -> int:
     ap.add_argument("--wire-hz", type=float, default=50.0)
     ap.add_argument("--nav-hz", type=float, default=48.0)
     ap.add_argument("--fields", dest="setpoint_mode", default="pos", choices=["pos", "posvel", "posvelacc"])
-    ap.add_argument("--yaw", type=float, default=0.0)
+    ap.add_argument("--yaw", type=float, default=None,
+                    help="FIXED yaw in radians to command instead of the plan's own (None = USE THE PLAN'S YAW, "
+                         "which is the default since 2026-10-16).  THE DEFECT THIS FIXES, measured: `traj_server` "
+                         "computes the yaw from the direction to a point `time_forward_` (1.0 s) ahead along the "
+                         "spline -- i.e. TOWARD THE NEXT WAYPOINT, rate-limited to pi rad/s and low-pass "
+                         "filtered (`traj_server.cpp::calculate_yaw`) -- and this default used to be 0.0, so the "
+                         "relay replaced it on every setpoint (`bridge_node.py:193`): `wire.csv` shows `yaw_l` "
+                         "sweeping +-3.14 rad while `yaw_out` was 0.000000 for ALL 1664 rows of the last flight. "
+                         "The aircraft therefore flew the whole mission with a fixed heading, which also pins the "
+                         "pointing of the 45-degree-down lidar.  Pass `--yaw 0.0` (or any number) to restore the "
+                         "old fixed-heading behaviour.")
     ap.add_argument("--silence-abort-s", type=float, default=3.0)
     ap.add_argument("--fcu-odom-topic", default="",
                     help="publish the FCU'S OWN estimate (MAVLink LOCAL_POSITION_NED #32, W frame) on this "
