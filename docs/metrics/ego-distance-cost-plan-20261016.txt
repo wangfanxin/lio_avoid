@@ -872,3 +872,58 @@ WHAT IT DOES NOT CHANGE: no flight was spent, no code was changed, and the round
 (the arm's plan excursions into the 0.20 m band last 0.4..0.9 s and end by themselves; with the distance-cost term
 they last up to 6.0 s).  What it does change is the standing of the "2/3 sweep" line in this file: it is not an
 open hypothesis, it is a **closed, refuted** one.
+
+=== ROUND 71: THE FLIGHT, LOOKED AT -- AND THE DEFECT THAT LOOKING AT IT FOUND ============================
+The owner asked to see the crossing itself (top view, waypoints, flight trajectory, planned path) and whether the
+aircraft really flew it.  Drawing it from the run's own files answered the question and turned up something no
+earlier row contains.
+
+WHAT WAS FLOWN, from the round-69 run's records (`supervisor.log`, `traj.log`, `phase.csv`, `tap.csv`,
+`traj.csv.points.csv`):
+
+  * **the tour**: pad (0,0) -> corner 1 (-4,-4) -> corner 2 (-1,-1), then land beside corner 2.  `ego_source`
+    received **2 waypoints in L** (`[-3.992, 4.003, 1.884]`, `[-0.995, 1.000, 1.884]`, i.e. W (-4,-4) and
+    (-1,-1) at 2.0 m) and its own log says `ARRIVED at waypoint 1 (0.232 m)` and `ARRIVED at waypoint 2
+    (0.279 m)`;
+  * **the completion**: the supervisor's line -- "the plan box has DECLARED THE TOUR COMPLETE (trajectory_flag =
+    COMPLETED after waypoint 2): 74.1 s of route, 3851 setpoints relayed by the bridge" -- then `phase -> land`
+    at 94.4 s and `landed` at 99.4 s; the aircraft's final sample is (E -1.137, N -1.010) at 0.100 m, i.e. down
+    beside corner 2;
+  * **tracking**: the aircraft-to-plan distance (position-based; the recorders share no clock) is **median
+    0.010 m, 95th 0.172 m, max 0.399 m** over 139718 samples.  Ego flew its own plan.
+
+THE DEFECT: THE ROUTE WAS FLOWN AT GROUND LEVEL, IN A PORPOISE.
+Both waypoints are at 2.0 m.  Measured over this run:
+
+    the tour                     74.0 s (phase leg1 -> phase land)
+    the aircraft below 0.30 m    **26.7 s of 74.0 s (36.0%)**, in 5 climb-dive cycles
+    the aircraft's altitude      mean 0.566 m   (percentiles 5/50/95 = 0.100 / 0.100 / 1.791 m)
+    the wire command (cmd_z)     mean 0.862 m;  **30.3% of messages below 0.30 m**, 58.0% below 1.00 m
+    the plan itself (/plan/cmd)  mean 0.730 m in W   (percentiles 5/50/95 = 0.089 / 0.588 / 1.933 m)
+    the SITL's own note           "SIM Hit ground at 0.254274 m/s | ... 0.214394 | ... 0.464048 | Disarming"
+
+  * **it is not an estimator artifact**: the LIO odometry that was fed to the FCU shows the same profile --
+    mean 0.470 m, 57.4% of samples below 0.30 m, 77.1% below 1.00 m, and **the same 5 upward crossings of 1.00 m**
+    as the FCU's own estimate (5).  Two independent estimators count the same five climbs;
+  * **it is commanded, not a tracking failure**: the plan's own z (from `traj.csv.cmd.csv`, the /plan/cmd stream
+    itself) is the low one (median 0.588 m), and the aircraft is slightly BELOW it (mean 0.566 against 0.730);
+  * **the plan's stream is smooth except at a few messages**: only 0.13% of messages step more than 0.20 m in z
+    (0.16% horizontally), but the largest single-message steps are large -- **-1.788 m in one 10 ms step**
+    (z 1.983 -> 0.195 at t=100.41 s) and **3.406 m horizontally** (t=17.90 s).  So the reference handed to the
+    controller is a low cruise punctuated by rare full-scale jumps.
+
+WHAT THIS DOES AND DOES NOT CHANGE:
+  * **the avoidance measurements stand**: pillar clearance is horizontal and the pillars span z 0..4.2 m, so the
+    low samples are still beside pillars -- the corpus table, the detour sizes and the map verdict are unaffected;
+  * **what it changes is what "flew the route" means for this mission**: the aircraft completed the horizontal
+    tour and the criteria that were written in the horizontal plane, and it did so while porpoising between the
+    ground and 2 m.  No earlier row says this, and B1's box-extent failure (row 121's mission report) is the one
+    place where it showed up as a symptom rather than as a cause;
+  * **it is a named suspect for the EKF line still open** (3 flyaways in 292 runs, rows 117-121): a reference that
+    jumps 1.8 m in 10 ms is exactly the input that spikes an EKF's innovations.  Hypothesis, not a finding.
+
+NEXT: the z command chain is the thing to look at, and it needs no flight -- the goal z the adapter sent (1.884
+in L), the planner's own trajectory z (the adapter reads `planning/bspline`), and the published /plan/cmd z are
+all recorded or one topic away.
+
+Figures, from this run's recorded data: `docs/figures/traj-xy-DIAG29b-waypoints-truth-plan.png` sha256 c5b42c006c41eccd1205efc5d815be783fba73c43b4600cfa1bc28d470c92e4c (the top view the owner asked for: both waypoints, the aircraft coloured by time, the published plan) and `docs/figures/round71/DIAG29b-altitude-and-clearance.png` sha256 bdea9e825c5ca121f4680f444b735598f150099a17378980de310382b8565e34 (the same flight's three altitude records -- plan, wire, aircraft -- with the pillar clearance beneath).
