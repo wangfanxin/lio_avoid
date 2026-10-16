@@ -1700,3 +1700,107 @@ STILL OPEN, and it is fix 2: the sweep BEFORE and DURING the flight is ego's own
 (`t_cur = now - start_time`), so the reference still steps up to ~1.5 m between messages while the mission is
 running (round 78b: 12 steps above 0.5 m in 52.5 s, the stream travelling 45.3 m for a ~10 m route).  The
 `traj_server` continuity patch (re-anchor + monotone + lookahead) remains the owner's call.
+
+=== ROUND 83: THE EXTERNAL REVIEW, CHECKED CLAIM BY CLAIM ================================================
+
+An independent review of mission B arrived as `docs/REVIEW-egoplanner-20261016.md` (now filed as
+`docs/metrics/review-egoplanner-20261016.txt` -- a sixth `.md` would have failed `docs-budget`, and the review is
+evidence, not a document).  It was written read-only at HEAD `6e38593` (round 81), and every claim below was
+re-checked against the code and the runs.
+
+**VERIFIED CORRECT, and several of them are important:**
+
+  * **P1-1, the config defect -- the sharpest finding in the review.**  Our launch really does set
+    `'fsm/realworld_experiment': True` (`ego_on_lio.launch.py:99`), and `have_trigger_ = !flag_realworld_experiment_`
+    (`ego_replan_fsm.cpp:35`) therefore starts FALSE; the MANUAL branch (flight_type 1) creates only
+    `waypoint_sub_`, and `have_trigger_ = true` happens only in `armTour()` (:269) and `triggerCallback()` (:361),
+    both PRESET.  So `WAIT_TARGET`'s own exit (`if (!have_target_ || !have_trigger_) goto force_return;`, :702) is
+    DEAD, and the exit it guards -- `changeFSMExecState(SEQUENTIAL_START, "FSM")` -- never runs.  The counts it
+    quotes from `missionA-DIAG34-routeb-pv` reproduce EXACTLY: `WAIT_TARGET to GEN_NEW_TRAJ` **22**,
+    `WAIT_TARGET to SEQUENTIAL_START` **0**, `EXEC_TRAJ to WAIT_TARGET` **22**, `EXEC_TRAJ to REPLAN_TRAJ` **9**.
+    The FSM is being dragged out of WAIT_TARGET by our own 1 Hz goal resend, i.e. the tour advances by
+    **1 Hz GLOBAL replans** rather than by ego's continuous local replanning.
+  * **P1-2, the self-marked obstacle chain.**  Counts reproduce to the digit: `the drone is in obstacle`
+    **10 515**, `Ran out of pool` **237**, `Unable to handle the initial or end point` **237**,
+    `check_collision_and_rebound` **17 729**, `GEN_NEW_TRAJ to GEN_NEW_TRAJ` **718**, `PLANNER-STALL` **29**.
+    And the mechanism is in the code as described: `AStar::ConvertToIndexAndAdjustStartEndPoints` walks the START
+    point away from the obstacle in a `do { ... } while (checkOccupancy(...))` loop with **no bound** other than
+    leaving the pool (`dyn_a_star.cpp:88-115`), and the pool really is `Eigen::Vector3i(100, 100, 100)` at
+    `planner_manager.cpp:43` (the review's citation is RIGHT; my first grep for the literal `POOL_SIZE` missed it
+    because the size is passed to `initGridMap`).
+  * **P2-2, the clock hazard.**  `traj_server.cpp:170-171` uses `rclcpp::Clock(RCL_ROS_TIME)` while the FSM uses
+    the default (system) clock, and an invalid `t_cur` falls into the `else` branch: it prints ONE line
+    (`[Traj server]: invalid time.`) and then publishes `cmd` built from `pos/vel/acc`, which were initialised to
+    ZERO -- i.e. **an order to fly to the L origin at 100 Hz**.  Same failure class as the EGO1 hang this project
+    already paid for once.
+  * **P2-3a, the calibration split.**  `fcu_pose_feed` converts with `_stage/calib.json`, the bridge uses its
+    MEASURED preflight calibration, and the difference is quoted in our own logs:
+    `the parked mismatch to the file the bridge uses is [+0.002 +0.001 -0.011] m in W`
+    (`missionA-EGO4*/supervisor.log`, and again in DIAG1/DIAG10).  So ego plans in one frame and the FCU is
+    commanded in another, offset by ~1 cm.
+  * **P2-4, the defaults.**  All four rows are accurate: `EGO_CONTRACT=adapter` (now fixed, see below),
+    `EGO_CLOUD_WINDOW=0.0`, `EGO_SELF_BLIND=0.0`, `BRIDGE_FIELDS=posvel` for ego.
+  * **P1-3, "the plan goes through pillars, not a tracking problem."**  Matches the round-78b numbers (truth
+    -0.271 m, plan -0.286 m, gap 0.015 m) and the C2 line it quotes.
+  * **P3-1/P3-2/P3-3** (traj_server has no telemetry; three different completion thresholds; the A* pool margin)
+    -- all correct as stated.
+  * **§5 documentation inconsistencies** -- all four checked and TRUE: `ARCHITECTURE.md:13` says "No planner
+    anywhere either, since 2026-10-15" while `src/planner/` holds eight files including the ego stack; the same
+    document names `fsm/mission_fsm.py` where the file is `src/supervisor/supervisor.py`; `PLANNERS.md:132` says
+    the ego adapter is "NOT flown since F1/F2" after a dozen ego sorties; and `run-mission.sh`'s hint named
+    `src/tools/diagonal-fly.sh`, which does not exist (the script is in `_stage/`).  The orphan
+    `goal_sequencer.cpython-310.pyc` was there too.
+
+**FOUR CORRECTIONS TO THE REVIEW:**
+
+  1. **P0-2 is already done.**  It says "代码里尚未实现" -- but the post-COMPLETED hold went in the round after
+     its HEAD (`4cc885b`, round 82): `rewrite()` pins the forwarded point to the last waypoint, zeroes velocity
+     and acceleration and latches the yaw, and the bench measures it (the point spans a single coordinate,
+     `|v| = 0.000000 m/s`, over 2364 messages / 23.6 s).  Its predicted check -- "`jump_m` after COMPLETED is 0"
+     -- is exactly what the bench shows (one 0.1156 m transition step, then nothing).
+  2. **Its Route A row is stale**: "线上字段 pos（vel 已算但默认不上线）".  Since round 78 the ego arm's default is
+     `--fields posvel` (`run-mission.sh:303`), so BOTH routes put velocity on the wire; the adapter computes and
+     publishes its own `v_ref`.
+  3. **P2-1's volume figure is a misreading, and both of its fixes already exist.**  "5 Hz × 43 万点 = 215 万点/秒"
+     treats the relay's `32 scan(s): 622673 -> 430603 points` as ONE message; those counters are CUMULATIVE
+     (`cloud_relay.py:360-361`, the log line at `:387`), so 430 603 points over 32 scans is ~13.5k per message.
+     The run's own totals give the real figure: 5 821 378 -> 7 204 870 over 305 messages = **23.6k points per
+     message on average**, and the line's own "union is **2.87x** the newest scan" says the steady state is ~56k
+     per message at a ~19.5k-point scan -- not 430k.  And the two fixes it proposes are ALREADY IN: the relay
+     crops to ego's acceptance box by default (`--crop` default 1, `ACCEPT_M = (5.5, 5.5, 4.5)`, `:55,424`, and
+     the DIAG34 log counts 145 493 cropped away) and the window is a VOXEL UNION, not a concatenation -- which is
+     exactly why 40 scans' worth of points collapse to 2.87x one scan.  What remains of P2-1 is the callback-group
+     serialisation it parenthesises, and that is a different investigation.
+  4. **P1-3's map inference does not generalise, and I measured it.**  `_stage/plan-worst-in-map.py` now covers
+     DIAG34: its plan's worst point is **FREE in the map** -- the nearest marked cell is **0.13 m** away, i.e. the
+     plan drew through space its own map was BLIND in, which supports the review's "the map did not have that
+     pillar" for THIS run.  But the same tool says `DIAG29-distance-cost` was **OCCUPIED by the map** (a planner
+     fault), and across the eleven runs it now covers the split is 4 blind / 7 occupied.  So both fault modes are
+     real and run-dependent: for DIAG34 more map PERSISTENCE is the lever, for DIAG29 the optimiser/check is.
+     Stating it per-run is the difference between a diagnosis and a slogan.
+
+**THE PLAN THIS IMPLIES** (each step with its own check; the review's numbering in brackets):
+
+  Phase 1 -- cheap, bench-verifiable, no flight:
+   * `fsm/realworld_experiment: False` (1 line) [2].  CHECK: on the parked rig with a scripted goal,
+     `WAIT_TARGET to SEQUENTIAL_START` goes 0 -> >=1 and `WAIT_TARGET to GEN_NEW_TRAJ` falls.
+   * `traj_server`: clock -> `RCL_SYSTEM_TIME`, and an early return instead of publishing zeros on an invalid
+     time (2 lines) [6].  CHECK: compiles, parked behaviour unchanged, plus a negative test with sim time on.
+   * `traj_server` 1 Hz telemetry (`t_cur / duration / traj_id / spline age / published point`) [P3-1].  CHECK:
+     the next flight reads the sawtooth directly instead of inferring it from the shim's jumps.
+   * one calibration: feed `fcu_pose_feed` the same numbers the bridge measures, or print the difference at
+     startup [P2-3a].  CHECK: the printed ~1 cm mismatch disappears.
+  Phase 2 -- one flight each, predictions written first:
+   * FLIGHT A -- the sortie the record already owes: the corrected chain (ego on the FCU's own #32) + the
+     post-COMPLETED hold + Phase 1's first item.  MEASURE: inside-tour error percentiles, the reference's jump
+     statistics, the plan/flown gap, and the FSM's transition counts.
+   * FLIGHT B -- "vertical first" for ego: the first goal is the CURRENT (x, y) at the mission altitude, so the
+     first plan does not start from a floor voxel [3].  MEASURE: `the drone is in obstacle`, `PLANNER-STALL`,
+     `GEN_NEW_TRAJ to GEN_NEW_TRAJ`, and whether the pre-take-off stall disappears.  This needs ~10 lines in the
+     shell (the ego argv has no vertical leg; the rectangle side has `--vertical-first-m`).
+  Phase 3 -- the owner's calls:
+   * the `traj_server` continuity patch (re-anchor + monotone + lookahead, ~25 lines) [5], AFTER which
+     `BRIDGE_FIELDS=posvelacc` may be reconsidered -- the review's own warning not to open it before is right;
+   * `grid_map/resolution` 0.05 + the pool/lattice that goes with it [7]: the only route to a real 0.20 m margin,
+     and now OPTIONAL, because the owner re-defined criterion 3 in round 70 (no pillar body entered + a
+     measurable detour) and the 0.20 m row is recorded as unmet rather than moved.
