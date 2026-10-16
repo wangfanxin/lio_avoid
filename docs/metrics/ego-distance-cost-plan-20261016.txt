@@ -1131,3 +1131,61 @@ S6 -- THE NEXT FLIGHT'S PREDICTIONS, WRITTEN BEFORE IT FLIES (same mission, same
        slower aircraft, and round 69's 74 s was the porpoise;
     5. **the crossing itself is NOT predicted to beat the plan**: the flown minimum should track the plan's own
        minimum within 0.05 m (S4's gap was 0.056 m), which means the C2 row can only move when the PLAN moves.
+
+=== ROUND 75: S6 FLEW, MOST OF S5's PREDICTIONS ARE REFUTED, AND THE REFUTATION LOCALISES THE REST =========
+
+S6 = `DIAG32-stale-follow`, window 8, ONE variable against S4 (the stale branch).  VALID sortie: no FCU failsafe
+(`Initialising ArduPilot | Arming motors | SIM Hit ground at 0.514738 m/s | Disarming motors`), no abort,
+`DECLARED THE TOUR COMPLETE (trajectory_flag = COMPLETED after waypoint 2): 29.9 s of route`, `phase -> land` at
+50.5 s, `landed` at 57.7 s, arrivals at 0.296 m and 0.299 m (the adapter's own gate is 0.30 m).
+
+THREE RUNS, ONE TABLE, all measured INSIDE each run's own tour window (leg1 -> land), which is the comparison S4's
+first aggregate got wrong:
+
+    run                     tour_s  err med  err 95th  err>1m  truthmin  planmin  inside%  branches (trace)
+    DIAG29 (age rule)        74.0   0.013    1.318    7.90%   +0.058   -0.107   13.61%  held 45% (identical)
+    DIAG31 (S4: lookahead)   24.8   0.231    0.943    2.35%   -0.257   -0.201    4.01%  held 50.4 / fresh 32.4
+    DIAG32 (S6: +stale)      29.9   0.280    0.975    4.23%   -0.196   -0.231    5.89%  fresh 36.4 / held 28.8 /
+                                                                                        stale-follow 17.5 / goal 17.3
+
+S6's PREDICTIONS, EACH ANSWERED:
+
+    1. `held` during the tour falls from 65.9% to below 5% .......... **REFUTED**: 50.4% -> **28.8%**, with
+       **17.5% newly `stale-follow`** -- the conversion happened exactly as designed, but holds remain, and they are
+       the samples whose plan is older than `stale_s + 8 s`, i.e. the planner silent for ten seconds or more;
+    2. inside-tour error, 95th < 0.6 m ............................. **REFUTED**: 0.975 m (S4: 0.943 m);
+    3. share above 1 m < 1% ....................................... **REFUTED**: 4.23% (S4: 2.35%);
+    4. the tour takes about as long as S4's ........................ **MET**: 29.9 s against 24.8 s (round 69: 74.0 s);
+    5. the flown minimum tracks the plan's within 0.05 m ........... **MET**: the gap is **0.035 m** (S4: 0.056 m;
+       round 69: 0.165 m) -- the aircraft flies the plan's shape.
+
+**WHAT THE REFUTATION LOCALISES, and this is the useful part.**  The reference fixes did what they were built to do
+(the S2/S3 bench, and in flight: no commanded sweep to the ground -- wire below 0.30 m 30.3% -> 0.3%; no stop
+commands where a plan existed -- 17.5% of the tour converted from `held` to `stale-follow`; the plan/flown gap
+0.165 -> 0.035 m).  They did NOT move the tracking error, which stayed at ~1 m in the 95th percentile across S4
+and S6.  Therefore **the ~1 m tail is not the hold branch, not the age rule, and not the reference at all**: with
+the reference continuously on the plan, a metre of error means the AIRCRAFT is a metre off the plan at times --
+its ability to follow (a pure position loop: the adapter publishes no velocity feed-forward and the bridge runs
+`--fields pos`), or the plan's own aggressiveness (max_vel 2.0, max_acc 3.0, weaving between pillars), or the
+estimator's known 120 ms velocity lag.  That is the next one-variable step, and it is NOT another reference rule:
+it is `--fields posvel` on the bridge, which the adapter is already ready for (it publishes the plan's velocity
+since S3).
+
+**AND THE CROSSING IS NOW BOUNDED BY THE PLAN.**  Both S4 and S6 flew the plan's own penetration (plan minima
+-0.201 m and -0.231 m; the aircraft -0.257 m and -0.196 m, gaps 0.056 m and 0.035 m).  Read against the corpus
+table (25 of 29 crossings have a PLAN that touches a pillar body, most of them around -0.28 m), this says
+something the earlier rounds could only suspect: **the 10 crossings that never entered a pillar body did so partly
+because the aircraft did NOT follow its plan closely.**  Round 69 is the clean example -- its tracking was the
+worst of the three (95th 1.318 m, median 0.013 m because the reference kept collapsing onto the vehicle) and its
+flown minimum was the best (+0.058 m) while its plan's minimum was -0.107 m.  Making the aircraft follow its plan
+faithfully therefore makes the flown clearance EQUAL to the plan's, not better than it: **the C2 row can only move
+when ego's plan moves**, which is exactly what rows 97-101 found from the planner side and what S4/S6 now confirm
+from the execution side.
+
+DISPOSITION: the reference fixes STAY -- they are correct in themselves (bench-verified, contract-tested, and they
+removed a stop command that was two thirds of a tour) -- but they are not a route to the C2 row, and no further
+reference rule will be tried.  The next step, if the owner wants it, is `--fields posvel` (one flag, one flight),
+with its prediction written first: the inside-tour 95th error should fall below 0.5 m and the flown minimum should
+move to within 0.02 m of the plan's.
+
+Figures: `docs/figures/traj-xy-DIAG32-flies-the-plan.png` sha256 409fdc015a7987d4e8d91578bb504027423e135268461240c33c310cdb09c0e7 (S6's crossing: the aircraft flying the plan's own penetration) and `docs/figures/round75/three-runs-inside-tour.png` sha256 58deda2833ec0bb4513c02e5d33b2537d4c5f4016360e21d2e6e0f8315aab8b0 (the three runs' inside-tour error).
