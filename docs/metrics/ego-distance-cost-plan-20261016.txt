@@ -1804,3 +1804,9 @@ re-checked against the code and the runs.
    * `grid_map/resolution` 0.05 + the pool/lattice that goes with it [7]: the only route to a real 0.20 m margin,
      and now OPTIONAL, because the owner re-defined criterion 3 in round 70 (no pillar body entered + a
      measurable detour) and the 0.20 m row is recorded as unmet rather than moved.
+
+=== NOTE (2026-10-16, appended -- this file is evidence and is not rewritten) =============================
+The figure this file names as `docs/figures/traj-xy-DIAG34-routeb-pv.png` is now at
+`docs/figures/archive/traj-xy-DIAG34-routeb-pv.png` (same sha256), because the owner's rule for the top level of
+`docs/figures/` is one figure per mission and mission B's is now Flight A's, `traj-xy-FLIGHTA-routeb-hold.png`.
+Nothing was deleted: the archive copy is byte-identical, and every path in this file still resolves under it.
