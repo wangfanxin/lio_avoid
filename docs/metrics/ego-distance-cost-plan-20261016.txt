@@ -1577,3 +1577,30 @@ So the answer to the owner's question is: **yes, ego is fed a converted stream, 
 wrong one -- the simulator's.  It is now the flight controller's own `LOCAL_POSITION_NED`**, which is what "the
 planner and the controller close their loops on the same state" actually requires, and which is the only one of
 the two that exists on hardware.
+
+=== ROUND 79b: WHAT THE CORRECTION COSTS THE NUMBERS ALREADY RECORDED =====================================
+
+The correction is not only a label.  `DIAG34-routeb-pv` (round 78b, the sortie that "COMPLETED the mission" and
+followed its plan to a **0.015 m** gap -- the tightest of any run) was flown with ego planning on
+`/sim/truth/odom`.  That is the SIMULATOR'S model state: the plan started from the vehicle's TRUE state, and the
+FCU was then controlled toward it.  On hardware -- and with the corrected path -- the planner starts from the
+FCU's ESTIMATE, which carries the EKF's own error and lag.
+
+So the honest reading of the five-run table is:
+
+  * **78b's numbers are an upper bound, not the Route B result.**  Its 0.015 m "plan-followed" gap and its smooth
+    completion were achieved with an information advantage no real aircraft has: the planner knowing the true
+    state.  The other four runs (round 69, S4, S6, 77b) all fed ego the same way -- `/sim/truth/odom` too, since
+    that was the only feed wired -- so THEY ARE COMPARABLE WITH EACH OTHER, and 78b is comparable with them only
+    in that same respect;
+  * what changes between those runs (the sampler, the stale-hold rule, the wire's feed-forward) is unaffected by
+    the correction, so the *comparisons between samplers* stand.  What does NOT stand is quoting 0.015 m as "what
+    Route B achieves" for a deployable configuration;
+  * **the next flight therefore has to be flown twice-over**: the same Route B chain (`EGO_CONTRACT=shim`,
+    `--fields posvel`, window 8) but with ego on the FCU's ESTIMATE, and its 95th-percentile error and plan/flown
+    gap compared against 78b's -- the DIFFERENCE between the two is the price of planning on what the aircraft
+    believes instead of on what the simulator knows.  That price is itself a result worth having: it is the
+    honest size of the "same state for planner and controller" benefit, measured rather than asserted.
+
+The bench already shows the corrected chain running end to end (round 79: 48 Hz, `in 810 out 810`, ego's
+"no odom." = 0); what has NOT happened is a sortie on it.
