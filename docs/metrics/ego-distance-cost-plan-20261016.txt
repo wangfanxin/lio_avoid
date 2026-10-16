@@ -927,3 +927,63 @@ in L), the planner's own trajectory z (the adapter reads `planning/bspline`), an
 all recorded or one topic away.
 
 Figures, from this run's recorded data: `docs/figures/traj-xy-DIAG29b-waypoints-truth-plan.png` sha256 c5b42c006c41eccd1205efc5d815be783fba73c43b4600cfa1bc28d470c92e4c (the top view the owner asked for: both waypoints, the aircraft coloured by time, the published plan) and `docs/figures/round71/DIAG29b-altitude-and-clearance.png` sha256 bdea9e825c5ca121f4680f444b735598f150099a17378980de310382b8565e34 (the same flight's three altitude records -- plan, wire, aircraft -- with the pillar clearance beneath).
+
+=== ROUND 72: THE FLIGHT IS CROOKED BECAUSE THE REFERENCE IS A STAIRCASE -- AND A CORRECTION ==============
+The owner looked at the top view and said: "飞的歪歪扭扭,我感觉是没跟踪上规划轨迹".  They are right in substance, and
+measuring it properly also corrects a claim THIS FILE made in round 71.
+
+CORRECTION FIRST.  Round 71 wrote "the aircraft-to-plan distance is median 0.010 m, 95th 0.172 m -- ego flew its
+own plan".  That was a **nearest-neighbour** measure: the distance from each aircraft sample to the CLOSEST point
+anywhere in the 560349-point plan stream, which flatters a lagging aircraft because the path it is chasing passes
+near where it already is.  The honest measure uses `setpoints.csv`, the one file where the COMMAND and the FCU's
+OWN POSITION sit in the same row with the same timestamp, so no clock juggling is needed:
+
+    the same-instant command-vs-aircraft error, over the 77.0 s of wire traffic
+      median 0.015 m | 75th 0.173 m | 90th 0.749 m | 95th 1.295 m | max 2.254 m
+      share of the flight with the error above 0.50 m: **13.63%**
+      share above 1.00 m:                            **7.69%**
+    the best-fit lag: **0 ms** (the smallest median error is at zero delay), so this is NOT a constant lag
+    vertical: median 0.098 m, 95th 0.746 m, max 1.258 m
+
+So the aircraft sits on its commanded point to 1.5 cm most of the time and is **more than a metre away from it for
+about 8% of the flight**.  Both statements are true; the second is the one that describes the picture.
+
+WHY: THE REFERENCE IS A STAIRCASE, NOT A TRAJECTORY.
+The /plan/cmd stream itself -- 10133 messages at 100.0 Hz over 101.3 s (`traj.csv.cmd.csv`) -- is measured:
+
+    identical to the previous sample (a HELD value):   4584 of 10132 = **45.2%**
+    hold runs: 637; median 0.05 s, 95th 0.07 s, and the longest are **1.99, 1.99, 1.99, 1.68, 1.68 s**
+    when it does move: up to 0.020 m per 10 ms message (2 m/s), and the largest single-message steps are
+      **-1.788 m in z** (1.867 -> 0.080 m at t = 100.42 s) and **3.406 m horizontally** (t = 17.90 s)
+    only **2 distinct trajectory_id** in the whole stream (id 1 for 45.8 s, id 2 for 55.6 s): the id changes only
+      at a waypoint, so the stream is NOT a rapid succession of new trajectories -- it is one long-lived reference
+      that freezes and jumps.
+
+The longest holds are **1.99 s, i.e. exactly the adapter's `stale_s = 2.0 s`**, and the adapter's own code says
+what that means (`src/planner/ego_source.py:206-232`):
+
+    if age <= self.stale_s:   t = now - start_wall;  p, v, _a = self.spline.at(t)      # sample ego's spline
+    else:                     p = self.target if self.p is None else self.p;  self.held += 1   # HOLD
+
+A spline older than two seconds is not sampled; the last commanded point is held instead (and the stream keeps
+talking, which is what the supervisor's silence gate wants).  The counters that would say WHICH branch fired --
+`spline(s) received`, `samples published`, `held` -- are printed by `summary()` **only at exit**, and `traj.log`
+has no such line: the run's own record cannot answer it.  **That is the instrument to add** (print the counters
+periodically, and log the sampled `t`, the spline's age and its duration once a second).
+
+TWO FURTHER FACTS THAT MATTER FOR THE FIX:
+  * **there is no velocity or acceleration feed-forward.**  Every /plan/cmd message carries v = 0 and a = 0 (100.0%
+    of messages; the wire's vel_x/vel_y/vel_z are likewise all zero).  This is by design -- `ego_source.py:7`
+    states "position = the point being flown to; velocity/acceleration are ignored on the wire" -- so the FCU flies
+    a pure position loop with no feed-forward term, and the vertical error alone (median 0.098 m, 95th 0.746 m)
+    is what a position-only reference produces;
+  * **the reference's own average speed is 0.58 m/s** (59.0 m of stream travel over 101.3 s) while the route is
+    ~10 m long: the stream travels the route roughly six times, which is the same count as the five climb-dive
+    cycles in z measured in round 71.  Two independent measurements, one period.
+
+SO: the crooked flight is not a controller-bandwidth problem and not a constant lag; it is a reference that holds
+still 45% of the time, jumps up to 3.4 m in a single message, and is chased by an aircraft with no feed-forward.
+The next step is instrumentation, not gains: make the adapter say what it is doing (`held`/`received` counters and
+the sampled `t` against the spline's age and duration), then re-fly once and read it.
+
+Round 72 refers to the round-71 altitude figure, `docs/figures/round71/DIAG29b-altitude-and-clearance.png`, sha256 bdea9e825c5ca121f4680f444b735598f150099a17378980de310382b8565e34 -- the plan's own z, the wire's z and the aircraft's z on one axis, which is where the porpoising was first seen.
