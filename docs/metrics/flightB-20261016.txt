@@ -1,0 +1,75 @@
+FLIGHT B: THE WHOLE FIX PACKAGE AT ONCE -- SCORED AGAINST ITS PRE-REGISTRATION  (2026-10-16)
+
+Run: `logs/missionA-FLIGHTB-allfix`, TAG `FLIGHTB-allfix`, rc=0, 81 s of truth, landed and disarmed, no abort.
+The arm: shim / window 8.0 / self-blind 0.0 / posvel, PLUS the six changes below, each pre-registered with its own
+observable and falsifier (`docs/metrics/flightB-prereg-20261016.txt`, written before arming).  Scorer:
+`_stage/flightB-verdict.py`; figure `docs/figures/traj-xy-FLIGHTB-allfix.png`.
+
+THE OUTCOME, AND IT IS NOT THE ONE THE PACKAGE WAS SUPPOSED TO PRODUCE
+
+    measurement                     Flight A (previous)      Flight B (all fixes)
+    truth minimum clearance              -0.136 m                 **-0.242 m**
+    samples inside a pillar body          0.42 %                  **2.72 %**
+    samples below the 0.10 m bar          1.81 %                  **4.29 %**
+    shape of the failure             ONE 0.33 s excursion     FOUR separate penetrations
+
+The pre-registered prediction was "better than Flight A but still not met".  It is WORSE, so that prediction is
+FALSIFIED, and the per-mechanism observables are what make the flight worth its airtime anyway:
+
+    change                                        observable                         A            B        verdict
+    C1 raised FCU limits (WP_ACC 6, jerk 30,      PSCN reference gap vs the wire     (not yet measured -- needs the BIN parse)
+        tilt 40, WP_SPD 4)
+    C2 FSM checks the VEHICLE                     VEHICLE-IN-OBSTACLE lines            0           28       FIRES
+                                                  EMERGENCY_STOP transitions           0           26       too eager
+    C3 tagged safety re-commit                    SAFETY-RECOMMIT lines                0            5       FIRES
+                                                  commits closer than 1.0 s          4/29        11/40     MORE, and now explained
+    C4 whole-spline collision checks              plan clr_m min                  +0.048 m    **-0.245 m**  REGRESSED
+    C5 A* clearance cost                          plans with NEGATIVE clr_m            0          148       REGRESSED
+    C6 reference clamped to the vehicle           pre-COMPLETED jump MAX            0.9945 m    **0.3576 m**  AS PREDICTED
+                                                  clamp lines                          0           16
+    C7 a feasible plan asked for                  commanded speed max               2.35 m/s      1.71 m/s   partial (soft limits)
+                                                  tracking error p95 / max   0.514 / 0.922   0.356 / 0.392  BETTER
+                                                  err at 1.5-2.0 m/s                 0.346        0.133     BETTER
+
+SO THE PACKAGE SPLIT IN TWO, CLEANLY
+  * THE TRACKING HALF WORKED.  The reference's largest step fell from 0.99 m to 0.36 m -- exactly what the clamp
+    predicted -- and the tracking error's tail fell with it (p95 0.51 -> 0.36, max 0.92 -> 0.39 m; at the 1.5-2.0
+    m/s band 0.346 -> 0.133 m).  C6 and C7 both did what they were supposed to do, and C2/C3 fired for the first
+    time: the aircraft's own position being inside the map is now VISIBLE (28 lines) where before it was silent.
+  * THE PLAN HALF REGRESSED, AND THE MECHANISM IS IN THE TABLE: `clr_m`'s minimum went from +0.048 m to
+    **-0.245 m with 148 negative plans**, i.e. the planner is now committing trajectories that go THROUGH pillars
+    -- and the figure shows the consequence: four separate penetrations along the leg-2 corridor instead of one
+    transient excursion.  The two changes whose observable is the plan are exactly the two that regressed: C4
+    (the whole-spline acceptance test and control-point scan) and C5 (the A* clearance cost).
+    The likely mechanism is the one the planner audit already documented as latent (its B1): when the optimiser
+    REJECTS a trajectory, the segment is ERASED and the function still returns TRUE
+    (`bspline_optimizer.cpp:1403-1409,1510-1511`), so a stricter acceptance test does not produce a safer plan --
+    it produces MORE rejections, and the trajectory that gets committed has segments with no repulsion at all.
+    That hypothesis is falsifiable and cheap to test: revert C4+C5 and the plan's `clr_m` should return to the
+    positive side.
+  * AND C2 IS TOO EAGER.  28 vehicle-in-obstacle events produced 26 EMERGENCY_STOP transitions: the map marks the
+    aircraft's own position often enough that "hold position" became a recurring state.  The bench caught the
+    first version of this (one tick was enough); the flight says the gates now stop the single-tick false
+    positive but not the underlying disagreement between where the map thinks the aircraft is and where it is.
+
+WHAT TO DO NEXT, IN ORDER (and it is a bisect, not a rethink)
+  1. REVERT C4 and C5 (both are one command: `apply-collisionfix1.py --revert` restores them away and
+     `apply-clearance1.py --revert` the A* cost), KEEP C1, C2, C3, C6, C7 -- the four whose observables moved the
+     right way, and the two diagnostics that now work.
+  2. Re-fly that arm.  Prediction: the plan's `clr_m` minimum returns positive, the tracking tail stays improved,
+     and C2-ego lands back near Flight A's 0.42 % or better -- because the aircraft follows a clean plan with a
+     bounded reference instead of a dirty plan with a bounded reference.
+  3. THEN, separately, make C2's escalation gentler (replan-only for the first second; no EMERGENCY_STOP unless
+     the vehicle stays inside for longer), and measure the map's self-marking directly -- the 28 events are
+     evidence about the MAP (it marks the vehicle) as much as about the check.
+  4. Only after that, the margin work (C4/C5) done properly: the audit's A4 shows the A* cost is the right lever
+     but its single previous flight and this one both say the rejection paths around it are not ready.
+
+WHAT THIS FLIGHT DOES NOT TELL US
+  * C1's own effect (the PSCN reference gap) is not measured yet -- it needs the `flight.BIN` parse, and it is the
+    next thing to read, because if the gap did fall then the raised limits are worth keeping regardless of the
+    outcome.
+  * Whether any single change is responsible for the four penetrations, as opposed to the pair C4+C5 interacting.
+    One bisect settles it.
+  * The mission completed and landed with no abort, so nothing here says the package is unsafe -- only that it is
+    not yet better, and that the plan-side half must go back.

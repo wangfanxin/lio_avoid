@@ -144,6 +144,13 @@ def generate_launch_description():
         'fsm/planning_horizen_time': 3.0,
         'fsm/emergency_time': 1.0,
         'fsm/fail_safe': True,
+        # PATCH COLLISION-FIX/1 (H1): the FSM's collision check tests the PLAN at 20 Hz and, until 2026-10-16,
+        # never the VEHICLE -- measured: the aircraft sat 0.136 m inside a pillar for 0.330 s while `Suddenly
+        # discovered obstacles`, `current traj in collision` and `Depth Lost` all read ZERO.  With this true the
+        # FSM also tests `odom_pos_` against the map (airborne only: 0.50 < z < 2.90 m, which excludes the pad-top
+        # and ceiling-slab self-marks this map is known to produce) and re-commits from odometry.  Stated here so
+        # the arm is visible in the configuration rather than inherited from a C++ default.
+        'fsm/vehicle_collision_check': True,
         # THE PRESET TOUR (Plan X).  Inert under `flight_type 1` (MANUAL): the sequencer is entered only by
         # `flight_type 2`, which is why the list used to be a single dummy waypoint at the origin.  Under
         # `flight_type 2` the patched additions matter, and each is an argument here so the tour can be moved

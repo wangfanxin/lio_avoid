@@ -67,7 +67,7 @@ class TourSequencer:
     """
 
     def __init__(self, targets_l, arrive_m=0.30, hold_s=5.0, settle_mps=0.08, goal_resend_s=1.0,
-                 log=None, ego_driven=False):
+                 log=None, ego_driven=False, ref_clamp_m=0.0):
         self.targets = np.asarray(targets_l, dtype=float).reshape(-1, 3)
         self.arrive_m = float(arrive_m)
         self.hold_s = float(hold_s)
@@ -92,6 +92,12 @@ class TourSequencer:
         self._hold_yaw = None
         #: how many forwarded messages were rewritten to the hold (round 81)
         self.n_held_after = 0
+        #: HOW FAR THE REFERENCE MAY BE FROM THE VEHICLE (metres; 0 = off = the flown behaviour until 2026-10-16).
+        #: This is the "continuity at the source" fix -- see `rewrite()`'s docstring for the measurements that
+        #: justify it and for why this process is the only one that can apply it.
+        self.ref_clamp_m = float(ref_clamp_m)
+        self.n_clamped = 0
+        self.t_last_clamp_log = None
 
     # ---- inputs ---------------------------------------------------------------------------------------
     def on_odom(self, p_l, v_l=None, now=0.0):
@@ -186,6 +192,17 @@ class TourSequencer:
         the arrival gate), the velocity and acceleration are zeroed, and the yaw is latched at whatever the first
         post-COMPLETED message carried, so nothing spins during the landing.  Before COMPLETED the forwarding is
         still verbatim.
+
+        A SECOND EXCEPTION, ADDED 2026-10-16 AND ALSO MEASURED: **the reference is CLAMPED to `--ref-clamp-m`
+        of the vehicle** (0 = off).  This is the "continuity at the source" fix, and this process is the only one
+        that can do it: `traj_server` has NO odometry subscription at all (`traj_server.cpp:289-306`), and the
+        FSM's check tests the plan.  MEASURED in `logs/missionA-FLIGHTA-routeb-hold`: `t_cur = now - start_time`
+        restarts at every 1 Hz replan, so the sampled point JUMPS -- 14 of 16 replans step more than 0.05 m,
+        median 0.281 m, max 0.927 m on the wire -- and at the moment the aircraft entered a pillar the reference
+        was 0.623 m ahead of it.  A position reference is a place to go, not a schedule, so capping its distance
+        from the vehicle costs the mission nothing (the vehicle moves, the cap follows, the reference advances)
+        while removing the steps that the flight controller then has to chase.  `n_clamped` counts them, and
+        every clamp is logged, so the fix is measurable rather than assumed.
         """
         msg.trajectory_id = int(self.i_goal) + 1
         if self.done:
@@ -200,6 +217,19 @@ class TourSequencer:
             self.n_completed += 1
             self.n_held_after += 1
         else:
+            if self.ref_clamp_m > 0.0 and self.p is not None:
+                d = np.array([msg.position.x, msg.position.y, msg.position.z]) - self.p
+                dist = float(np.linalg.norm(d))
+                if dist > self.ref_clamp_m:
+                    q = self.p + d * (self.ref_clamp_m / dist)
+                    msg.position.x, msg.position.y, msg.position.z = float(q[0]), float(q[1]), float(q[2])
+                    self.n_clamped += 1
+                    if self.t_last_clamp_log is None or (now - self.t_last_clamp_log) >= 1.0:
+                        self.t_last_clamp_log = now
+                        self.log("shim: REFERENCE CLAMPED -- the plan asked for a point %.3f m from the vehicle; "
+                                 "forwarded %.3f m along that direction instead (clamp %d, %.1f %% of the "
+                                 "stream)" % (dist, self.ref_clamp_m, self.n_clamped,
+                                              100.0 * self.n_clamped / max(1, self.n_clamped + self.n_ready)))
             msg.trajectory_flag = TRAJECTORY_STATUS_READY
             self.n_ready += 1
         return msg
@@ -350,6 +380,34 @@ def _selftest() -> int:
     if seq3.wp_index_msgs != 4:
         bad.append("PLAN X counted %d wp_index messages, expected 4" % seq3.wp_index_msgs)
 
+    # ---- THE REFERENCE CLAMP (2026-10-16): a message far from the vehicle must be pulled back TO the cap ----
+    # The assertion is the behaviour's own definition: the forwarded point keeps the DIRECTION of what the plan
+    # asked for and its distance becomes exactly the cap; and with the cap off nothing is touched (the flown
+    # behaviour stays byte-identical).
+    veh = [0.0, 0.0, 2.0]
+    seq4 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None, ref_clamp_m=0.35)
+    seq4.on_odom(veh, [0.0, 0.0, 0.0], now=t0)
+    m4 = M()
+    m4.position.x, m4.position.y, m4.position.z = 2.0, 0.0, 2.0        # the plan asks for a point 2 m away
+    seq4.rewrite(m4, now=t0)
+    d4 = float(np.linalg.norm([m4.position.x - veh[0], m4.position.y - veh[1], m4.position.z - veh[2]]))
+    print("   reference clamp 0.35 m: a point 2.000 m from the vehicle was forwarded at %.3f m, direction %s"
+          % (d4, "kept" if (m4.position.x > 0 and abs(m4.position.y) < 1e-9) else "CHANGED"))
+    if abs(d4 - 0.35) > 1e-9 or abs(float(m4.position.y) - 0.0) > 1e-9 or float(m4.position.x) <= 0:
+        bad.append("the clamp did not pull a 2 m reference back to 0.35 m along the same direction (got %.3f m "
+                   "at (%.3f, %.3f))" % (d4, float(m4.position.x), float(m4.position.y)))
+    if seq4.n_clamped != 1:
+        bad.append("the clamp counter is %d, expected 1" % seq4.n_clamped)
+    seq5 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None)   # cap OFF
+    seq5.on_odom(veh, [0.0, 0.0, 0.0], now=t0)
+    m5 = M()
+    m5.position.x = 2.0
+    m5.position.z = 2.0
+    seq5.rewrite(m5, now=t0)
+    if abs(float(m5.position.x) - 2.0) > 1e-12 or seq5.n_clamped != 0:
+        bad.append("with the clamp OFF the reference was changed (x %.6f, clamped %d) -- the flown behaviour "
+                   "must stay byte-identical when the knob is 0" % (float(m5.position.x), seq5.n_clamped))
+
     # ---- THE ARGUMENT SURFACE AND THE START-UP BANNERS ---------------------------------------------------
     # WHY THIS IS IN THE SELFTEST AT ALL: on 2026-10-16 the P3-2 banner referenced `args.goal_resend_s`, which
     # is not an argument, so the shell died at start-up with `AttributeError` in the FLOWN mode
@@ -410,6 +468,12 @@ def _parser() -> "argparse.ArgumentParser":
                          "`--wp-index-topic` drives the id and the COMPLETED transition, and no goal is sent.")
     ap.add_argument("--wp-index-topic", default="/wp_index",
                     help="`std_msgs/Int32`, published by PATCH 0011: the current waypoint, -1 when finished")
+    ap.add_argument("--ref-clamp-m", type=float, default=0.0,
+                    help="CONTINUITY AT THE SOURCE: never forward a reference point more than this far from the "
+                         "vehicle (0 = off, the behaviour every sortie before 2026-10-16 flew).  A position "
+                         "reference is a place to go, not a schedule, so clamping its distance costs the mission "
+                         "nothing while removing the 0.28 m median / 0.93 m max steps the sampler produces at "
+                         "every 1 Hz replan -- steps the flight controller then chases.")
     return ap
 
 
@@ -472,7 +536,7 @@ def main() -> int:
     ego_driven = (args.tour_source == "ego")
     seq = TourSequencer(targets_l, arrive_m=args.arrive_m, hold_s=args.hold_s,
                         settle_mps=args.settle_mps, log=lambda s: print(s, flush=True),
-                        ego_driven=ego_driven)
+                        ego_driven=ego_driven, ref_clamp_m=args.ref_clamp_m)
     print("shim: %d waypoint(s) in L from %s" % (len(targets_l), args.world))
     for i, t in enumerate(targets_l):
         print("shim: waypoint %d -> %s (L)" % (i + 1, np.round(t, 3)))

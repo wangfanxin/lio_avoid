@@ -1,0 +1,93 @@
+FLIGHT B -- PRE-REGISTRATION, WRITTEN BEFORE THE AIRCRAFT IS ARMED  (2026-10-16)
+
+THE OWNER'S INSTRUCTION: "一起都动,再飞测试。之前你提出的问题也尽量一起修了" -- move everything at once, then fly,
+and fix as much of what the audits found as possible.  Six changes go into the air together, and the reason this
+file exists in this shape is that ONE flight must still yield a verdict PER MECHANISM.  Each change below therefore
+names the observable that moves for IT and for nothing else.
+
+THE SIX CHANGES
+
+  C1  RAISED FLIGHT-CONTROLLER LIMITS (parameters, verified on the pad, `docs/metrics/guided-limits-20261016.txt`)
+      `params/guided_limits_fast.parm` via `EXTRA_PARM`: WP_ACC 2.5 -> 6.0 m/s2, PSC_NE_JERK 5 -> 30 m/s3,
+      ATC_ANGLE_MAX 30 -> 40 deg, WP_SPD 2.0 -> 4.0 m/s.  Read back from the FCU live: 6.0 / 30.0 / 40.0 / 4.0.
+      OBSERVABLE: the FCU's internal reference gap -- `flight.BIN` `PSCN` `_pos_desired` vs the wire -- whose
+      p90 was 0.287 m and max 0.591 m.
+      PREDICTION: p90 falls below 0.10 m.  FALSIFIER: p90 stays above 0.20 m (then the shaper is not what was
+      limiting, and the audit's 0.47 m attribution is wrong).
+
+  C2  THE FSM CHECKS THE VEHICLE (code, `COLLISION-FIX/1` H1, `fsm/vehicle_collision_check` true)
+      `checkCollisionCallback` now also tests `odom_pos_` against the map, airborne only (0.50 < z < 2.90 m),
+      and re-commits from odometry (EMERGENCY_STOP if that fails), logging `VEHICLE-IN-OBSTACLE` at 1 Hz.
+      OBSERVABLE: the count of `VEHICLE-IN-OBSTACLE` lines, plus whether any occurs while the aircraft is
+      actually inside a pillar (truth).
+      PREDICTION: at least one fires during any intrusion, i.e. the aircraft is NEVER inside a pillar for more
+      than the 20 Hz check period without a log line.  FALSIFIER: an intrusion with the counter at zero.
+      The risk this change carries: the map marks the vehicle itself (4346 `the drone is in obstacle` in the
+      previous flight, 4165 of them during the climb), which is why the check is gated on being airborne.
+
+  C3  THE SILENT COMMIT PATH IS TAGGED (code, H2)
+      `SAFETY-RECOMMIT: ... this commit does NOT go through the 1 Hz gate` on the branch that re-commits without
+      a word -- the branch the two sub-second commits before the last intrusion had to be attributed to BY
+      ELIMINATION.
+      OBSERVABLE: the count of `SAFETY-RECOMMIT` lines and the commit-gap distribution.
+      PREDICTION: commits closer together than 1.0 s are now always explained by a log line.  FALSIFIER: a
+      sub-second commit with no line naming its cause.
+
+  C4  THE WHOLE SPLINE IS COLLISION-CHECKED (code, H3)
+      `rebound_optimize`'s acceptance test now samples the entire duration (was `t < tmp * 2/3`) and
+      `check_collision_and_rebound` scans to the last control point (was one third short).  12 of the 30 previous
+      plans had their tightest point in that unchecked third.
+      OBSERVABLE: the plan's own minimum clearance per committed plan (`traj.csv` `clr_m`), and `plan_success`.
+      PREDICTION: the plan's minimum clearance rises above the previous +0.048 m and NO plan has a negative
+      `clr_m`; the commit rate stays close to 1 Hz (the check must not starve planning).
+      FALSIFIER: `clr_m` minimum unchanged or lower, or the commit count falls by more than half.
+
+  C5  THE A* CLEARS THE BOUNDARY (code, `_stage/apply-clearance1.py` reapplied)
+      A soft cost of 0.75 per occupied horizontal neighbour, so the search stops returning the SHORTEST path
+      through a corridor -- the one that hugs its boundary.  Its single previous flight gave the best one-cell
+      result of the series (-0.057 m) and was never reproduced.
+      OBSERVABLE: the plan's clearance distribution (`clr_m` percentiles), which nothing else in this list moves.
+      PREDICTION: `clr_m` 5th percentile above the previous +0.338 m.  FALSIFIER: unchanged, or the sortie
+      aborts on the geofence as DIAG18 did (which was later attributed to a flyaway, so a repeat here is
+      informative either way).
+
+  C6  THE REFERENCE IS CLAMPED TO THE VEHICLE (code, `--ref-clamp-m 0.35`, `EGO_REF_CLAMP_M=0.35`)
+      The contract shell -- the only process in the chain with the vehicle's state -- refuses to forward a
+      reference more than 0.35 m from the aircraft, keeping the direction.  Removes the 0.281 m median /
+      0.927 m max steps the sampler produces at every 1 Hz replan.
+      OBSERVABLE: `shim_trace.csv`'s `jump_m` (the same column that measured 0.9945 m before), and the shell's
+      own `REFERENCE CLAMPED` lines with the clamp count.
+      PREDICTION: the pre-COMPLETED `jump_m` p99 falls below 0.10 m and no step exceeds 0.35 m.  FALSIFIER:
+      p99 above 0.20 m, or the clamp firing on more than 30 % of the stream (which would mean the plan and the
+      vehicle disagree so much that clamping is hiding a planning failure).
+
+  C7  THE PLAN IS ASKED TO BE FEASIBLE (parameters: `EGO_MAX_VEL=1.2 EGO_MAX_ACC=2.5`)
+      The measured tracking error is 0.047 m at 0.5-1.0 m/s and 0.346 m at 1.5-2.0 m/s, and the plan's own margin
+      on the tight stretch is 5-17 cm; the plan was asking for up to 2.35 m/s.
+      OBSERVABLE: the commanded-speed distribution and the per-speed-band tracking error.
+      PREDICTION: the commanded speed never exceeds ~1.3 m/s and the tracking error at every band stays under
+      0.15 m.  FALSIFIER: a commanded speed above 1.5 m/s (the soft penalties are not binding), or the mission
+      taking so long that the watchdog kills it.
+
+THE ACCEPTANCE MEASUREMENT, UNCHANGED: C2-ego = >= 95 % of truth samples at >= 0.10 m from every pillar surface
+AND 0 samples inside a body, on `tap.csv`.  Previous run (Flight A): 0.42 % inside, 1.81 % below 0.10 m, min
+-0.136 m, one 0.33 s episode.
+
+PREDICTION FOR C2-ego ITSELF: **better than Flight A but not yet met**, because C1+C6 address the two dominant
+terms (the 0.47 m inside the FCU and the 0.28-0.93 m reference steps) while C4/C5 only widen the margin and C7
+slows the plan.  A falsification in the good direction (C2-ego MET) would mean the margin plus the reference fix
+were together sufficient, and the honest response would be to reproduce it before believing it -- this project's
+own measured run-to-run spread on this mission is sd 0.143 m, larger than most single-run effects.
+
+WHAT WOULD MAKE THE FLIGHT WORTHLESS RATHER THAN NEGATIVE (decided now): if `WP_ACC` did not reach 6.0 in the
+FLIGHT's own log, if `EGO_REF_CLAMP_M` was not 0.35, if `EGO_CONTRACT` was not `shim`, if the A* clearance patch
+is not in the built binary, or if the truth tap did not record -- then the run is an INVALID ARM and is recorded
+as one, not as evidence about the fixes.
+
+EVIDENCE THIS FILE WILL BE CHECKED AGAINST
+  logs/missionA-<TAG>/flight.BIN     the FCU's parameters AND `PSCN`/`GUIP` (C1)
+  logs/missionA-<TAG>/ego_planner.log  `VEHICLE-IN-OBSTACLE`, `SAFETY-RECOMMIT`, plan-success counts (C2, C3)
+  logs/missionA-<TAG>/traj.csv       per-plan `clr_m` (C4, C5)
+  logs/missionA-<TAG>/shim_trace.csv `jump_m`, the clamp count (C6)
+  logs/missionA-<TAG>/setpoints.csv  the commanded speed and its tracking error (C7)
+  logs/missionA-<TAG>/tap.csv        the truth, for C2-ego

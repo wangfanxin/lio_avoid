@@ -226,6 +226,16 @@ EGO_CLOUD_WINDOW="${EGO_CLOUD_WINDOW:-0.0}"
 #: 0.20 m footprint, so this is its enabler, not a convenience: with the bubble, marked cells are at least this
 #: far away and the map cannot mark the machine itself.
 EGO_SELF_BLIND="${EGO_SELF_BLIND:-0.0}"
+#: HOW FAR THE REFERENCE MAY BE FROM THE VEHICLE, metres (0 = off = the behaviour of every sortie before
+#: 2026-10-16).  This is the "continuity at the source" fix, and it lives in the contract shell because that is
+#: the only process in the chain that HAS the vehicle's state: `traj_server` subscribes to nothing but the spline,
+#: and the FSM's own check tests the PLAN, never the vehicle.  MEASURED (`docs/metrics/why-collide-20261016.txt`):
+#: `t_cur = now - start_time` restarts at every 1 Hz replan, so the sampled point jumps -- 14 of 16 replans step
+#: more than 0.05 m, median 0.281 m, max 0.927 m on the wire -- and at the moment the aircraft entered a pillar
+#: the reference was 0.623 m ahead of it while the plan's own margin there was 5-17 cm.  A position reference is a
+#: place to go, not a schedule: capping its distance from the vehicle costs the mission nothing and removes the
+#: steps the controller otherwise chases.
+EGO_REF_CLAMP_M="${EGO_REF_CLAMP_M:-0.0}"
 case "$PLANNER" in
     rectangle)
         PLANNER_FILE="$REPO/planner/rectangle_source.py"
@@ -249,7 +259,7 @@ case "$PLANNER" in
             # the tour and the contract's `trajectory_id` / `trajectory_flag` (see the knob block above).
             PLANNER_FILE="$REPO/planner/ego_contract_shim.py"
             PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S --arrive-m $EGO_ARRIVE_M \
---odom-topic /ego/odom_fcu --trace-csv $OUT/shim_trace.csv ${CMD_ARGS:-}"
+--odom-topic /ego/odom_fcu --ref-clamp-m $EGO_REF_CLAMP_M --trace-csv $OUT/shim_trace.csv ${CMD_ARGS:-}"
             PLANNER_WHAT="ego's OWN traj_server samples the plan (p+v+a) + the contract shell (tour, ids, COMPLETED)"
             PLANNER_TOPIC="/plan/cmd"
         else
