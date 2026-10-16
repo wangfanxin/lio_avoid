@@ -67,13 +67,16 @@ class TourSequencer:
     """
 
     def __init__(self, targets_l, arrive_m=0.30, hold_s=5.0, settle_mps=0.08, goal_resend_s=1.0,
-                 log=None):
+                 log=None, ego_driven=False):
         self.targets = np.asarray(targets_l, dtype=float).reshape(-1, 3)
         self.arrive_m = float(arrive_m)
         self.hold_s = float(hold_s)
         self.settle_mps = float(settle_mps)
         self.goal_resend_s = float(goal_resend_s)
         self.log = log or (lambda s: None)
+        #: PLAN X: when True the TOUR IS EGO'S OWN -- `wp_index` drives the index and the end, this shell
+        #: sends no goals and runs no arrival gate of its own.  Default False = the flown behaviour.
+        self.ego_driven = bool(ego_driven)
         self.i_goal = 0
         self.t_dwell = None
         self.done = False
@@ -83,6 +86,8 @@ class TourSequencer:
         self.goals_sent = 0
         self.n_ready = 0
         self.n_completed = 0
+        #: how many `/wp_index` messages were seen (PLAN X's own health signal)
+        self.wp_index_msgs = 0
         #: the yaw latched when the tour completed, so the post-COMPLETED hold cannot command a spin
         self._hold_yaw = None
         #: how many forwarded messages were rewritten to the hold (round 81)
@@ -95,6 +100,8 @@ class TourSequencer:
         self._sequence(now)
 
     def _sequence(self, now: float) -> None:
+        if self.ego_driven:
+            return                      # PLAN X: ego's `wp_index` is the only thing that advances this tour
         if self.done or self.p is None:
             return
         d = float(np.linalg.norm(self.p - self.target))
@@ -114,6 +121,31 @@ class TourSequencer:
             self.t_dwell = None
             self.log("shim: next waypoint %d of %d" % (self.i_goal + 1, len(self.targets)))
 
+    # ---- PLAN X: the tour driven by EGO's own sequencer -------------------------------------------------
+    def on_wp_index(self, idx: int, now: float = 0.0) -> None:
+        """`/wp_index` from PATCH 0011: the waypoint the mission is on, or -1 when the tour is finished.
+
+        This is the whole of Plan X's shell: the id and the COMPLETED transition follow EGO, and nothing else
+        in this file has an opinion about when the mission advances.  Note what is deliberately NOT done --
+        the shell does not check an arrival of its own here, and does not require the vehicle to be anywhere:
+        if ego says the tour is over, the contract says COMPLETED, and if ego's index is wrong that is a fact
+        about ego which the trace should show rather than one this shell should hide.
+        """
+        self.wp_index_msgs += 1
+        if int(idx) < 0:
+            if not self.done:
+                self.done = True
+                self.i_goal = len(self.targets) - 1
+                self.log("shim: TOUR COMPLETE reported BY EGO (wp_index -1 after %d wp_index message(s)) -- "
+                         "trajectory_flag becomes COMPLETED and the stream KEEPS TALKING, held at waypoint %d"
+                         % (self.wp_index_msgs, len(self.targets)))
+            return
+        new_i = max(0, min(int(idx), len(self.targets) - 1))
+        if new_i != self.i_goal:
+            self.log("shim: ego's wp_index advanced %d -> %d of %d: trajectory_id follows it"
+                     % (self.i_goal + 1, new_i + 1, len(self.targets)))
+            self.i_goal = new_i
+
     # ---- outputs --------------------------------------------------------------------------------------
     @property
     def target(self):
@@ -122,8 +154,12 @@ class TourSequencer:
     def goal_to_send(self, now: float):
         """The one goal ego should be working on, or None when the tour is over -- re-sent at `goal_resend_s`
         because ego's FSM falls back to WAIT_TARGET when it decides a plan has stalled, and only a NEW goal
-        pulls it out (the same reason `planner/ego_source.py:480-493` re-sends)."""
-        if self.done:
+        pulls it out (the same reason `planner/ego_source.py:480-493` re-sends).
+
+        PLAN X: under `ego_driven` there is NOTHING to send -- ego's own sequencer owns the tour, and a goal
+        sent to a FSM that is not subscribed to `/move_base_simple/goal` would be a message with no reader.
+        The re-send cadence that used to drive the mission is exactly what Plan X removes."""
+        if self.ego_driven or self.done:
             return None
         if self.t_last_goal is not None and (now - self.t_last_goal) < self.goal_resend_s:
             return None
@@ -170,9 +206,11 @@ class TourSequencer:
 
     def summary(self):
         return ("shim: %d waypoint(s), %d goal(s) sent, %d READY and %d COMPLETED messages forwarded "
-                "(%d of them held at the last waypoint), %s"
+                "(%d of them held at the last waypoint), %s, tour source %s%s"
                 % (len(self.targets), self.goals_sent, self.n_ready, self.n_completed, self.n_held_after,
-                   "TOUR COMPLETE" if self.done else "waypoint %d" % (self.i_goal + 1)))
+                   "TOUR COMPLETE" if self.done else "waypoint %d" % (self.i_goal + 1),
+                   "EGO (wp_index)" if self.ego_driven else "this shell",
+                   " (%d wp_index message(s))" % self.wp_index_msgs if self.ego_driven else ""))
 
 
 # -----------------------------------------------------------------------------------------------------------
@@ -269,6 +307,73 @@ def _selftest() -> int:
     print("   3 s of ticks at 10 Hz, goal_resend_s 1.0 -> %d goal(s) (expect 3-4)" % n_sent)
     if not 3 <= n_sent <= 4:
         bad.append("the goal cadence is %d in 3 s, expected 3-4" % n_sent)
+
+    # ---- PLAN X: THE TOUR DRIVEN BY EGO'S OWN `wp_index` ------------------------------------------------
+    # The assertions are the MODE'S CONTRACT, not a copy of the shell's: no goal may ever be sent, the id must
+    # follow ego's index (including BACKWARDS, which the shell's own sequencer can never do and which would
+    # otherwise be silently ignored), and -1 must complete the tour -- after which the hold pins the point.
+    seq3 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0], [9.0, 0.0, 2.0]],
+                         log=lambda s: print("   " + s), ego_driven=True)
+    if any(seq3.goal_to_send(now=t0 + 0.1 * k) is not None for k in range(30)):
+        bad.append("PLAN X sent a goal -- ego's sequencer owns the tour, and /move_base_simple/goal has no "
+                   "subscriber under flight_type 2")
+    # the shell's own arrival gate must be DEAD in this mode: park the vehicle exactly on target 1 and tick
+    # past any dwell -- the tour must NOT advance, because ego has not said so.
+    for k in range(30):
+        seq3.on_odom([0.0, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0 + 0.5 * k)
+    m3 = M()
+    seq3.rewrite(m3, now=t0 + 15.0)
+    if (m3.trajectory_id, seq3.done) != (1, False):
+        bad.append("PLAN X advanced on the SHELL's arrival gate (id %d, done %s) -- the gate must be inert "
+                   "when ego owns the tour" % (m3.trajectory_id, seq3.done))
+    seq3.on_wp_index(1, now=t0 + 16.0)
+    seq3.rewrite(m3, now=t0 + 16.1)
+    if m3.trajectory_id != 2:
+        bad.append("PLAN X did not follow ego's wp_index 1 -> id %d" % m3.trajectory_id)
+    seq3.on_wp_index(0, now=t0 + 17.0)          # a BACKWARDS index: a wrong index must be SHOWN, not hidden
+    seq3.rewrite(m3, now=t0 + 17.1)
+    if m3.trajectory_id != 1:
+        bad.append("PLAN X ignored a backwards wp_index (id %d, expected 1)" % m3.trajectory_id)
+    seq3.on_wp_index(2, now=t0 + 18.0)
+    seq3.on_wp_index(-1, now=t0 + 19.0)
+    seq3.rewrite(m3, now=t0 + 19.1)
+    hold = seq3.targets[-1]
+    print("   PLAN X: ego drove the id to %d, then wp_index -1 -> flag %d, point pinned to %s, %d wp_index "
+          "message(s)" % (m3.trajectory_id, m3.trajectory_flag,
+                          tuple(round(float(x), 3) for x in hold), seq3.wp_index_msgs))
+    if m3.trajectory_flag != TRAJECTORY_STATUS_COMPLETED:
+        bad.append("PLAN X did not turn ego's wp_index -1 into COMPLETED (flag %d)" % m3.trajectory_flag)
+    if max(abs(float(getattr(m3.position, c)) - float(hold[i])) for i, c in enumerate("xyz")) > 1e-9:
+        bad.append("PLAN X's post-COMPLETED hold is not on the LAST waypoint")
+    if seq3.n_held_after != 1:
+        bad.append("PLAN X's hold counter is %d, expected 1" % seq3.n_held_after)
+    if seq3.wp_index_msgs != 4:
+        bad.append("PLAN X counted %d wp_index messages, expected 4" % seq3.wp_index_msgs)
+
+    # ---- THE ARGUMENT SURFACE AND THE START-UP BANNERS ---------------------------------------------------
+    # WHY THIS IS IN THE SELFTEST AT ALL: on 2026-10-16 the P3-2 banner referenced `args.goal_resend_s`, which
+    # is not an argument, so the shell died at start-up with `AttributeError` in the FLOWN mode
+    # (`--tour-source shell`) while this selftest passed -- it never built the banner.  A whole bench arm went
+    # into finding that.  So: parse the real parser, and build BOTH banners from it.
+    print("   -- the argument surface and the banners, built from the REAL parser")
+    a = _parser().parse_args([])
+    for field in ("world", "calib_file", "z", "hold_s", "arrive_m", "settle_mps", "in_topic", "cmd_topic",
+                  "goal_topic", "odom_topic", "trace_csv", "tour_source", "wp_index_topic"):
+        if not hasattr(a, field):
+            bad.append("the start-up banner's argument surface has no %r -- main() would raise AttributeError "
+                       "at start-up, in the flown mode, before the node spins" % field)
+    if a.tour_source != "shell":
+        bad.append("the default tour source is %r, not 'shell' (the flown behaviour must be the default)"
+                   % a.tour_source)
+    try:
+        _print_p3_2_banner(a.arrive_m, a.settle_mps, a.hold_s)
+        _print_tour_source_banner(a.tour_source, a.goal_topic, TourSequencer([[0, 0, 2]]).goal_resend_s,
+                                  a.arrive_m, a.settle_mps, a.hold_s, a.wp_index_topic)
+        _print_tour_source_banner("ego", a.goal_topic, 1.0, a.arrive_m, a.settle_mps, a.hold_s,
+                                  a.wp_index_topic)
+    except Exception as e:                                                       # noqa: BLE001
+        bad.append("building the start-up banners raised %s: %s -- this is the exact failure that killed the "
+                   "shell at start-up on 2026-10-16" % (type(e).__name__, e))
     if bad:
         print("\nCONTRACT SHIM SELFTEST FAILED (%d problem(s)):" % len(bad))
         for b in bad:
@@ -279,7 +384,12 @@ def _selftest() -> int:
     return 0
 
 
-def main() -> int:
+def _parser() -> "argparse.ArgumentParser":
+    """THE ARGUMENT SURFACE, in one place, so `--selftest` can parse it and touch every field the start-up
+    banner uses.  That is not tidiness: on 2026-10-16 the banner referenced `args.goal_resend_s`, which is NOT
+    an argument (the sequencer's own constructor default is), so the shell died with `AttributeError` at
+    start-up in `--tour-source shell` -- i.e. in the FLOWN configuration -- while `--selftest` passed, because
+    the selftest never built the banner.  The next Plan X bench caught it only because it ran a control arm."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--world", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
@@ -294,7 +404,44 @@ def main() -> int:
     ap.add_argument("--goal-topic", default=DEFAULT_GOAL_TOPIC)
     ap.add_argument("--odom-topic", default="/ego/odom_fcu")
     ap.add_argument("--trace-csv", default="")
-    args = ap.parse_args()
+    ap.add_argument("--tour-source", choices=("shell", "ego"), default="shell",
+                    help="WHO OWNS THE TOUR.  `shell` (default, the flown behaviour): this process sends the "
+                         "goals and gates the arrivals.  `ego` (Plan X): ego's own waypoint sequencer owns it, "
+                         "`--wp-index-topic` drives the id and the COMPLETED transition, and no goal is sent.")
+    ap.add_argument("--wp-index-topic", default="/wp_index",
+                    help="`std_msgs/Int32`, published by PATCH 0011: the current waypoint, -1 when finished")
+    return ap
+
+
+def _print_p3_2_banner(arrive_m: float, settle_mps: float, hold_s: float) -> None:
+    """P3-2 OF THE MISSION-B REVIEW: "任务结束" is decided in THREE places whose thresholds differ, and two of
+    them were only discoverable by reading three files.  They are printed HERE, once, at start-up, with the
+    source of each -- so a run's own log says which rule ended it.  (The fourth number, the supervisor's
+    SILENCE window, is a FAILURE rule, not an arrival rule, and is listed with the others so the difference is
+    visible.)  It takes plain FLOATS rather than an `argparse.Namespace`, which is what makes it callable from
+    `--selftest` -- see `_parser`."""
+    print("shim: ARRIVAL RULES IN THIS STACK -- (1) EGO's own: `plan_done && wp_d_veh < "
+          "fsm/waypoint_advance_m` (`ego_replan_fsm.cpp:879`, launch default 1.000 m, PATCH 0008's advance); "
+          "(2) THIS SHELL's: d <= %.3f m AND |v| < %.3f m/s, held %.1f s (`--arrive-m/--settle-mps/--hold-s`); "
+          "(3) the SUPERVISOR's: the contract's `trajectory_flag = COMPLETED` (`supervisor.py:295`) -- silence "
+          "is NOT completion.  The supervisor's 3.0 s plan-silence window is a FAILURE rule, not an arrival "
+          "rule." % (arrive_m, settle_mps, hold_s))
+
+
+def _print_tour_source_banner(tour_source: str, goal_topic: str, goal_resend_s: float, arrive_m: float,
+                              settle_mps: float, hold_s: float, wp_index_topic: str) -> None:
+    """WHO OWNS THE TOUR, said out loud -- `shell` re-sends goals, `ego` (Plan X) sends none."""
+    if tour_source == "ego":
+        print("shim: TOUR SOURCE = EGO -- subscribed to %s (PATCH 0011); no goals are sent, and the id/flag "
+              "follow ego's index.  Set --tour-source shell to restore the flown behaviour." % wp_index_topic)
+    else:
+        print("shim: TOUR SOURCE = THIS SHELL -- goals are re-sent on %s at %.1f Hz and the arrival gate is "
+              "ours (%.3f m, |v| < %.3f m/s, held %.1f s)"
+              % (goal_topic, 1.0 / goal_resend_s, arrive_m, settle_mps, hold_s))
+
+
+def main() -> int:
+    args = _parser().parse_args()
     if args.selftest:
         return _selftest()
 
@@ -315,24 +462,23 @@ def main() -> int:
     except Exception:                                                            # noqa: BLE001
         rclpy.init(args=[])
     node = Node("ego_contract_shim")
+    # LINE-BUFFERED STDOUT, because this process is normally ended by a signal and its banner is not flushed by
+    # then: a bench arm on 2026-10-16 was diagnosed as "the shell printed nothing" when in fact it had printed
+    # a full banner that was sitting in a 4 KB buffer.  An empty log must mean the process said nothing.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:                                                            # noqa: BLE001
+        pass
+    ego_driven = (args.tour_source == "ego")
     seq = TourSequencer(targets_l, arrive_m=args.arrive_m, hold_s=args.hold_s,
-                        settle_mps=args.settle_mps, log=lambda s: print(s, flush=True))
+                        settle_mps=args.settle_mps, log=lambda s: print(s, flush=True),
+                        ego_driven=ego_driven)
     print("shim: %d waypoint(s) in L from %s" % (len(targets_l), args.world))
     for i, t in enumerate(targets_l):
         print("shim: waypoint %d -> %s (L)" % (i + 1, np.round(t, 3)))
     print("shim: TRAJ_SERVER's %s is forwarded to %s with trajectory_id per waypoint and a real COMPLETED"
           % (args.in_topic, args.cmd_topic))
-    # P3-2 OF THE MISSION-B REVIEW: "任务结束" is decided in THREE places whose thresholds differ, and two of
-    # them were only discoverable by reading three files.  They are printed HERE, once, at start-up, with the
-    # source of each -- so a run's own log says which rule ended it.  (The fourth number, the supervisor's
-    # SILENCE window, is a FAILURE rule, not an arrival rule, and is listed with the others so the difference
-    # is visible.)
-    print("shim: ARRIVAL RULES IN THIS STACK -- (1) EGO's own: `plan_done && wp_d_veh < "
-          "fsm/waypoint_advance_m` (`ego_replan_fsm.cpp:879`, launch default 1.000 m, PATCH 0008's advance); "
-          "(2) THIS SHELL's: d <= %.3f m AND |v| < %.3f m/s, held %.1f s (`--arrive-m/--settle-mps/--hold-s`); "
-          "(3) the SUPERVISOR's: the contract's `trajectory_flag = COMPLETED` (`supervisor.py:295`) -- silence "
-          "is NOT completion.  The supervisor's 3.0 s plan-silence window is a FAILURE rule, not an arrival "
-          "rule." % (args.arrive_m, args.settle_mps, args.hold_s))
+    _print_p3_2_banner(args.arrive_m, args.settle_mps, args.hold_s)
 
     # the CONTRACT's QoS is not negotiable: RELIABLE + KEEP_LAST(5) + TRANSIENT_LOCAL, exactly as
     # `planner/ego_source.py:421-424` publishes it (a latched subscriber must still find the newest sample)
@@ -374,6 +520,17 @@ def main() -> int:
 
     node.create_subscription(Odometry, args.odom_topic, on_odom, sub_qos)
     node.create_subscription(PositionCommand, args.in_topic, on_cmd, sub_qos)
+    if ego_driven:
+        # PLAN X (PATCH 0011 publishes it): ego's own sequencer says which waypoint the mission is on, and -1
+        # says it is over.  With this topic live the shell sends NO goals and runs NO arrival gate.
+        from std_msgs.msg import Int32                                                # noqa: E402
+
+        def on_wp_index(m: Int32):
+            seq.on_wp_index(m.data, now=node.get_clock().now().nanoseconds * 1e-9)
+
+        node.create_subscription(Int32, args.wp_index_topic, on_wp_index, sub_qos)
+    _print_tour_source_banner(args.tour_source, args.goal_topic, seq.goal_resend_s, args.arrive_m,
+                              args.settle_mps, args.hold_s, args.wp_index_topic)
 
     def tick():
         g = seq.goal_to_send(now=node.get_clock().now().nanoseconds * 1e-9)
@@ -385,6 +542,13 @@ def main() -> int:
         gm.pose.position.x, gm.pose.position.y, gm.pose.position.z = float(g[0]), float(g[1]), float(g[2])
         gm.pose.orientation.w = 1.0
         goal_pub.publish(gm)
+        # SAY IT.  A goal that is published and never seen by the FSM (wrong topic, no subscriber, the node
+        # still in a constructor wait) looks EXACTLY like a planner that refuses to plan -- a whole bench arm
+        # was spent on that ambiguity on 2026-10-16 (the control arm of `_stage/s13-planx.sh` never planned and
+        # nothing in either log said whether a goal had been sent).  One line per send, at 1 Hz, is cheap.
+        print("shim: goal %d/%d -> (%.3f, %.3f, %.3f) L on %s"
+              % (seq.i_goal + 1, len(seq.targets), float(g[0]), float(g[1]), float(g[2]), args.goal_topic),
+              flush=True)
 
     node.create_timer(0.1, tick)
     try:
