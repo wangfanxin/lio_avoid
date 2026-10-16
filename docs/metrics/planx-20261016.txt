@@ -100,3 +100,83 @@ MEASURED, 2026-10-16, THREE PARKED BENCH RUNS OF THE SAME STACK
    Telemetry fires and the hazard does not: Plan X arm 43 `TELEM:` / 41 `NEW-SPLINE:` / **0** `INVALID-TIME`;
    control 40 / 7 / **0**.  The hover branch is visible in both (`branch=HOVER ... |v|=0.000`), which is what
    P3-1 was for.
+
+CORRECTION AND RESULT, SAME DAY: THE ROUND-1 CONCLUSION ("PLAN X DOES NOT ADVANCE") WAS THE INSTRUMENT
+
+WHAT WAS WRONG.  The Plan X arm of the first bench run reported 526 `GEN_NEW_TRAJ -> GEN_NEW_TRAJ` and no
+advance, and it was recorded as "arming works, advance does not".  The ego log said more than the summary did:
+the failures were `PLANNER-STALL: local replan failed ...` escalating to global replans, and the optimiser
+itself was printing
+
+    [rebound_optimize]: Solver error. Return = -1008, A rounding error occurred; alternatively,
+    no line-search step satisfies the sufficient decrease and curvature condition
+
+-- a CERES failure in the local B-spline, i.e. the state being planned FROM was moving in a way the planner
+could not follow.  It was: `_stage/s12-fake-odom.py` TELEPORTED.  It held at stop k, then held at stop k+1, so
+consecutive messages carried a **5.65 m jump with a twist of exactly zero** -- an infinite speed reported as
+standing still.  In the MANUAL arm the shell's 1 Hz goal resend re-anchors `planGlobalTraj` from the new
+odometry every second, which HIDES that completely; Plan X has no resend by design, so the same pose model
+broke it.  **Nothing in the first run distinguished "Plan X is broken" from "the pose is a step function", and
+the round-1 record named the first as the finding.**
+
+THE INSTRUMENT, FIXED (`_stage/s12-fake-odom.py --speed`, default 1.0 m/s).  The itinerary is now a timeline of
+hold and travel legs; the pose moves at a finite speed and the twist published is the one that moves it (zero
+during a hold, which is what the FSM's own `> 0.1 m/s` gate expects to see in transit and NOT at a stop).
+`--speed 0` restores the old teleport exactly, so every earlier run stays reproducible.  Both arms were then
+re-run BACK TO BACK on the same instrument (`_stage/planx-ab.sh`, dirs `planx-bench-20261016_174846` (control),
+`..._175001` (Plan X)).
+
+THE A/B, SAME STACK, SAME POSES, SAME WAYPOINTS, ONE DIFFERENCE
+
+    counter                              control (MANUAL)     planx (PRESET)
+    WP-INDEX lines                                      1                 31
+      ... index advanced                                0                 14
+      ... finished (-1)                                 0                  1
+    FSM SEQUENTIAL_START->EXEC_TRAJ                     0                  1
+    FSM GEN_NEW_TRAJ->GEN_NEW_TRAJ                   2376                  0
+    FSM EXEC_TRAJ->EXEC_TRAJ                            0                  1
+    PLANNER-STALL (local failures)                     32                  3
+    Ceres solver error (-1008)                        149                  1
+    the drone is in obstacle                           83                  2
+    a star error                                        0                  0
+    ids carried on the contract                    1 2                 1 2
+    COMPLETED messages forwarded                    11669              17988
+
+PLAN X'S OWN SEQUENCER, IN ITS OWN WORDS (`.../planx-bench-20261016_175001/ego.log`)
+
+    WP-INDEX: start-altitude gate ON (1.28 m): the tour is NOT armed here -- ego waits for the vehicle to
+              leave the pad, odom z=2.00 m now
+    WP-INDEX: sequence armed, starting the tour at z=2.00 m (gate 1.28 m, 2 waypoints)
+    WP-INDEX: 0 of 2 (dwell 0.0 s, done 0, have_target 1)
+    WP-INDEX: 1 of 2 (dwell 0.0 s, done 0, have_target 1)
+    WP-INDEX: waypoint 1 of 2 finished -- tour complete, handing the mission back
+    WP-INDEX: -1 of 2 (dwell 0.0 s, done 1, have_target 0)
+
+AND THE SHELL, WHICH SENT NO GOALS AT ALL
+
+    shim: TOUR SOURCE = EGO -- subscribed to /wp_index (PATCH 0011); no goals are sent, ...
+    shim: ego's wp_index advanced 1 -> 2 of 2: trajectory_id follows it
+    shim: TOUR COMPLETE reported BY EGO (wp_index -1 after 26 wp_index message(s)) -- trajectory_flag becomes
+          COMPLETED and the stream KEEPS TALKING, held at waypoint 2
+
+    the contract's own timeline:  t  0.00 -> id 1 flag 1 (READY)
+                                  t 10.81 -> id 2 flag 1 (READY)
+                                  t 22.56 -> id 2 flag 3 (COMPLETED)
+    traj_server: 60 TELEM, 21 NEW-SPLINE, 0 INVALID-TIME, and the hover branch visible
+                 (`branch=HOVER pos=[-0.921 1.058 1.881] |v|=0.000`)
+
+WHAT THIS ESTABLISHES, AND WHAT IT DOES NOT
+  * Plan X is COMPLETE ON THE BENCH: `flight_type 2` arms on this stack, ego's own sequencer walks
+    `0 -> 1 -> -1`, the shell's id and COMPLETED follow ego and nothing else, and the post-COMPLETED hold is
+    in place.  Phase 1's fourth item is thereby evaluated with evidence rather than argued.
+  * On the corrected instrument Plan X is ALSO the healthier arm by every planner-side counter: no global
+    replan thrash at all (0 against 2376), 3 local failures against 32, one Ceres failure against 149, and 2
+    samples with the vehicle inside an inflated cell against 83.  That is the opposite of what the first
+    (teleporting) run appeared to show, and it is consistent with the review's own diagnosis: the 1 Hz goal
+    drag is what keeps the FSM in GEN_NEW_TRAJ.
+  * NOT established: that this carries over to a FLIGHT.  The bench has no arming, no FCU in the loop for the
+    tour, a scripted pose instead of a controller, and one 2-waypoint tour; Plan X changes which process owns
+    the tour, which is exactly the kind of change that needs air under it.
+  * AND A STANDING LIMIT ON THE CONTROL ARM'S OWN NUMBERS: 2376 global replans is not a measurement of what
+    the flown missions did (they fly a real controller and a real pose; this bench hands the FSM a scripted
+    one).  What it measures is the SHAPE of the failure, and the shape is the review's P1-2.
