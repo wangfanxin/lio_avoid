@@ -1395,3 +1395,65 @@ contract, window 8.
 
   5. THE PLAN-STILL-BOUNDS-THE-CROSSING ROW IS EXPECTED TO HOLD ONLY IF THE AIRCRAFT TRACKS: the flown minimum
      should be within ~0.10 m of the plan's own minimum (S4 0.056 m, S6 0.035 m, round 77b 0.215 m).
+
+=== ROUND 78b: ROUTE B + `posvel` COMPLETES THE MISSION -- AND THE SAMPLER IS THE LAST FAULT =============
+
+`DIAG34-routeb-pv`, window 8, `EGO_CONTRACT=shim` (ego's OWN `traj_server` sampling), `--fields posvel`, ego fed
+the FCU's own pose.  ONE variable against `DIAG33-routeb`: the acceleration off the wire.
+
+**IT FLIES THE WHOLE MISSION.**  The supervisor's own lines:
+
+    [  64.63] DECLARED THE TOUR COMPLETE (trajectory_flag = COMPLETED after waypoint 2): 42.6 s of route
+    [  64.63] phase -> land
+    [  71.40] landed: armed=False mode=LAND
+    no ABORT line, no FCU failsafe
+
+**AND THE SHELL'S CONTRACT SEMANTICS WORK IN FLIGHT, for the first time:**
+
+    the shim forwarded 5216 messages over 52.1 s
+    trajectory_id sequence : [1, 2]        -- one per WAYPOINT, from the shell, not ego's per-replan id
+    trajectory_flag values : [1, 3]        -- READY while flying, COMPLETED at the end
+    COMPLETED first appears 45.4 s in and the stream carries it for the remaining **6.7 s**
+      -- IT KEEPS TALKING, which is the rule that lets the supervisor tell "done" from "dead"
+
+PREDICTIONS, ANSWERED (one of them with a correction to my own check):
+
+    1. position + velocity, no acceleration on the wire ...... **MET, after correcting the CHECK**: the wire log's
+       `type_mask` is **2496** on all 2273 messages = `IGNORE_AFX|AFY|AFZ|IGNORE_YAW_RATE` = `POS_VEL_YAW_MASK`,
+       i.e. the acceleration is masked out.  My first check read `setpoints.csv`'s `acc_*` columns -- and those
+       record what the MESSAGE contained (`bridge_node.py:411-419` writes `cmd.a[...]` whatever the mask says),
+       not what the FCU uses.  **The mask is the authority on the wire; the columns are the authority on the
+       message.**  Recorded because the same misreading would make any future A/B on `--fields` lie.
+    2. the sortie completes, no abort ....................... **MET** (above).
+    3. the tracking tail improves ........................... **REFUTED**: inside-tour error median **0.184 m** (S6
+       0.280 -- better), but 95th **1.629 m** (S6 0.975) and the share above 1 m **13.26%** (S6 4.23%).  So the
+       velocity feed-forward alone did NOT close the tail; the reference's discontinuities did not go away.
+    4. the reference still jumps ............................ **MET**: 12 single-message steps above 0.5 m in
+       52.5 s (one every 4.4 s), the largest 1.513 m, and the stream travelled **45.3 m over a ~10 m route**.
+    5. the crossing stays bounded by the plan ................ **MET, and this is the tightest yet**: the
+       plan/flown gap is **0.015 m** (S4 0.056, S6 0.035, round 77b 0.215).  The aircraft tracked its plan better
+       than in any previous sortie -- and its minimum clearance is therefore the plan's own: truth **-0.271 m**,
+       plan **-0.286 m**.  Nothing about Route B changes what ego PLANS.
+
+THE PICTURE, WITH FIVE RUNS IN ONE FRAME (inside each tour window, same-instant command-vs-FCU error):
+
+    run                  sampler            feed-forward   err med   err 95th   > 1 m    plan/flown gap
+    round 69 (age)       adapter            none (wire)     0.013     1.318      7.90%   0.165 m
+    S4 (lookahead)       adapter            none (wire)     0.231     0.943      2.35%   0.056 m
+    S6 (lookahead+stale) adapter            none (wire)     0.280     0.975      4.23%   0.035 m
+    77b (age)            ego traj_server    pva             0.818     3.039     47.38%   0.215 m  (ABORTED)
+    78b (age)            ego traj_server    posvel          0.184     1.629     13.26%   0.015 m
+
+  * the BEST tail is still the adapter with the continuity fix and NO feed-forward (S4/S6: 0.94-0.98 m), and the
+    best PLAN-FOLLOWING is Route B with pv (0.015 m).  The two are not the same thing, and neither has both;
+  * the acceleration was the unsafe part of pva (round 77b's geofence abort) and taking it off the wire made
+    Route B flyable -- but the reference still steps by up to 1.5 m between messages, and that is what the 1.63 m
+    tail is made of;
+  * **so the single remaining lever is the SAMPLER, not the wire and not the planner**: give ego's `traj_server`
+    the rule the adapter has flown since round 73 (re-anchor on a new spline to the point last published, advance
+    monotonically, 0.5 s lookahead) and BOTH columns should move: the reference stops stepping, the tail follows,
+    and the acceleration becomes a signal that could go back on the wire.
+  * ONE THING THIS ROUND CANNOT EXPLAIN, recorded rather than smoothed over: round 69 (the adapter, same age
+    rule) spent **36.0%** of its tour below 0.30 m on the ground sweep, while this run -- the same rule, ego's own
+    code -- spent **0.0%**.  The difference is not the rule; it is something else between those two sorties
+    (the plan's own z profile, the window, or the adapter's stale-hold branch commanding a stop).  It stays open.
