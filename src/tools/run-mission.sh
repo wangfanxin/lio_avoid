@@ -219,7 +219,14 @@ case "$PLANNER" in
         # THE ARRIVAL GATE IS PASSED EXPLICITLY, and it is looser than the rectangle's 0.060 m on purpose:
         # an ego planner stops planning 0.2 m out (`planner_manager.cpp:55`), so 0.060 m can never be met.
         # See `EGO_ARRIVE_M` in the parameter block.
-        PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S --arrive-m $EGO_ARRIVE_M ${CMD_ARGS:-}"
+        # PATCH REFERENCE-TELEMETRY/1 (round 73): ego runs also write a PER-SAMPLE trace of /plan/cmd, because
+        # round 72 could not tell "the planner went quiet and the adapter held" from "the sampler clamped at the
+        # spline's end" -- the counters that separate them were printed only at exit, and a killed stack never
+        # gets there.  `EGO_SAMPLE_CSV` turns it off by setting it empty; the rectangle arm is untouched.
+        EGO_SAMPLE_CSV="${EGO_SAMPLE_CSV-$OUT/ego_samples.csv}"
+        EGO_SAMPLE_ARG=""
+        [ -n "$EGO_SAMPLE_CSV" ] && EGO_SAMPLE_ARG="--sample-csv $EGO_SAMPLE_CSV"
+        PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S --arrive-m $EGO_ARRIVE_M $EGO_SAMPLE_ARG ${CMD_ARGS:-}"
         PLANNER_WHAT="ego-planner-swarm behind the /plan/cmd contract (adapter; arrival gate ${EGO_ARRIVE_M} m = the planner's own floor)"
         ;;
     */*|*.py)

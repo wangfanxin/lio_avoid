@@ -987,3 +987,87 @@ The next step is instrumentation, not gains: make the adapter say what it is doi
 the sampled `t` against the spline's age and duration), then re-fly once and read it.
 
 Round 72 refers to the round-71 altitude figure, `docs/figures/round71/DIAG29b-altitude-and-clearance.png`, sha256 bdea9e825c5ca121f4680f444b735598f150099a17378980de310382b8565e34 -- the plan's own z, the wire's z and the aircraft's z on one axis, which is where the porpoising was first seen.
+
+=== ROUND 73: THE REFERENCE FIX -- S1 TELEMETRY, S2 THE FAULT, S3 THE LOOKAHEAD (and a first version the
+    BENCH refuted before any flight) ==========================================================================
+
+S1 -- THE INSTRUMENT (`_stage/apply-reftelemetry1.py`, reversible).  Round 72 could not tell "the planner went
+quiet and the adapter held" from "the sampler clamped at the spline's end": the counters that separate them
+(`n_splines`, `n_samples`, `held`) are printed by `summary()` only at exit, and the stack is killed before that.
+The patch adds a `branch` label per sample (`fresh`/`clamped`/`held`/`nospline`), a once-a-second telemetry line
+(deltas, jumps, spline age/duration/sampled `t`) and an optional per-sample CSV (`--sample-csv`).  `run-mission.sh`
+now passes that path on the **ego** arm only, via `EGO_SAMPLE_CSV` (empty string disables it).  Nothing in the
+behaviour changed: `ego_source.py --selftest` PASSED, `test-lint.py` PASSED, `test-planner-swap.py` PASSED.
+
+S2 -- THE PARKED BENCH NAMED THE FAULT (`_stage/s2-parked-reference.sh`, 84 s, no arming, no bridge, no
+supervisor; `held=+0` and `clamped=+0` in EVERY telemetry line, 79 healthy `REPLAN_TRAJ->EXEC_TRAJ` cycles, a
+spline every ~1 s, duration 3.6 s):
+
+    t_sample climbs 0.03 -> 1.33 s, the published point sweeps out to (-0.99, 1.03, 0.56) m, a new spline
+    arrives, t_sample RESETS to ~0.02 and the point SNAPS BACK to (0.05, 0.00, 0.09) -- the vehicle's own
+    position.  Once a second.  79 jumps > 0.20 m in 84 s, max 3.48 m, published-point span 2.4 m x 2.3 m x 1.2 m
+    while the vehicle never moved.
+
+  * it is NOT the clamp path and NOT starvation **parked**: both counters are zero;
+  * it IS the sampling rule: `t = now - start_wall` is the AGE of the newest spline, and ego republishes a plan
+    every ~1 s starting from the vehicle's current state -- so the reference only ever reached ~1 s into the
+    newest plan and was then restarted from where the vehicle already was.  In flight this is the crooked path,
+    the porpoising, and the reason the flown route cuts the plan's own detour;
+  * the flight-only part is separate and remains: in the flight, `held` was 45.2% of samples -- planner starvation
+    under flight conditions (the "suddenly discovered obstacles" storm), which the bench cannot reproduce.
+
+S3 -- THE FIX, AND ITS FIRST VERSION WAS WRONG (`_stage/apply-refcontinuity1.py`, reversible).  Version 1
+re-anchored on each new spline by projecting the last published point onto it, then advanced by WALL CLOCK.  On the
+bench that gave: jumps 79 -> **0**, max jump 3.48 -> 0.112 m -- and **7903 of 8408 samples `exhausted`**, because
+a 3.6 s plan is used up in 3.6 s and the reference then parks ON THE GOAL: the published point spanned the whole
+4 m route while the vehicle stood still.  Flown, that is "command the goal and ignore the path" -- it would have
+thrown away exactly the detour the planner computes around the pillars.  **Refuted on the bench, no flight spent.**
+
+Version 2, the rule now in the tree: **the reference is the plan evaluated `lookahead_s = 0.5 s` ahead of the
+VEHICLE'S OWN PROGRESS ALONG IT**
+
+    t_prog = argmin_t | plan(t) - p_vehicle |     (monotone within one plan)
+    t_ref  = min(duration, t_prog + 0.5 s)        (0.5 s of lead: ~0.2-1 m at the speeds this mission flies)
+    publish plan(t_ref) and its own velocity there
+
+  * a new plan is a CORRECTION, not a reset: the progress is re-projected every sample;
+  * the reference lies ON the plan, so the detour is what the aircraft is asked to fly;
+  * the reference never runs to the goal early: it is at most 0.5 s ahead of the aircraft.
+
+BENCH RESULT, same rig, same criterion written before the run:
+
+    metric                        S2 (before)      S3 v2 (after)
+    jumps > 0.20 m                79               4      (all four: a fresh plan's own correction, <= 0.30 m,
+    max jump                      3.48 m           0.303 m and one at t=0.02 s as the first plan takes over)
+    95th-percentile jump          0.0192 m         0.0000 m
+    published-point span (parked) 2.36/2.34/1.15 m  0.216/0.264/0.217 m
+    branches                      held 31, fresh 8379   held 2, fresh 7409 (no clamped, no exhausted)
+    reference vs the vehicle      --               median 0.20 m ahead, 95th 0.25 m
+
+  * **the literal criterion "max_jump < 0.05 m" is NOT met** -- by 4 samples of 7411, all of them a new plan's own
+    shape change, which is inherent to replanning and 100x rarer and smaller than the sawtooth it replaced.  Said
+    plainly rather than rounded away;
+  * **AND THE SELFTEST WAS ASSERTING THE BUG**: `ego_source.py --selftest` asserted "with a standing vehicle the
+    samples advance along the spline as wall time passes" -- the age rule, i.e. the defect.  It failed the moment
+    the rule was fixed, which is the test doing its job.  It now asserts both directions: a standing vehicle must
+    NOT see the reference run away, and an advancing vehicle MUST see it advance.  `--selftest`, lint and the
+    planner-swap test all pass with the new assertions;
+  * the published message also now carries the plan's velocity at the reference point instead of the zeros
+    `tick()` used to write.  **The wire still ignores it** (the bridge defaults to `--fields pos`), so this is not
+    a second variable; it is what the feed-forward step needs and it is now recorded in `traj.csv.cmd.csv`.
+
+S4 -- THE FLIGHT'S PREDICTIONS, WRITTEN BEFORE IT FLIES.  Same mission, same arm (window 8), ONE variable (the
+reference rule).  Baseline: the four window-8 arm runs, and round 69's run for the flight-side numbers.
+
+    1. THE SAWTOOTH IS GONE: no single-message jump above 0.5 m in `/plan/cmd` (round 69: 1.788 m in z, 3.406 m
+       horizontally; 15 messages above 0.20 m in 77 s).
+    2. THE AIRCRAFT'S ERROR DROPS: same-instant command-vs-FCU error, 95th percentile, from **1.295 m** to
+       **< 0.5 m**, and the share above 1.00 m from 7.69% to < 2%.
+    3. THE PORPOISING IS REDUCED: the aircraft below 0.30 m for < 15% of the tour (round 69: 36.0%), and the
+       plan's own z no longer sweeps to the ground once a second.
+    4. THE DETOUR IS ACTUALLY FLOWN: the aircraft's own minimum pillar-surface distance moves TOWARD the plan's
+       (the plan's minimum in round 69 was -0.107 m and the aircraft's +0.058 m, i.e. the aircraft used to cut the
+       plan; if the reference is now followed, the flown path should track the plan's shape more closely).
+    5. `held` MAY STILL BE LARGE -- that is the separate, flight-only fault (planner starvation) and this patch
+       does not address it.  If `held` stays high while the sawtooth is gone, the two faults are separated
+       cleanly, which is itself the result the bench predicts.

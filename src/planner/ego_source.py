@@ -87,7 +87,8 @@ class EgoPlanBox:
     """
 
     def __init__(self, targets_l, hold_s=5.0, arrive_m=0.060, settle_mps=0.080, rate_hz=100.0,
-                 start_wall=None, log=None, stale_s=2.0, yaw_mode="velocity", max_start_age_s=60.0):
+                 start_wall=None, log=None, stale_s=2.0, yaw_mode="velocity", max_start_age_s=60.0,
+                 lookahead_s=0.5):
         self.targets = np.asarray(targets_l, dtype=float).reshape(-1, 3)
         self.hold_s = float(hold_s)
         self.arrive_m = float(arrive_m)
@@ -118,6 +119,33 @@ class EgoPlanBox:
         self.goals_sent = []
         self.yaw = 0.0
         self.held = 0                      # samples published while no spline had arrived yet
+        # PATCH REFERENCE-TELEMETRY/1: which branch produced each sample, and how far it JUMPED.  `held` alone
+        # cannot separate the stale-hold branch from a sample that is fresh but CLAMPED at the spline's end.
+        self.n_fresh = 0
+        self.n_clamped = 0
+        self.n_jumps = 0
+        self.max_jump = 0.0
+        self._p_pub = None                 # the last position actually published, for the jump measure
+        # PATCH REFERENCE-CONTINUITY/1: the reference is the plan evaluated `lookahead_s` ahead of the VEHICLE's
+        # progress along it.  Sampling a plan by its AGE (`t = now - start_wall`) restarts the reference from the
+        # vehicle every time ego replans -- measured parked: 79 jumps, ~0.8 m, once a second, 84 s.
+        self.lookahead_s = float(lookahead_s)
+        self._spline_key = None
+        self._t_prog = None
+        self.t_ref = None
+        self.v_ref = np.zeros(3)
+        self.n_reprojected = 0
+        self.n_goal_ref = 0
+        self._branch = "none"
+        self._t_sample = float("nan")
+        self._age = float("nan")
+        self._dur = float("nan")
+        self._tel_wall = None
+        self._tel_prev = None
+        self._jumps_1s = 0
+        self._max_jump_1s = 0.0
+        #: set by main() from `--sample-csv`; one row per published message while it is open
+        self._csv_fh = None
 
     # ---- inputs ------------------------------------------------------------------------------------
     def on_odom(self, p_l, v_l=None, now=None):
@@ -208,11 +236,38 @@ class EgoPlanBox:
         now = time.monotonic() if now is None else now
         self._sequence(now)
         p = None
+        # PATCH REFERENCE-TELEMETRY/1: the branch label is assigned here and nowhere else.  Note the CLAMP case,
+        # which has never been visible in any run: a spline young enough to be sampled whose evaluated `t` is
+        # nevertheless outside its own domain -- `bspline_derivs` clamps, so the published point sticks to the
+        # trajectory's endpoint while the stream looks perfectly healthy.
+        branch = "nospline"
+        t_sample = float("nan")
+        dur = float(self.spline.duration) if self.spline is not None else float("nan")
+        age = float("nan")
         if self.spline is not None:
             age = now - self.spline.received_wall
             if age <= self.stale_s:
-                t = now - self.spline.start_wall
+                # ---- PATCH REFERENCE-CONTINUITY/1: progress + lookahead --------------------------------------
+                key = (int(self.spline.traj_id), float(self.spline.received_wall))
+                if key != self._spline_key:
+                    self._spline_key = key
+                    self._t_prog = None
+                    self.n_reprojected += 1
+                ref = self.p if self.p is not None else self._p_pub
+                t_prog = self._project(self.spline, ref)
+                if self._t_prog is not None:
+                    t_prog = max(t_prog, self._t_prog)      # a plan's progress does not go backwards
+                self._t_prog = t_prog
+                t = min(dur, t_prog + self.lookahead_s)
+                self.t_ref = float(t)
                 p, v, _a = self.spline.at(t)
+                t_sample = float(t)
+                if t >= dur:
+                    branch = "goal"                          # the lookahead saturates: the plan's end IS the goal
+                    self.n_goal_ref += 1
+                else:
+                    branch = "fresh"
+                self.v_ref = np.asarray(v, dtype=float)
                 if self.yaw_mode == "velocity" and float(np.linalg.norm(v[:2])) > 0.05:
                     self.yaw = math.atan2(float(v[1]), float(v[0]))
             else:
@@ -221,15 +276,77 @@ class EgoPlanBox:
                 # supervisor's own gates get their chance.
                 p = self.target if self.p is None else self.p
                 self.held += 1
+                branch = "held"
         elif self.p is not None:
             p = self.p                            # no spline yet: ask for "hold where you are"
             self.held += 1
+            branch = "held"
         if p is None:
             return None
+        # ---- PATCH REFERENCE-TELEMETRY/1: label, jump, trace, telemetry -------------------------------------
+        p_arr = np.asarray(p, dtype=float)
+        if branch == "fresh":
+            self.n_fresh += 1
+        elif branch == "clamped":
+            self.n_clamped += 1
+        jump = 0.0 if self._p_pub is None else float(np.linalg.norm(p_arr - self._p_pub))
+        self._p_pub = p_arr
+        self.max_jump = max(self.max_jump, jump)
+        if jump > 0.20:
+            self.n_jumps += 1
+            self._jumps_1s += 1
+        self._max_jump_1s = max(self._max_jump_1s, jump)
+        self._branch, self._t_sample, self._age, self._dur = branch, t_sample, age, dur
+        if self._csv_fh is not None:
+            self._csv_fh.write("%.4f,%s,%.4f,%.4f,%.4f,%.6f,%.6f,%.6f,%.6f,%.6f\n"
+                               % (now, branch, t_sample, age, dur, p_arr[0], p_arr[1], p_arr[2], jump, self.yaw))
+        if self._tel_wall is None:
+            self._tel_wall = now
+            self._tel_prev = (self.n_splines, self.n_samples, self.held, self.n_clamped)
+        elif now - self._tel_wall >= 1.0:
+            dt = now - self._tel_wall
+            self._tel_wall = now
+            self.log("ego_source TELEM dt=%.2f splines=+%d samples=+%d held=+%d clamped=+%d jumps=+%d "
+                     "max_jump=%.3f m | branch=%s t_sample=%.3f age=%.3f dur=%.3f p=(%.2f,%.2f,%.2f)"
+                     % (dt, self.n_splines - self._tel_prev[0], self.n_samples - self._tel_prev[1],
+                        self.held - self._tel_prev[2], self.n_clamped - self._tel_prev[3], self._jumps_1s,
+                        self._max_jump_1s, branch, t_sample, age, dur, p_arr[0], p_arr[1], p_arr[2]))
+            self._tel_prev = (self.n_splines, self.n_samples, self.held, self.n_clamped)
+            self._jumps_1s = 0
+            self._max_jump_1s = 0.0
+            if self._csv_fh is not None:
+                self._csv_fh.flush()
         self.n_samples += 1
-        return CmdSample(p=np.asarray(p, dtype=float), v=[0.0, 0.0, 0.0], a=[0.0, 0.0, 0.0],
+        return CmdSample(p=np.asarray(p, dtype=float), v=[float(x) for x in self.v_ref], a=[0.0, 0.0, 0.0],
                          yaw=self.yaw, yaw_dot=0.0, trajectory_id=self.traj_id, trajectory_flag=self.flag,
                          frame_id=FRAME_L, kx=KX, kv=KV)
+
+    def _project(self, spline, p_target):
+        """PATCH REFERENCE-CONTINUITY/1: the time on `spline` whose point is closest to `p_target`.
+
+        A coarse sweep then two bisection refinements, run once per sample (the evaluator is cheap and the plans
+        carry a few control points).  With no position yet, the progress is the plan's start.
+        """
+        if p_target is None:
+            return 0.0
+        dur = float(spline.duration)
+        ts = np.linspace(0.0, dur, 21)
+        best_t, best_d = 0.0, float("inf")
+        for t in ts:
+            pp, _v, _a = spline.at(float(t))
+            d = float(np.linalg.norm(np.asarray(pp, dtype=float) - p_target))
+            if d < best_d:
+                best_d, best_t = d, float(t)
+        step = dur / 20.0
+        for _ in range(2):
+            step *= 0.25
+            for cand in (best_t - step, best_t + step):
+                if 0.0 <= cand <= dur:
+                    pp, _v, _a = spline.at(float(cand))
+                    d = float(np.linalg.norm(np.asarray(pp, dtype=float) - p_target))
+                    if d < best_d:
+                        best_d, best_t = d, float(cand)
+        return best_t
 
     def summary(self):
         return ("ego_source: %d waypoint(s), %d spline(s) received, %d samples published (%d held), "
@@ -274,7 +391,11 @@ def _selftest() -> int:
     if s is not None and not np.allclose(s.p, [0.0, 0.0, 0.5]):
         bad.append("the initial hold must be where the vehicle IS, not a guess")
 
-    # --- 2. ego's spline, sampled: the positions must follow it
+    # --- 2. ego's spline, sampled: THE REFERENCE FOLLOWS THE VEHICLE'S PROGRESS, NOT THE SPLINE'S AGE.
+    #     PATCH REFERENCE-CONTINUITY/1 replaced the rule this block used to assert.  The old rule -- "wall time
+    #     advances, so the sample advances along the spline" -- is what restarted the reference from the vehicle
+    #     every time ego replanned, and it never showed up in a flight as anything but "crooked" (S2 measured it
+    #     on the bench: 79 jumps, ~0.8 m, once a second, for 84 s).  Both directions are asserted now.
     order, knots, pts = spline_for(np.array([0.0, 0.0, 0.5]), np.array([0.6, 0.0, 0.5]), t0)
     box.on_spline(order, knots, pts, traj_id=7, start_wall=t0, now=t0)
     dur = bspline_duration(knots, len(pts), order)
@@ -283,8 +404,14 @@ def _selftest() -> int:
         box.on_spline(order, knots, pts, traj_id=7, start_wall=t0, now=t0)
         xs.append(float(box.sample(now=t0 + dt).p[0]))
     s2 = box.sample(now=t0 + dur)
-    print("   with a spline (domain %.2f s): positions along it %s (ego's own traj_id was 7; ours is %s)"
-          % (dur, np.round(xs, 3), s2.trajectory_id))
+    moving = []
+    for k, frac in enumerate((0.10, 0.40, 0.70)):
+        t_k = t0 + dur + 0.10 * (k + 1)
+        box.on_odom([0.6 * frac, 0.0, 0.5], [0.0, 0.0, 0.0], now=t_k)
+        moving.append(float(box.sample(now=t_k + 0.001).p[0]))
+    print("   with a spline (domain %.2f s): STANDING vehicle -> %s (must not run away); MOVING vehicle -> %s "
+          "(must advance)  (ego's own traj_id was 7; ours is %s)"
+          % (dur, np.round(xs, 3), np.round(moving, 3), s2.trajectory_id))
 
     # --- 2b. THE CLOCK DOMAIN.  This is the assertion whose absence cost a sortie: a spline stamped in
     #     ANOTHER clock must be REFUSED, not sampled.  Without the refusal the evaluator clamps to the
@@ -317,10 +444,15 @@ def _selftest() -> int:
         bad.append("the clock conversion does not preserve the age (%.6f)" % (mono_now - start_mono))
     if s2.trajectory_id != 1:
         bad.append("the id must be OUR per-waypoint id, not ego's per-replan id (got %s)" % s2.trajectory_id)
-    if not all(a <= b + 1e-9 for a, b in zip(xs, xs[1:])):
-        bad.append("the samples do not advance monotonically along the spline: %s" % np.round(xs, 3))
-    if not (xs[0] - 0.10 <= xs[0] <= xs[-1] + 0.10 and abs(xs[-1] - 0.6) < 0.05):
-        bad.append("the samples leave the segment [0.0, 0.6]: %s" % np.round(xs, 3))
+    if max(xs) - min(xs) > 0.05:
+        bad.append("the reference MOVED while the vehicle stood still: %s -- that is the age rule again, and it "
+                   "is what makes the flight crooked" % np.round(xs, 3))
+    if not all(a <= b + 1e-9 for a, b in zip(moving, moving[1:])):
+        bad.append("the reference did not advance as the vehicle advanced: %s" % np.round(moving, 3))
+    if not (moving[-1] > moving[0] + 0.10):
+        bad.append("the reference barely moved while the vehicle advanced 0.42 m: %s" % np.round(moving, 3))
+    if not all(0.0 <= v <= 0.6 + 1e-6 for v in moving):
+        bad.append("a reference left the plan's own segment [0.0, 0.6]: %s" % np.round(moving, 3))
 
     # --- 3. MANY replans must NOT look like a moving mission
     ids = set()
@@ -399,6 +531,10 @@ def _ros_main(args) -> int:
     node = Node("ego_source")
     box = EgoPlanBox(targets_l, hold_s=args.hold_s, arrive_m=args.arrive_m, settle_mps=args.settle_mps,
                      rate_hz=args.rate, log=lambda s: print(s, flush=True))
+    if args.sample_csv:                      # PATCH REFERENCE-TELEMETRY/1
+        box._csv_fh = open(args.sample_csv, "w")
+        box._csv_fh.write("t_wall,branch,t_sample,age,duration,p_x,p_y,p_z,jump_m,yaw\n")
+        print("ego_source: PATCH REFERENCE-TELEMETRY/1 -- per-sample trace to %s" % args.sample_csv, flush=True)
     print("ego_source: %d waypoints in L, dwell %.1f s, publishing %s at %.0f Hz"
           % (len(targets_l), args.hold_s, args.cmd_topic, args.rate))
     print("ego_source: goals go to %s in frame %s; ego's trajectory is read from %s"
@@ -501,7 +637,11 @@ def _ros_main(args) -> int:
         m.header.stamp = node.get_clock().now().to_msg()
         m.header.frame_id = FRAME_L
         m.position.x, m.position.y, m.position.z = (float(s.p[0]), float(s.p[1]), float(s.p[2]))
-        m.velocity.x = m.velocity.y = m.velocity.z = 0.0
+        # PATCH REFERENCE-CONTINUITY/1: the plan's OWN velocity at the reference point, instead of the zeros
+        # this line used to publish (`ego_source.py:7`: "velocity/acceleration are ignored on the wire").  The
+        # wire still ignores it -- the bridge defaults to `--fields pos` -- so this changes nothing yet; it is
+        # the value the feed-forward step needs, and it is recorded in `traj.csv.cmd.csv` from this run on.
+        m.velocity.x, m.velocity.y, m.velocity.z = (float(s.v[0]), float(s.v[1]), float(s.v[2]))
         m.acceleration.x = m.acceleration.y = m.acceleration.z = 0.0
         m.yaw, m.yaw_dot = float(s.yaw), 0.0
         m.trajectory_id, m.trajectory_flag = int(s.trajectory_id), int(s.trajectory_flag)
@@ -543,6 +683,9 @@ def main() -> int:
     ap.add_argument("--arrive-m", type=float, default=0.060)
     ap.add_argument("--settle-mps", type=float, default=0.080)
     ap.add_argument("--rate", type=float, default=100.0)
+    ap.add_argument("--sample-csv", default="",
+                    help="PATCH REFERENCE-TELEMETRY/1: one row per published /plan/cmd sample "
+                         "(t_wall,branch,t_sample,age,duration,p_x,p_y,p_z,jump_m,yaw)")
     ap.add_argument("--cmd-topic", default=DEFAULT_CMD_TOPIC)
     ap.add_argument("--goal-topic", default=DEFAULT_GOAL_TOPIC)
     ap.add_argument("--bspline-topic", default=DEFAULT_BSPLINE_TOPIC)
