@@ -57,7 +57,17 @@ which is exactly what `src/tools/test-planner-swap.py` guards.
 ║   in : /livox/lidar 10 Hz (S), /livox/imu 200 Hz (S)                                      ║
 ║   out: /lio/robo/odom 200 Hz (L, body pose, ZERO twist)                                   ║
 ║        /lio/odom      10 Hz (L, the same state WITH velocity)                             ║
-║        /lio/cloud_world 10 Hz (L) = its VOXEL map (0.25 m), NOT a raw scan                ║
+║        /lio/cloud_world 10 Hz (L) = THE CURRENT FRAME, undistorted and transformed to the world frame       ║
+║                                    (CORRECTED 2026-10-16: this line said "its VOXEL map (0.25 m), NOT a raw   ║
+║                                     scan", and it was wrong.  `livox_360.yaml:84` sets `lio.output.map: true` ║
+║                                     -> `g_visual_map` (`ROSWrapper.cpp:168`) -> the published cloud is       ║
+║                                     `scan_undistort_full_` (`super_lio.cpp:570-579`), the full per-frame     ║
+║                                     scan; the 0.2 m `voxel_fliter_size` is the MATCHER's `ds_undistort_`      ║
+║                                     (the `else` branch) and `ds_size` 0.15 is the internal map, neither of    ║
+║                                     which ego ever sees.  Measured consequence: the map's extra obstacle       ║
+║                                     thickness is fully explained by ego's own cell + cube inflation --          ║
+║                                     predicted outer edge 0.540 m against a measured 0.540 m                     ║
+║                                     (`docs/metrics/inflation-20261016.txt`).                                    ║
 ║        /lio/status 1 Hz, /tf (odom -> base_link)                                          ║
 ╚═══════════════╪═══════════════════════════════════════════════════════════════════════════╝
                 │ pose + velocity (L)

@@ -1,0 +1,69 @@
+THE MAP'S INFLATION: WHAT IT IS, WHAT IT IS NOT, AND WHERE THE EXTRA THICKNESS COMES FROM  (2026-10-16)
+
+THE OWNER'S QUESTION, AND IT CORRECTED ME: "why is ego taking a VOXEL?  shouldn't it take the raw per-frame
+cloud and do its own processing?"
+
+1. THE OWNER IS RIGHT, AND `docs/ARCHITECTURE.md` WAS WRONG
+
+   That file said `/lio/cloud_world` is the LIO's VOXEL map, and I repeated it.  The source says otherwise:
+
+     livox_360.yaml:84   lio.output.map: true
+     ROSWrapper.cpp:168  node.declare_parameter<bool>("lio.output.map", false); get_parameter(..., g_visual_map)
+     super_lio.cpp:570   if (g_visual_map) { pcl::transformPointCloud(*scan_undistort_full_, *world_pc, T);
+                                              pub_cloud_world(world_pc, ...); }
+                    :582  else            { pcl::transformPointCloud(*ds_undistort_, *world_pc, T); ... }
+
+   So the published cloud is **`scan_undistort_full_`** -- the CURRENT FRAME, undistorted and transformed into the
+   world frame.  The 0.2 m `voxel_fliter_size` applies to `ds_undistort_`, i.e. to the MATCHER's copy (the `else`
+   branch), and `ds_size` 0.15 to the internal map; **ego never sees either**.  `ARCHITECTURE.md` now carries the
+   correction with the line numbers.
+
+2. SO THE EXTRA THICKNESS IS OURS, AND IT ACCOUNTS FOR THE MEASUREMENT EXACTLY
+
+   Measured, from the run's own DIAG/2 occupancy slices (the array A* and the collision check read; 59 slices, 32
+   at flight height, 752 pillar-slice observations, `_stage/map-inflation.py`):
+
+       the pillar's true surface ......................... 0.300 m from the axis
+       the parameter implies the mark should reach ....... ~0.399 m (surface + one cell)
+       the FIRST marked cell on a ray, median ............ 0.120 m   <- free space reaches 0.180 m INSIDE
+       the LAST  marked cell on a ray, median ............ 0.540 m
+       => the map's obstacle is 0.42 m thick on a 0.30 m pillar, i.e. 0.240 m PAST the surface
+
+   And the pipeline predicts the OUTER edge with no cloud smear at all (`_stage/inflation-arithmetic.py`):
+
+       a surface point at r = 0.300 m marks the 0.10 m cell containing it .. outer face up to 0.400 m
+       + the 27-cell cube inflation, axis .................................. 0.499 m
+       + the same, diagonal (the worst case a plan meets) .................. **0.540 m**
+       MEASURED median last mark ........................................... **0.540 m**
+
+   **Predicted and measured agree to the millimetre, so no LIO-side change is needed to explain the outer
+   thickness** -- and the lever I proposed last round (`lio.sensor.voxel_fliter_size` 0.2 -> 0.1) is the WRONG
+   LEVER: it does not touch the published cloud at all.
+
+3. WHAT THE REAL LEVERS BUY, IN CORRIDOR TERMS (the tightest pair is 1.414 m between axes)
+
+       configuration                              outer mark    free corridor between two pillars
+       now: cell 0.10, inflation 0.099 ......... 0.540 m        0.334 m
+       inflation -> 0.0 ........................ 0.400 m        0.614 m   <- nearly doubles it, one launch line
+       resolution 0.05 + inflation 0.049 ....... 0.419 m        0.575 m   <- 8x memory + the A* pool edit
+
+   So `grid_map/obstacles_inflation` 0.099 -> 0.0 is the cheap, large lever, and it is also arguably the more
+   CORRECT one: the marks are already a full cell fat from cell quantisation alone, so the extra cube is a
+   second helping of margin that the map cannot distinguish from the obstacle itself.
+
+4. AND THE OPPOSITE DEFECT, WHICH NO INFLATION CHANGE TOUCHES
+
+   Free space reaches 0.120 m from the axis, i.e. **0.180 m INSIDE** the pillar.  Cell + cube cannot produce
+   that (the cell containing a surface point has its inner face at >= 0.20 m).  This is the hollow-annulus defect
+   the perception audit left UNRESOLVED, and it is the dangerous one: it makes the map **optimistic** exactly
+   where a plan can cut a corner into the pillar's own volume.  The measurement that would settle it: record
+   `/ego/cloud` at 5 Hz during a flight -- if the cloud itself carries points inside the pillar the fault is
+   upstream of our relay (lidar grazing incidence or the LIO), and if it does not, the fault is in how the map
+   turns points into cells.
+
+5. WHAT THIS DOES **NOT** CHANGE
+
+   The collision of 2026-10-16 was not caused by the inflation: the plan's own margin (5-17 cm) and the tracking
+   error (0.4-0.9 m) differ by an order of magnitude, so margin work is necessary but not sufficient.  This
+   measurement matters because it says WHICH margin lever is real -- and because it removes a wrong one from the
+   list before a flight is spent on it.
