@@ -323,3 +323,50 @@ pool, 2.0 m/s, corner governor 1.00 m / 1.10 m/s through the turn, ego's arrival
 relay voxel 0.03, window 1.0 s, 1.20 m position clamp, 6 m/s slew limit, +0.60 m ceiling, horizontal arrival
 gate, 0.3 s dwell, first-goal-waits-for-the-first-pose, watchdog 15/30 -- B1 6.274 / 8.195, C1 0.042 m,
 C2 minimum -0.106 m, 4 of 8 legs under 6 s.
+
+============================================================================================================
+ROUND 6: THE OWNER'S HYPOTHESIS IS CONFIRMED -- A 0.5 s REPLAN GATE GIVES THE TIGHTEST TRACKING THIS PROJECT HAS
+MEASURED, AND THE SPEED IT SEEMED TO AFFORD DOES NOT HOLD.
+============================================================================================================
+
+At the owner's direction (2026-10-17: "往重规划时间缩短去做,现在有些规划碰撞,可能是重规划不够及时导致的").
+`fsm/thresh_replan_time` had been **1.0 s in all twelve sorties flown**, and between two re-plans the aircraft
+flies the OLD spline while the relay republishes at 5 Hz and `resetBuffer` rebuilds the local map around the
+vehicle on every message -- so a spline committed when the map was thinner is executed for up to a second, which
+at 2.0 m/s is **2 m of travel**.  The contact episodes of Flights O and P are 0.34-2.57 s long: the same order.
+
+WHY IT IS SAFE TO SHORTEN NOW (upstream's 1.0 s exists because a re-plan RESETS the sampler's clock, the defect
+three rounds were spent on): the shell bounds both halves of that step -- `--ref-clamp-m 1.20` for how FAR it may
+land from the vehicle and `--ref-slew-mps 6.0` for how FAST the forwarded point may move.  With those in place
+the cadence is a control choice rather than a hazard.
+
+FLIGHT Q -- ONLY ONE VARIABLE against Flight P (`EGO_REPLAN_S` 1.0 -> 0.5):
+
+    |truth - reference|   p50 **0.078**  p90 **0.178**  max **0.294** m
+                          (P 0.104 / 0.313 / 0.545;  M 0.144 / 0.464 / 0.793;  L 0.161 / 0.487 / 1.029)
+    contact episodes      **1** of 0.33 s (19 samples);  P 2, N 5, J 4, K 8
+    truth clearance p05   **+0.106 m** (P -0.157, N +0.026)
+    C2                    1200 Hz minimum **-0.164 m**, **1.34 %** of samples inside a body (P -0.290 / 4.82 %)
+    C1                    0.046 m [PASS];  A1 12.00 / A2 6.21 mm;  B1 E 6.357 / N 8.575;  127 plans (P 73)
+    legs                  2.40 / 6.05 / 9.63 / 6.02 / 8.58 / 6.80 / 7.26 / 6.30 s
+
+Re-anchoring the spline on the vehicle twice as often is what bought that: **the reference tracks the aircraft
+instead of drifting ahead of it.**  What it cost is time -- `|v_ref|` p50 is 1.099 m/s, i.e. the reference spends
+half its life at the corner governor's own cap -- so every leg sits just over 6 s instead of one blowing up.
+
+FLIGHT R -- SPENDING IT ON SPEED, AND THE ANSWER IS NO.  `EGO_MAX_VEL`/`ACC` 2.0 -> 2.5 and `EGO_CORNER_MPS`
+1.10 -> 1.40:
+
+    legs   1.48 / 5.89 / 7.15 / 5.58 / 6.32 / 5.59 / 6.28 / 5.52 s -- **5 of 8 under 6.0 s, max 7.15 s**,
+           the closest the time criterion has come
+    C2     minimum **-0.276 m**, **4.42 %** of samples inside a body, 2 episodes with the reference itself
+           inside one of them (-0.116 m) at a tracking gap of 0.097-0.279 m
+
+which is exactly what the budget said would happen: a p90 of 0.178 m at 2.0 m/s scales to ~0.22 m at 2.5 against
+the 0.20 m the geometry leaves.  **The extra speed is the first thing to undo.**
+
+THE TWO SORTIES BRACKET IT: Q is the safest configuration measured (1.34 % inside, 1 episode, the tightest
+tracking on record) at 1 of 8 legs under 6 s; R is the fastest (5 of 8, max 7.15 s) at 4.42 % inside.  The
+optimum is between them, and the next experiment is the gate again rather than the speed -- `EGO_REPLAN_S=0.3` --
+because the gate is the lever that has moved the tracking, and every tenth of a second off it re-anchors the
+spline that much sooner.
