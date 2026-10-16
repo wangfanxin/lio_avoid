@@ -370,3 +370,57 @@ tracking on record) at 1 of 8 legs under 6 s; R is the fastest (5 of 8, max 7.15
 optimum is between them, and the next experiment is the gate again rather than the speed -- `EGO_REPLAN_S=0.3` --
 because the gate is the lever that has moved the tracking, and every tenth of a second off it re-anchors the
 spline that much sooner.
+
+============================================================================================================
+ROUND 7: TWO MORE TIME LEVERS TRIED AND BOTH REFUTED -- AND WITH THEM THE CONFIGURATION SPACE IS BRACKETED.
+============================================================================================================
+
+FLIGHT S -- gate 0.3 s AND 2.2 m/s (two moves, both toward speed), against Flight Q:
+
+    legs        4.02 / 7.07 / 9.79 / 6.45 / 8.93 / 7.11 / 7.62 / 6.21 s  -- 1 of 8 under 6.0, max 9.79
+    C2          minimum -0.191 m, **2.70 %** inside a body (Q 1.34 %), 3 episodes, the reference itself inside
+                in 2 of them
+    tracking    p50 0.094 / p90 0.231 / max 0.395 m (Q 0.078 / 0.178 / 0.294)
+    plans       213 (Q 127)
+
+Worse than Q on every axis.  The extra re-planning does not buy tracking past 0.5 s, and 2.2 m/s costs what
+2.5 did (R: 4.42 % inside) in proportion.
+
+FLIGHT T -- Flight Q with ONLY the corner radius halved, 1.00 -> 0.60 m, cap and top speed unchanged, i.e. the
+one change that raises the AVERAGE without touching any PEAK:
+
+    legs        2.12 / 7.05 / 7.84 / 6.36 / 7.87 / 8.19 / 9.09 / 6.31 s  -- 1 of 8 under 6.0, max 9.09
+    C2          minimum **-0.285 m**, **3.95 %** inside (Q 1.34 %), 5 episodes, and the forensics put the
+                REFERENCE CLEAR IN 4 OF THE 5 with a tracking gap of 0.38-0.76 m at 1.3-2.3 m/s
+
+So the corner slowdown is not overhead to be trimmed -- it is where the safety comes from, and shortening it
+hands the turn back to the tracking tail.
+
+WHAT THE ELEVEN FAST SORTIES NOW BRACKET (J K L M N O P Q R S T, every one COMPLETING the two laps):
+
+    SAFEST MEASURED      Q   gate 0.5 s, 2.0 m/s, corner 1.00 m / 1.10 m/s
+                             tracking p50 0.078 / p90 0.178 / max 0.294 m; ONE contact episode; truth clearance
+                             p05 +0.106 m; C2 -0.164 m and 1.34 % of samples inside a body; C1 0.046 m
+                             legs 2.40 / 6.05 / 9.63 / 6.02 / 8.58 / 6.80 / 7.26 / 6.30 s
+    FASTEST MEASURED     R   the same arm at 2.5 m/s and corner cap 1.40
+                             legs 1.48 / 5.89 / 7.15 / 5.58 / 6.32 / 5.59 / 6.28 / 5.52 s -- **5 of 8 under 6.0,
+                             max 7.15 s** -- at C2 -0.276 m and 4.42 % inside
+    and between them, refuted: gate 1.0 (P), 0.3 (S), 2.0/2.2/2.5 m/s (Q/S/R), corner radius 0.6 (T),
+    corner cap 0.70 (L) / 1.20 (M) / 1.40 (R), lattice 0.1 (all up to N) / 0.05 (O onward), the through-turn
+    governor with and without, ego's arrival meter 1.00 (all) / 0.30 (K)
+
+THE BINDING ARITHMETIC, unchanged since round 3 and now measured on both sides of it: an axis-aligned leg runs
+0.500 m from the pillar AXES -- the widest a straight line can do on a 1.0 m checkerboard -- so its tightest
+point is **0.200 m from a surface**, once per metre along the leg.  The tracking gap is p50 0.078-0.094 and p90
+0.178-0.231 at the 2.0 m/s that Q flies, and ~0.22-0.28 at the 2.5 m/s that R needs.  **The p90 exceeds the
+0.20 m budget exactly when the speed that meets 6 s per leg is asked for**, which is why every arm that reached
+5 of 8 legs under 6 s also put 4-5 % of its samples inside a pillar.
+
+TO MEET BOTH CRITERIA ON THIS ROUTE the p90 tracking gap has to come in under about 0.10 m at 2.5 m/s: a 2.5x
+improvement in the tail over the best measured.  Three levers remain untouched and are all on the CONTROLLER
+side, not the planner's: the flight controller's position-loop gain (`PSC_NE_POS_P`, default 1.0, never varied
+in this project), the acceleration mask (`BRIDGE_FIELDS=posvelacc`, whose only test -- Flight D -- was
+invalidated when its LIO was found to have diverged 3.65 m, so it is UNTESTED and the reference is continuous
+now), and the bridge's own 50 Hz setpoint rate against a 2.5 m/s aircraft, which is 0.05 m of sample-and-hold
+per message.  The fourth lever is the ROUTE, which is the owner's to change: every leg of this rectangle passes
+0.20 m from a pillar by construction.
