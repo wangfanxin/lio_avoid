@@ -38,3 +38,81 @@ WHAT FOLLOWS (and it is a small change, not a new direction): the same clamp bel
 velocity that are forwarded, not only on the position -- a rate/limit filter on all three fields.  Until that
 exists, `BRIDGE_FIELDS=posvel` is the arm to fly, and **Flight C remains the best configuration measured**:
 min +0.168 m, 0 samples inside a body, C2-ego MET.
+
+=== CORRECTION (2026-10-16, appended): THE CAUSE OF FLIGHT D WAS NOT THE ACCELERATION MASK ==================
+
+An independent audit (`_stage/AUDIT-flightD-vs-C-20261016.md`, instruments `_stage/auditA..auditZZ4-*.py`) tested the
+mechanism this file asserted and found it HALF RIGHT about the path and WRONG about the trigger.  What it
+established, in its own numbers:
+
+  * THE UNSHAPED PATH IS REAL, verified in the firmware: `mode_guided.cpp:943` -> `AC_PosControl.cpp:633-641` ->
+    `AP_Math/control.cpp:346-411` with `limit_output=false`; our acceleration is added at `:400`, i.e. AFTER the
+    corner-acceleration limit at `:399`, and with the total cap off, so only the jerk limit acts on it.  The arm's
+    identity check passes: `GUIP` aX/aY/aZ is exactly 0.0 in Flight C and max 3.422 in Flight D.
+  * **IT IS NOT A REPLAN-BOUNDARY SPIKE.**  |a(after) - a(before)| across commits: C median 0.013, p90 0.540, max
+    1.036 m/s2; D median 0.015, p90 0.671, max 1.791 -- the same shape, and C's own time-since-commit profile
+    PEAKS MID-SPLINE (median 0.278 in [0.70,1.00) s against 0.129 in [0.05,0.10) s).  The claim in this file that
+    "the spike lives in the acceleration channel at every boundary" is therefore WITHDRAWN.
+  * WHY |a| EXCEEDS `max_acc` AT ALL, in BOTH runs and unrelated to the mask: `uniform_bspline.cpp:166-190` checks
+    the acceleration PER AXIS (never the norm, so two axes at their 1.05 tolerance give 1.15), and
+    `planner_manager.cpp:651`'s `refineTrajAlgo` re-optimises AFTER that check at `:423` and never re-checks --
+    which is where D's 3.795 m/s2 in a 0.598 s spline (traj_id 31) comes from.  A defect of upstream's, recorded
+    here because it is new.
+  * **THE DOMINANT DIFFERENCE IS OFF THE WIRE COMPLETELY: FLIGHT D'S LIO ODOMETRY DIVERGED FROM THE TRUTH BY 3.65 m**
+    (onset sim 48.2 s, within 1 s of the second ground impact), and the EKF, the commanded point and the aircraft
+    all followed the bad estimate.  Flight C's LIO stayed within 6 mm all flight.  In D's bad window (sim 49-50 s)
+    the aircraft was ON THE GROUND -- truth altitude 0.000 m, truth speed 0.000 m/s -- while its own EKF ran at
+    1.5-2.7 m/s, so the controller dragged the real aircraft east at ~2 m/s to catch up with a hallucinated state,
+    back through the pillar it was resting against.  **That is a ground impact plus an estimator fault, not an
+    acceleration-feed-forward failure.**
+  * THE CONTROLLER PARAMETERS ARE IDENTICAL: 1328 shared parameter names in the two runs' BINs, only 10 differ and
+    all are noise or counters (baro ground pressure, IMU caltemp/offsets <= 2.8e-4, MOT_THST_HOVER, STAT_*).
+    `WP_ACC`, `PSC_NE_JERK`, `ATC_ANGLE_MAX`, `EK3_SRC1_*` identical.
+  * AND THE MASK IS NOT PROVEN HARMFUL: **Flight D's own LEG 2, with the mask still open and a clean LIO, is the
+    best flying of either run (+0.313 m minimum clearance, tracking max 0.146 m).  Every bad number in D is inside
+    leg 1**, after the two mid-flight ground impacts; D's plan itself was also dirty in that window (min -0.295 m,
+    27.5 % of plan points inside the 0.20 m footprint, against C's +0.159 m / 1.73 %), it committed at 0.86 Hz
+    against C's 1.11, and its A* errors went 10 -> 950.  C, for its part, also feeds 0.78 m/s and 1.15 m/s2 forward
+    while tracking to 0.033 m median, so forwarding acceleration is not by itself a tracking problem.
+
+SO THE DISPOSITION CHANGES: the acceleration mask is UNTESTED rather than refuted -- its one flight was ruined by an
+estimator divergence and two ground impacts, and its own clean-LIO leg was the best of the run.  What Flight D
+actually exposes is a gap this project has never documented: **there is no estimator-health monitor anywhere
+between a 3.65 m LIO fault and a pillar** -- the supervisor gates on the truth's geofence, altitude and the plan's
+silence, and the FCU gates on its own EKF, but nothing compares the LIO against anything.  (On a real vehicle the
+truth is unavailable, so the deployable form of that monitor is the LIO's own status/residuals and the EKF's
+innovations, not a truth residual; in simulation the truth makes it measurable, which is how it was caught here.)
+
+NEXT MEASUREMENT, WITH ITS PREDICTION RECORDED BEFORE THE FLIGHT (the audit's own proposal): re-fly Flight C's
+configuration unchanged (`BRIDGE_FIELDS=posvel`) and measure |LIO(as W) - truth| per second with
+`_stage/auditZZ4-onset.py`.  Prediction: the closed arm reproduces < 0.05 m for the whole run (the archived Flight C
+did: median 0.0038 m, max 0.0255 m).  Refutation: any 1 s bucket above 0.5 m -- which would say C's +0.168 m was
+luck, and that the real gap is the missing health monitor rather than any parameter of the planner or the mask.
+
+=== ADDENDUM (same audit, appended because it corrects a sentence above) ==================================
+
+Flight D's LEG 2 -- which the paragraphs above call "the best flying of either run" -- must NOT be read as the
+stack recovering after the pillar.  In leg 2 the vehicle tracks the wire to a median 0.036 m **while the wire, the
+FCU's EKF and the aircraft are all 3.6 m away from where the aircraft actually is**.  That is excellent tracking of
+a reference in the WRONG PLACE, and it is exactly what a large unmonitored estimator fault looks like from inside
+the stack: every loop closes, and every loop closes on the wrong state.  Leg 2 cleared the pillars only because the
+post-divergence offset happened to point in a direction that missed them -- not because anything recovered.
+
+So the two readings that must be struck from this file are: "the mask is not proven harmful because leg 2 flew well"
+and any implication that D's later numbers are evidence about the acceleration feed-forward.  D's leg 2 is evidence
+about the ESTIMATOR, and its lesson is the opposite of reassuring: a 3.65 m fault produced a run in which the
+tracking error, the arrival logic and the mission's own completion all looked healthy.
+
+The disposition that survives, therefore, is:
+  * THE MASK IS **UNTESTED** -- its one flight was destroyed by an estimator divergence and two ground impacts, and
+    nothing in that flight separates the mask's effect from the fault's;
+  * FLIGHT C REMAINS THE BEST MEASURED CONFIGURATION (+0.168 m, 0 samples inside a body, C2-ego MET);
+  * AND THE FINDING THAT OUTRANKS BOTH: **this stack has no estimator-health monitor.**  The supervisor gates on the
+    truth's geofence, the altitude and the plan's silence; the FCU gates on its own EKF; the planner trusts the
+    odometry it is given.  Between a 3.65 m LIO fault and a pillar there is no check at all -- and the fault was
+    visible for ~2 s before the impact (onset sim 48.2 s, second ground impact within 1 s) while every consumer
+    happily followed it.
+  * The deployable form of such a monitor is NOT a truth residual (a real vehicle has no truth): it is the LIO's own
+    status/residuals (`/lio/status` exists in this stack) and the EKF's innovations (`XKF1`/`XKFS` are logged).  In
+    simulation the truth makes the fault measurable, which is how it was caught here; the monitor itself must be
+    built from quantities a real vehicle has.
