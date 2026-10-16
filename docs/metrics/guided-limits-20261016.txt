@@ -1,0 +1,74 @@
+THE FIRMWARE'S POSITION-CONTROLLER LIMITS, RAISED AND VERIFIED ON THE PAD  (2026-10-16, no flight)
+
+THE QUESTION (owner): "the firmware has speed and acceleration limits, doesn't it?  Set them all very high
+(6 m/s, 6 m/s/s)."  The answer is yes, and the binding one is exactly where the audits said it was -- but raising
+`WP_ACC` alone does NOTHING, because three other parameters cap the same quantity, and two of them are silently
+ignored if you name them the way every older document does.
+
+WHAT THE FIRMWARE ACTUALLY HAS (read from the source we fly: `src/ardupilot`, HEAD dbe7921)
+
+  NOTE FIRST: 4.7 RENAMED THE WHOLE `WPNAV_*` FAMILY.  `WPNAV_ACCEL` is now `WP_ACC`, `WPNAV_SPEED` is `WP_SPD`,
+  `WPNAV_ACCEL_C` is `WP_ACC_CNR` (`libraries/AC_WPNav/AC_WPNav.cpp:141-147,152-156` are the built-in
+  conversions for the old names).  **Our mission parameter files set NONE of them**, so the flight controller has
+  been running the firmware defaults the whole time -- which is why `WPNAV_ACCEL` is absent from the flight BIN's
+  parameter dump and why the measured ceiling was 2.463 m/s2: it is the 2.5 default.
+
+    parameter       control value   what it does                                              source
+    WP_ACC               2.5 m/s2   the horizontal acceleration limit GUIDED gives the shaper  AC_WPNav.cpp:92
+                                                                                              (default = WPNAV_ACCELERATION_MS, AC_WPNav.h:15)
+                                                                                              mode_guided.cpp:255,321
+    PSC_NE_JERK          5.0 m/s3   how fast the reference may REACH that limit                AC_PosControl.cpp:136,367,421
+                                    -> 2.5 m/s2 in 0.5 s; 6 m/s2 would take 1.2 s
+    ATC_ANGLE_MAX         30 deg    the geometric ceiling, g*tan(tilt) = 5.66 m/s2              AC_AttitudeControl.cpp:164
+    WP_SPD                2.0 m/s   the shaper's horizontal SPEED limit -- BELOW the 2.35 m/s   AC_WPNav.cpp:56
+                                    the plan commanded, so it was clipping speed too
+    ATC_ACC_P_MAX       1100 deg/s2 the attitude controller's own roll/pitch acceleration       AC_AttitudeControl.cpp:195,203
+                                    (= 19.2 rad/s2, far above what a 40 deg tilt can use)
+
+THE ARM (`params/guided_limits_fast.parm`): WP_ACC 6.0, PSC_NE_JERK 30.0, ATC_ANGLE_MAX 40.0, WP_SPD 4.0.  It is
+applied through the harness's existing `EXTRA_PARM` knob, which appends it LAST to the ONE comma-joined
+`--defaults` list (`run-mission.sh:87-96,447`) -- not as a second `--defaults`, because this project already
+measured that two of those REPLACE each other rather than accumulate, and it prints the file's path in the
+revision block so a sortie's own log names the arm it flew.  Nothing frozen is touched: `params/*.parm` are in
+the mission-A manifest, and this is a NEW file.
+
+VERIFIED ON THE PAD, LIVE (`_stage/verify-guided-limits.sh` + `_stage/live-params.py`), two SITL boots one file
+apart, no arming, no LIO, no bridge:
+
+    parameter          control    raised
+    WP_ACC              2.5000    6.0000
+    PSC_NE_JERK         5.0000   30.0000
+    ATC_ANGLE_MAX      30.0000   40.0000
+    WP_SPD              2.0000    4.0000
+    ATC_ACC_P_MAX    1100.0000 1100.0000   (untouched, as intended)
+    ATC_ACCEL_P_MAX  (no answer)(no answer)  <- see below
+
+TWO TRAPS THE PAD CHECK CAUGHT, AND ONE OF THEM WAS MINE
+
+  1. **`ATC_ACCEL_P_MAX` / `ATC_ACCEL_R_MAX` DO NOT EXIST in 4.7.**  They were renamed to `ATC_ACC_P_MAX` /
+     `ATC_ACC_R_MAX` and are in deg/s/s (`AC_AttitudeControl.cpp:51,193,203`; the conversion table at `:1189,1197`
+     exists only because the old names are gone).  My first version of the file set the OLD names and the FCU
+     answered "(no answer)" -- a parameter that is silently ignored, which is precisely the failure mode
+     `tools/install-ego-launch.py --static` exists to prevent on the launch side.  The file now names neither,
+     on purpose: the attitude controller's default is already far above what a 40 deg tilt can use, so naming it
+     would add a third variable with no mechanism behind it.
+  2. **`WP_SPD` was 2.0 m/s, not the "inherited 10" that `params/phase_a_mission.parm:5` describes**, i.e. the
+     speed ceiling was BELOW the 2.35 m/s the plan commanded.  A speed clip nobody had noticed, in the same
+     controller path as the acceleration clip.
+
+WHY A PARKED CHECK NEEDED A NEW TOOL.  `tools/bin-params.py` reads what the FCU ran with from its FLIGHT log --
+but a parked SITL never arms and a disarmed FCU writes no BIN, so a parameter change could not be checked without
+a sortie.  `_stage/live-params.py` asks the FCU directly over MAVLink instead (PARAM_REQUEST_READ by name), and a
+name the firmware does not have simply never answers -- which is exactly how trap 1 was found.
+
+WHAT THIS FIXES, AND WHAT IT DOES NOT (from the three audits, `why-collide-20261016.txt`)
+  * FIXES the part of the gap that is manufactured inside ArduPilot: the FCU's internal reference trailed the wire
+    by up to 0.591 m (median 0.066) because the shaper's acceleration ceiling was 2.5 m/s2 while the plan asked
+    for p99 6.15 / max 13.84 m/s2, and 24.4 % of all setpoints demanded more than the shaper would give.
+  * DOES NOT FIX the reference steps at every 1 Hz replan (median 0.281 m, max 0.927 m on the wire), the plan's
+    own 13.84 m/s2 peaks (still above this file's 6), or the 5-17 cm margin.
+  * AND A MORE CAPABLE CONTROLLER FOLLOWS A JUMP HARDER -- so in a corridor this tight, raising these limits
+    WITHOUT the reference-continuity fix may make the excursion worse rather than better.  That is why the flight
+    that tests this file must measure, per plan: the reference gap (`GUIP`/wire vs `PSCN` `_pos_desired`), the
+    tracking error at each speed band, and the count of reference steps > 0.05 m -- not just whether it hit
+    anything.
