@@ -1071,3 +1071,63 @@ reference rule).  Baseline: the four window-8 arm runs, and round 69's run for t
     5. `held` MAY STILL BE LARGE -- that is the separate, flight-only fault (planner starvation) and this patch
        does not address it.  If `held` stays high while the sawtooth is gone, the two faults are separated
        cleanly, which is itself the result the bench predicts.
+
+=== ROUND 74: S4's FLIGHT -- THE SWEEP IS FIXED, THE TAIL SHRANK, AND THE BIGGEST FAULT IS NOW THE HOLD =====
+
+S4 flew as `DIAG31-ref-lookahead`, window 8, ONE variable against the arm (the reference rule).  It is a VALID
+sortie: no FCU failsafe (the FCU's words: `Initialising ArduPilot | Arming motors | SIM Hit ground at 0.482831
+m/s | Disarming motors`), no abort, `DECLARED THE TOUR COMPLETE (trajectory_flag = COMPLETED after waypoint 2):
+24.8 s of route`, `phase -> land`, `landed` at 52.4 s, and C1 PASS (the aircraft stopped **0.001 m** from the last
+commanded point).
+
+THE FIVE PREDICTIONS, EACH ANSWERED:
+
+    P1  no single-message jump above 0.5 m ......... **FAILED**: max 3-D step 1.043 m (round 69: 3.406 m; z 1.788).
+        19 steps of 5436 above 0.20 m (0.35%, round 69: 0.16% of a longer stream).  BUT the stream's total travel
+        fell from **59.0 m to 23.6 m** over the same ~10 m route: the runaway is gone.
+    P2  same-instant error, 95th < 0.5 m; > 1 m share < 2%  **PARTLY, AND ONLY LIKE-FOR-LIKE**:
+            INSIDE the tour   round 69: median 0.013 m, 95th 1.318 m, > 1 m 7.90%
+                              S4      : median 0.231 m, 95th 0.943 m, > 1 m 2.35%
+            OUTSIDE the tour  round 69: median 0.262 m, 95th 0.863 m, > 1 m 2.58%
+                              S4      : median 0.842 m, 95th 1.144 m, > 1 m 29.87%
+        The tail improved 1.4x and the > 1 m share fell 3.4x INSIDE the tour.  The median got WORSE and the
+        outside-tour numbers got much worse -- and the honest reading of the median is that the old value was
+        flattering: with the age rule the reference kept COLLAPSING ONTO THE VEHICLE, so "error" was near zero
+        for exactly the reason the flight was crooked (round 72 said this about the nearest-neighbour measure;
+        this is the same artefact in the same-row measure).
+    P3  the aircraft below 0.30 m for < 15% of the tour  **PASSED, DECISIVELY: 0.0 s of 24.8 s (0.0%)** against
+        36.0% in round 69; the wire command below 0.30 m fell from 30.3% to **0.3%**.  The commanded sweep to the
+        ground -- the porpoising -- is gone.
+    P4  the flown clearance moves toward the plan's  **THE MECHANISM HELD, THE CROSSING DID NOT**: the gap between
+        the plan's minimum and the aircraft's fell from 0.165 m to **0.056 m** (the aircraft now flies the plan's
+        shape, as intended) -- but this run's plan was itself worse (**-0.201 m** against round 69's -0.107 m),
+        and the aircraft therefore entered a pillar body: truth minimum **-0.257 m**, 3369 of 84058 inside the
+        0.20 m footprint (4.01%).  On THIS flight the owner's bar ("no pillar body entered") is **violated**, and
+        the correct reading is that following a bad plan faithfully cannot rescue a bad plan: the binding
+        constraint is upstream, in what ego plans.
+    P5  `held` may stay high  **CONFIRMED, AND IT IS THE HEADLINE**: during the tour the branch mix was
+        **held 65.9% / fresh 33.1% / goal 1.0%**.  A `held` sample publishes `self.p` -- THE VEHICLE'S OWN
+        POSITION -- so two thirds of the reference was telling the aircraft to STAND STILL while ego's FSM was
+        between plans.  That is the flight-only starvation the parked bench could not reproduce (`held=+0` there).
+
+SO THE NEXT FAULT IS NAMED, AND IT IS NOT SUBTLE.  S5 (`_stage/apply-refstale1.py`):
+
+  * **a stale plan is still a plan.**  A spline older than `stale_s = 2.0 s` is now followed with the SAME
+    progress + lookahead rule instead of being replaced by a stop command; a new branch label `stale-follow`
+    counts it, and `n_stale_follow` / `n_stale_giveup` make it visible in the telemetry;
+  * **the escape hatch stays**: past `stale_s + stale_follow_max_s` (8.0 s) the adapter gives up, says so in the
+    log, and holds the last commanded point; with no plan at all the old behaviour is unchanged;
+  * the selftest now asserts both directions of this branch, and it prints them: `age 3.0 s -> 0.157 m (on the
+    plan)`, `age 11.0 s -> 0.000 m (the vehicle's own position)`.  `--selftest`, `test-lint.py` and
+    `test-planner-swap.py` all pass.
+
+S6 -- THE NEXT FLIGHT'S PREDICTIONS, WRITTEN BEFORE IT FLIES (same mission, same arm, ONE variable: S5):
+
+    1. during the tour, `held` falls from 65.9% to below 5%, with `stale-follow` taking its place;
+    2. inside-tour error: 95th from 0.943 m to below 0.6 m, and the share above 1.00 m from 2.35% to below 1%;
+    3. the aircraft is never commanded to stop mid-route: the number of `held` samples *between* the tour's first
+       `fresh` sample and its COMPLETED line is 0;
+    4. the tour takes about as long as S4's (24.8 s) rather than round 69's 74.1 s -- a stopped aircraft is a
+       slower aircraft, and round 69's 74 s was the porpoise;
+    5. **the crossing itself is NOT predicted to beat the plan**: the flown minimum should track the plan's own
+       minimum within 0.05 m (S4's gap was 0.056 m), which means the C2 row can only move when the PLAN moves.

@@ -88,7 +88,7 @@ class EgoPlanBox:
 
     def __init__(self, targets_l, hold_s=5.0, arrive_m=0.060, settle_mps=0.080, rate_hz=100.0,
                  start_wall=None, log=None, stale_s=2.0, yaw_mode="velocity", max_start_age_s=60.0,
-                 lookahead_s=0.5):
+                 lookahead_s=0.5, stale_follow_max_s=8.0):
         self.targets = np.asarray(targets_l, dtype=float).reshape(-1, 3)
         self.hold_s = float(hold_s)
         self.arrive_m = float(arrive_m)
@@ -130,6 +130,12 @@ class EgoPlanBox:
         # progress along it.  Sampling a plan by its AGE (`t = now - start_wall`) restarts the reference from the
         # vehicle every time ego replans -- measured parked: 79 jumps, ~0.8 m, once a second, 84 s.
         self.lookahead_s = float(lookahead_s)
+        # PATCH REFERENCE-STALE/1: how long a stale-but-real plan is still followed before the adapter gives up
+        # and holds.  A `held` sample commands the vehicle's OWN position -- a stop -- and in flight that was
+        # 65.9% of the tour (S4), which is why the route stuttered.
+        self.stale_follow_max_s = float(stale_follow_max_s)
+        self.n_stale_follow = 0
+        self.n_stale_giveup = 0
         self._spline_key = None
         self._t_prog = None
         self.t_ref = None
@@ -270,12 +276,43 @@ class EgoPlanBox:
                 self.v_ref = np.asarray(v, dtype=float)
                 if self.yaw_mode == "velocity" and float(np.linalg.norm(v[:2])) > 0.05:
                     self.yaw = math.atan2(float(v[1]), float(v[0]))
+            elif age <= (self.stale_s + self.stale_follow_max_s):
+                # PATCH REFERENCE-STALE/1: A STALE PLAN IS STILL A PLAN.  Keep flying it with the same
+                # progress + lookahead rule as a fresh one -- ego republishes every second when it is healthy,
+                # and when its FSM stalls for a few seconds the LAST committed trajectory remains the best
+                # statement of where to go.  Holding the vehicle's own position instead is a STOP command, and
+                # measured in flight it was 65.9% of the tour (S4), i.e. the route stuttered and half of it was
+                # never commanded at all.
+                key = (int(self.spline.traj_id), float(self.spline.received_wall))
+                if key != self._spline_key:
+                    self._spline_key = key
+                    self._t_prog = None
+                    self.n_reprojected += 1
+                ref = self.p if self.p is not None else self._p_pub
+                t_prog = self._project(self.spline, ref)
+                if self._t_prog is not None:
+                    t_prog = max(t_prog, self._t_prog)
+                self._t_prog = t_prog
+                t = min(dur, t_prog + self.lookahead_s)
+                self.t_ref = float(t)
+                p, v, _a = self.spline.at(t)
+                t_sample = float(t)
+                branch = "stale-follow"
+                self.n_stale_follow += 1
+                self.v_ref = np.asarray(v, dtype=float)
+                if self.yaw_mode == "velocity" and float(np.linalg.norm(v[:2])) > 0.05:
+                    self.yaw = math.atan2(float(v[1]), float(v[0]))
             else:
-                # A STALE SPLINE IS NOT A PLAN.  Hold the last commanded point rather than chase an old
-                # trajectory; the stream stays alive (silence means failure to the supervisor) and the
-                # supervisor's own gates get their chance.
+                # GIVING UP IS LOUD AND LAST: past `stale_s + stale_follow_max_s` the plan is old enough that
+                # following it is a guess, so hold the last commanded point (never a guess of our own) and count
+                # it.  The stream keeps talking, and the supervisor's gates keep their authority.
                 p = self.target if self.p is None else self.p
                 self.held += 1
+                self.n_stale_giveup += 1
+                if self.n_stale_giveup % 100 == 1:
+                    self.log("ego_source: REFERENCE-STALE -- the plan is %.1f s old, past the %.1f s follow "
+                             "limit; holding the last commanded point" % (age, self.stale_s +
+                                                                        self.stale_follow_max_s))
                 branch = "held"
         elif self.p is not None:
             p = self.p                            # no spline yet: ask for "hold where you are"
@@ -453,6 +490,29 @@ def _selftest() -> int:
         bad.append("the reference barely moved while the vehicle advanced 0.42 m: %s" % np.round(moving, 3))
     if not all(0.0 <= v <= 0.6 + 1e-6 for v in moving):
         bad.append("a reference left the plan's own segment [0.0, 0.6]: %s" % np.round(moving, 3))
+
+    # --- 2c. PATCH REFERENCE-STALE/1: A STALE PLAN IS STILL FOLLOWED, AND THE PUBLISHED POINT IS ON IT.
+    #     The stale branch used to publish the vehicle's own position -- a stop -- and in flight that was 65.9%
+    #     of the tour.  Here the spline is aged past `stale_s` and the published point must still lie on the
+    #     plan (not at the vehicle), and past `stale_s + stale_follow_max_s` it must hold again.
+    print()
+    print("   A STALE PLAN (the branch that was 65.9% of the flight's tour):")
+    st = EgoPlanBox([[0.6, 0.0, 0.5]], hold_s=1.0, start_wall=t0, log=lambda s: None)
+    st.on_odom([0.0, 0.0, 0.5], [0.0, 0.0, 0.0], now=t0)
+    st.on_spline(order, knots, pts, traj_id=1, start_wall=t0, now=t0)
+    st.sample(now=t0 + 0.1)
+    stale_p = float(st.sample(now=t0 + 3.0).p[0])                     # age 3.0 s > stale_s 2.0
+    old_p = float(st.sample(now=t0 + 11.0).p[0])                      # age 11.0 s > 2.0 + 8.0
+    print("      age 3.0 s -> %.3f m (on the plan, must be > 0.10); age 11.0 s -> %.3f m (the vehicle's own "
+          "position, must be ~0.000)" % (stale_p, old_p))
+    if not stale_p > 0.10:
+        bad.append("a stale plan was NOT followed: the published point is %.3f m, i.e. the vehicle's own "
+                   "position -- that is the stop command S4 measured at 65.9%% of the tour" % stale_p)
+    if abs(old_p) > 0.02:
+        bad.append("past the follow limit the adapter did not hold the vehicle's position (%.3f m)" % old_p)
+    if st.n_stale_follow < 1 or st.n_stale_giveup < 1:
+        bad.append("the stale counters did not move: follow=%d giveup=%d" % (st.n_stale_follow,
+                                                                             st.n_stale_giveup))
 
     # --- 3. MANY replans must NOT look like a moving mission
     ids = set()
