@@ -1367,3 +1367,31 @@ DISPOSITION, taken as a measurement rather than a preference:
     CONSEQUENCE of the age rule, so making the sampling continuous (re-anchor + monotone + lookahead) is what
     would let pva -- and the plan's own detour -- reach the FCU at all.  That patch stays the owner's call, and
     the adapter path (rounds 73-75) remains the flight-verified one.
+
+=== ROUND 78: ROUTE B WITH `posvel` -- THE PREDICTIONS, WRITTEN BEFORE THE SORTIE ========================
+The change from round 77b is ONE thing: the acceleration comes off the wire (`--fields posvel` instead of
+`posvelacc`), because the reference's velocity is smooth (99th-percentile frame-to-frame step 0.18 m/s) and its
+acceleration is not (20.18% of steps above 0.1 m/s^2, max 22.22 m/s^2).  Everything else is identical to
+`DIAG33-routeb`: ego's own `traj_server` sampling, ego fed the FCU's pose, the shell owning the tour and the
+contract, window 8.
+
+  1. THE WIRE CARRIES POSITION AND VELOCITY AND **NO** ACCELERATION.  `setpoints.csv`'s `acc_*` columns all zero
+     and `vel_*` non-zero; the mask in `wire.csv` is POS_VEL_YAW (`IGNORE_AFX|AFY|AFZ|IGNORE_YAW_RATE`).
+     REFUTATION: an acceleration column that is not zero, i.e. the knob did not take effect.
+
+  2. THE SORTIE COMPLETES.  `TOUR COMPLETE` in the supervisor's log, `phase -> land`, `landed`, and **no abort**
+     -- against round 77b's `ABORT: geofence: truth at [-5.65 -6.61]` at 32.7 s.
+     REFUTATION: another abort, which would say the velocity feed-forward is also unusable from this sampler.
+
+  3. THE TRACKING TAIL IMPROVES ON BOTH OF THE LAST TWO RUNS.  Inside-tour same-instant error 95th below
+     **0.7 m** (S6 0.975 with no feed-forward, round 77b 3.039 with pva) and the share above 1 m below **3%**
+     (S6 4.23%, round 77b 47.38%).  This is the clean test of "was the missing feed-forward the ~1 m tail?".
+     REFUTATION: still above 1 m at the 95th percentile, which would put the tail on the reference's
+     discontinuities rather than on the missing feed-forward.
+
+  4. THE REFERENCE STILL JUMPS, BECAUSE NOTHING CHANGED ABOUT THE SAMPLER.  At least one single-message step
+     above 0.5 m every ~2 s and a stream travel of 30-50 m for a ~10 m route (round 77b: 9 jumps, 42.0 m).
+     REFUTATION: a smooth stream, which would contradict the age rule being the cause.
+
+  5. THE PLAN-STILL-BOUNDS-THE-CROSSING ROW IS EXPECTED TO HOLD ONLY IF THE AIRCRAFT TRACKS: the flown minimum
+     should be within ~0.10 m of the plan's own minimum (S4 0.056 m, S6 0.035 m, round 77b 0.215 m).
