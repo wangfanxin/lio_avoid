@@ -504,3 +504,56 @@ therefore the map the planner had ON THOSE LEGS, with `_stage/right-edge-time.py
 and now knows how) pointed at the top and bottom runs: if the channel is narrower in the map there, the planner
 is choosing the wider side, exactly as it did on the right edge in Flight N; if the map is symmetric, the plan
 is being pushed out by something downstream of it.
+
+============================================================================================================
+ROUND 10: THE MAP IS SYMMETRIC AND FREE ON ALL FOUR EDGES, AND RAISING THE WEIGHT THAT PULLS THE SPLINE ONTO
+THE A* PATH MOVES THE OFFSETS WITHOUT REMOVING THEM.  The bulge lives in the PATH, not in the map or the spline.
+============================================================================================================
+
+MEASUREMENT 1 -- `_stage/edge-map.py` (new): the run's own `DIAG/2` occupancy slices, selected by TIME, asked
+for the free band around each COMMANDED line (Flight U):
+
+    RIGHT  edge x=+3.000   24 slices, 1413 cells,  **0 occupied**
+    LEFT   edge x=-3.000   28 slices, 1679 cells,  **0 occupied**
+    TOP    edge y=+4.000   23 slices,  915 cells,  **0 occupied**
+    BOTTOM edge y=-4.000   22 slices,  914 cells,  **0 occupied**
+    and the pillar walls beside them ARE marked (0.8-2.6 % of their cells)
+
+So the map is symmetric, and every line the mission wants is free in it -- in BOTH families, including the two
+the plan misses by 0.24-0.28 m.  The last perceptual explanation is gone.
+
+MEASUREMENT 2 -- Flight V, `EGO_LAMBDA_FITNESS` 1.0 -> 3.0 and NOTHING else.  `calcFitnessCost` is the only term
+that pulls the B-spline onto the A* reference, so if the bulge were the optimiser leaving that path, the spline
+would snap onto it and the edges would straighten.  What happened, from `_stage/edge-mean.py`:
+
+    leg   Flight U (fitness 1.0)        Flight V (fitness 3.0)
+    leg2  y = -4.26  (edge -4.000)      y = **-3.99**   -- snaps ONTO the line when the weight rises
+    leg3  x = +3.02  (edge +3.000)      x = **+4.00**   -- and 1.0 m OUTSIDE on the other family
+    leg4  y = +4.24                     y = +3.72       -- 0.28 m INSIDE
+    leg8  y = +3.86                     y = +4.40       -- 0.54 m the other way
+
+-- i.e. the offsets MOVE and do not vanish, in both directions, and the flight is worse overall (C2 -0.291 m and
+3.78 % of samples inside a body against U's -0.184 / 2.83 %; legs 2 of 8 under 6 s against U's 4 of 8).
+
+THE CONCLUSION THE TWO MEASUREMENTS SHARE: with the map free and symmetric on every commanded line, the plan's
+lateral placement is **not determined by the mission at all** -- it is whatever the A* path and the spline
+happen to settle on, run to run, and it varies by +-0.3 to +-1.0 m.  That is the same bistability Flight O/P
+showed on the right edge (identical arms, one clean and one not), now measured directly on the path.
+
+WHAT THAT MEANS FOR THE OBJECTIVE, stated plainly: the 0.20 m of real clearance the geometry leaves is smaller
+than the run-to-run variation of the PLANNER'S OWN PATH, so no tuning of the tracking, the map, the speed or the
+gates can make "no collision" deterministic on this route -- those have all been measured now (rounds 6-10) and
+each one only moves the outcome within that variation.  The two ways out are both structural and both the
+owner's call:
+  (a) A ROUTE with more room, so that a +-0.3 m path variation is still clear: the same 6 x 8 m rectangle
+      shifted so its edges run 0.75 m from the pillar axes instead of 0.50 (the checkerboard's next-best line is
+      the same 0.50, so this means a smaller rectangle, e.g. corners at (+-2.5, +-3.5) which puts the edges
+      exactly on a pillar row -- the alternative is a rectangle ROTATED 45 degrees, whose edges run 0.354 m from
+      the axes, i.e. worse).  There is no wider axis-aligned line in this field: 0.500 m IS the maximum, which
+      is what rounds 3-5 established.
+  (b) A CLAMP THAT MAKES THE MISSION'S LINE BINDING -- the shell holds the forwarded reference inside a corridor
+      around the commanded leg, the same family of guard as `--ref-clamp-m`, `--ref-slew-mps` and the altitude
+      band, all of which are measured and switchable.  Its risk is exact and must be stated: if the plan ever
+      needs to leave the line for a REAL obstacle, a corridor clamp fights it.  It is safe here only because the
+      map has been measured free on all four lines -- and it must therefore be armed only when the plan's own
+      clearance to the map at that point is unchanged.

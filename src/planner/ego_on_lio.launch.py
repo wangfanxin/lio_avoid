@@ -91,6 +91,20 @@ def generate_launch_description():
                               description='SOFT: a quadratic penalty, not a constraint'),
         DeclareLaunchArgument('max_acc', default_value='3.0', description='SOFT, likewise'),
         DeclareLaunchArgument('planning_horizon', default_value='7.5', description='both fsm/ and manager/'),
+        DeclareLaunchArgument('lambda_fitness', default_value='1.0',
+                              description="`optimization/lambda_fitness`: the ONLY cost term that pulls the B-spline "
+                                          "onto the A* reference (`calcFitnessCost`).  Exposed on 2026-10-17 to "
+                                          "settle a question the map has now answered the other way: Flight U "
+                                          "flies the x = +-3 edges to within 3 cm and the y = +-4 edges 0.24-0.28 m "
+                                          "OUTSIDE, while `_stage/edge-map.py` measures ALL FOUR commanded lines "
+                                          "FREE in the planner's own occupancy slices (0 occupied cells out of "
+                                          "1413 / 1679 / 915 / 914), so the bulge is neither the map nor the "
+                                          "aircraft -- it is the path or the spline that follows it.  Raising this "
+                                          "weight moves the spline onto the A* path: if the bulge is the "
+                                          "OPTIMISER it shrinks, and if it is the A* itself it does not move at "
+                                          "all.  Upstream's 1.0; 4.0 was tried once in DIAG15/17 under a "
+                                          "completely different configuration (inflation 0.099, 0.1 m lattice, "
+                                          "0.8 m/s) and was inconclusive."),
         DeclareLaunchArgument('resolution', default_value='0.1',
                               description="`grid_map/resolution`: the lattice.  Exposed on 2026-10-17 because the "
                                           "tour's legs run 0.500 m from the pillar axes while the run's OWN "
@@ -293,7 +307,7 @@ def generate_launch_description():
                                                  # LAST, so the node loaded 0.5.  The duplicate is removed;
                                                  # **`dist0` is still UNTESTED at window 8**.  Original reasoning:
         'optimization/lambda_feasibility': 0.1,
-        'optimization/lambda_fitness': 1.0,      # UPSTREAM'S VALUE, and the 4.0 experiment is now CLOSED:
+        'optimization/lambda_fitness': LaunchConfiguration('lambda_fitness'),
                                                  # DIAG15 (4.0) cleared by +0.068 m with 1231 of 54097 samples
                                                  # inside the C2 footprint; the reproduction DIAG17 (same
                                                  # configuration) PENETRATED at -0.078 m with 6741 inside.  The

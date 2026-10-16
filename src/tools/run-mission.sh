@@ -194,6 +194,10 @@ EGO_INFLATION="${EGO_INFLATION:-0.099}"
 #: leave 6 cells -- which is the difference Flight M and N both showed, where the planner declines the narrow
 #: channel and bulges 1.2 m outside it.  PATCH RESOLUTION/1 scales the A* pool with it.
 EGO_RESOLUTION="${EGO_RESOLUTION:-0.1}"
+#: `optimization/lambda_fitness` (upstream 1.0): the only cost term that pulls the B-spline onto the A* path.
+#: Flight U flies the x = +-3 edges to 3 cm and the y = +-4 edges 0.24-0.28 m OUTSIDE while every commanded line
+#: is measured FREE in the planner's own occupancy slices, so the bulge is the path or the spline on it.
+EGO_LAMBDA_FITNESS="${EGO_LAMBDA_FITNESS:-1.0}"
 #: `fsm/thresh_replan_time`: how long a committed spline is executed before the FSM re-plans from its own tail.
 #: Every re-plan also restarts `traj_server`'s clock, so this is "how much of each spline the aircraft flies".
 EGO_REPLAN_S="${EGO_REPLAN_S:-1.0}"
@@ -734,7 +738,8 @@ if [ "$EGO_STACK" = "1" ]; then
     ros2 launch ego_planner ego_on_lio.launch.py \
         odom_vel_topic:="$EGO_ODOM_VEL_TOPIC" odom_topic:="$EGO_ODOM_TOPIC" cloud_topic:="$EGO_CLOUD_TOPIC" \
         max_vel:="$EGO_MAX_VEL" max_acc:="$EGO_MAX_ACC" \
-        obstacles_inflation:="$EGO_INFLATION" resolution:="$EGO_RESOLUTION" thresh_replan_time:="$EGO_REPLAN_S" \
+        obstacles_inflation:="$EGO_INFLATION" resolution:="$EGO_RESOLUTION" \
+        lambda_fitness:="$EGO_LAMBDA_FITNESS" thresh_replan_time:="$EGO_REPLAN_S" \
         thresh_no_replan_meter:="$EGO_NOREPLAN_M" \
         > "$OUT/ego_planner.log" 2>&1 &
     EGO_LAUNCH_PID=$!
