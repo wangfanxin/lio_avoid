@@ -91,6 +91,16 @@ def generate_launch_description():
                               description='SOFT: a quadratic penalty, not a constraint'),
         DeclareLaunchArgument('max_acc', default_value='3.0', description='SOFT, likewise'),
         DeclareLaunchArgument('planning_horizon', default_value='7.5', description='both fsm/ and manager/'),
+        DeclareLaunchArgument('resolution', default_value='0.1',
+                              description="`grid_map/resolution`: the lattice.  Exposed on 2026-10-17 because the "
+                                          "tour's legs run 0.500 m from the pillar axes while the run's OWN "
+                                          "occupancy slices measure the planner's obstacle reaching 0.380 m from "
+                                          "a 0.300 m axis -- a 2-cell channel at 0.1 m, which the planner keeps "
+                                          "declining in favour of a wider one 1.2 m outside it (Flights M and N "
+                                          "both bulge there, and the x = 3 channel is measured FREE in all 23 "
+                                          "flight-height slices of the right half).  At 0.05 m the same marks "
+                                          "leave 6 cells, and PATCH RESOLUTION/1 makes the A* pool +-5 m of "
+                                          "SPACE rather than 100 cells so the search still covers the mission."),
         DeclareLaunchArgument('obstacles_inflation', default_value='0.099',
                               description="HOW FAT THE PLANNER'S OBSTACLE IS ON TOP OF THE MARKED CELLS. "
                                           "0.099 = ONE 0.1 m cell, and because `inflatePoint` grows a CUBE "
@@ -193,7 +203,7 @@ def generate_launch_description():
         # a launch file cannot declare a variable number of them: "x,y,z;x,y,z;...".
 
         # ---- the map: a boolean inflated grid, 0.1 m voxels, and NO distance query anywhere
-        'grid_map/resolution': 0.1,
+        'grid_map/resolution': LaunchConfiguration('resolution'),
         'grid_map/map_size_x': LaunchConfiguration('map_size_x'),
         'grid_map/map_size_y': LaunchConfiguration('map_size_y'),
         'grid_map/map_size_z': LaunchConfiguration('map_size_z'),

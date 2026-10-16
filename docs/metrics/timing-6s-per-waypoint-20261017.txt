@@ -221,3 +221,56 @@ view AT THE END OF EVERY SORTIE, from that run's own recording, with `--inflatio
 environment so the dashed ring is the obstacle that planner had.  A run that cannot draw one has not recorded
 what it claims to have recorded.  Both figures of this round were produced that way:
 `docs/figures/traj-xy-FLIGHTM-rect68-2laps.png` and `docs/figures/traj-xy-FLIGHTN-rect68-2laps.png`.
+
+============================================================================================================
+ROUND 4: THE LATTICE.  The bulge was the planner declining a 2-cell channel -- and 0.05 m fixes it.
+============================================================================================================
+
+THE MEASUREMENT THAT IDENTIFIED IT (`_stage/right-edge-time.py`, new).  Its predecessor picked occupancy slices
+by CAMERA POSITION and got the LANDING ones (z 1.20-1.30, cam x 3.8 -- the aircraft descends through there after
+the tour), which is why its ASCII picture looked empty of pillars.  This one walks the log in order, attaches
+the most recent ROS timestamp to every `DIAG/2 slice`, and asks the question of the 23 flight-height slices
+whose camera is in the right half of the field WHILE THE TOUR WAS BEING FLOWN:
+
+    the x = 3 column -- the tour's right edge --   **0 occupied cells in 23 of 23 slices**
+    the pillars at x = 2.5 and x = 3.5              marked, 2 to 8 cells each
+    and the aircraft, during that leg               at x = 4.0 - 4.2
+
+So the channel the mission wants is FREE, the map HAS the pillars on both sides of it, and the plan still flies
+1.2 m outside it -- through the wider gap between the x = 3.5 and x = 4.5 columns.  Both Flight M and Flight N
+do it and both flights' worst sample is there.
+
+WHY.  `_stage/map-inflation.py`: the planner's obstacle reaches 0.380 m from a pillar's 0.300 m axis, so an edge
+at 0.500 m has **0.12 m of MAP clearance -- about ONE 0.1 m cell on each side**.  A 2-cell channel is legal and
+this A* is distance-optimal (`dyn_a_star.cpp:213` is a pure distance cost), but the spline the optimiser then
+fits must keep every sample inside it while `lambda_smooth` pulls it straight, and the wider channel 1.2 m away
+is always feasible.  The narrow one loses.
+
+THE FIX, AND WHAT IT TOOK:
+
+  * `grid_map/resolution` exposed as a launch argument and `EGO_RESOLUTION`; Flight O flies **0.05 m**.
+  * PATCH RESOLUTION/1 in the tree: `planner_manager.cpp:43` hard-codes the A* pool as `Eigen::Vector3i(100,
+    100, 100)` -- +-5 m at the 0.1 m lattice, which is exactly the +-4 m tour with a metre to spare.  At 0.05 m
+    the same numbers would be **+-2.5 m, i.e. smaller than the mission**.  The pool is now +-8 m in x and y and
+    the map's full 5 m height, computed from the resolution at init, and it prints what it made:
+        `[A* pool] resolution 0.050 m -> pool (160, 160, 100) = 8.0 x 8.0 x 5.0 m`   (verified in the run's log)
+  * everything else is Flight N: 2.0 m/s, the corner governor 1.00 m / 1.10 m/s through the turn, ego's arrival
+    meter 1.00 m, inflation 0.0, relay voxel 0.03, window 1.0 s, the 1.20 m clamp, the 6 m/s slew limit, the
+    +0.60 m altitude cap, the horizontal arrival gate, the 0.3 s dwell, first-goal-waits-for-the-first-pose.
+
+FLIGHT O -- **the figure shows the rectangle flown nearly straight for the first time in this investigation**:
+the right edge, the top edge and the bottom edge are clean lines and the 1.2 m outward bulge is GONE.  And the
+acceptance numbers agree, these being the best of any fast sortie:
+
+    B1 extents   E 6.274 / N 8.195 m against the 6.10 / 8.10 bound -- the closest yet (M 6.514/8.589, N 8.772/9.782)
+    C1           the aircraft stopped **0.042 m** from the last commanded point -- the best of any sortie
+    C2           minimum pillar-surface distance **-0.106 m** -- the best of the fast flights (M -0.239, N -0.228,
+                 L -0.259, K -0.297), though 4.66 % of samples are inside the 0.20 m footprint
+    A1 / A2      15.62 / 21.38 mm rms
+    legs         0.60 / 5.84 / 8.28 / 4.66 / **21.35** / 4.81 / 7.50 / 6.33 s -- 4 of 8 under 6.0 s
+
+AND THE LOSS MOVED, which is this round's result stated honestly: the right-edge defect that three rounds were
+aimed at is fixed, and what is left is ONE place on the LEFT edge -- the tangle at (-3.5, 1.4) in the figure,
+0.5 m outside the edge at a pillar, which is leg5 and its 21.35 s.  It is the same class of defect (a narrow
+channel declined and a detour taken) at a different pillar, and it is what round 5 has to explain -- starting
+from the same instrument, on that leg, which now knows how to ask the question at the right MOMENT.

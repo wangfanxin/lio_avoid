@@ -188,6 +188,12 @@ EGO_MAX_ACC="${EGO_MAX_ACC:-3.0}"
 #: "First 3 control points in obstacles" deadlock all follow from it.  0.0 removes the 27-cell cube (`inf_step`
 #: is an INTEGER cell count, so 0.099 and 0.0 are the only two values this parameter can express).
 EGO_INFLATION="${EGO_INFLATION:-0.099}"
+#: THE MAP'S LATTICE (`grid_map/resolution`, 0.1 m in every sortie so far).  `EGO_INFLATION` above is in CELLS
+#: (`inf_step` is an integer count), so the two move together: at 0.1 m the planner's obstacle reaches 0.380 m
+#: from a pillar's 0.300 m axis and the tour's legs at 0.500 m leave a 2-cell channel; at 0.05 m the same marks
+#: leave 6 cells -- which is the difference Flight M and N both showed, where the planner declines the narrow
+#: channel and bulges 1.2 m outside it.  PATCH RESOLUTION/1 scales the A* pool with it.
+EGO_RESOLUTION="${EGO_RESOLUTION:-0.1}"
 #: `fsm/thresh_replan_time`: how long a committed spline is executed before the FSM re-plans from its own tail.
 #: Every re-plan also restarts `traj_server`'s clock, so this is "how much of each spline the aircraft flies".
 EGO_REPLAN_S="${EGO_REPLAN_S:-1.0}"
@@ -724,7 +730,7 @@ if [ "$EGO_STACK" = "1" ]; then
     ros2 launch ego_planner ego_on_lio.launch.py \
         odom_vel_topic:="$EGO_ODOM_VEL_TOPIC" odom_topic:="$EGO_ODOM_TOPIC" cloud_topic:="$EGO_CLOUD_TOPIC" \
         max_vel:="$EGO_MAX_VEL" max_acc:="$EGO_MAX_ACC" \
-        obstacles_inflation:="$EGO_INFLATION" thresh_replan_time:="$EGO_REPLAN_S" \
+        obstacles_inflation:="$EGO_INFLATION" resolution:="$EGO_RESOLUTION" thresh_replan_time:="$EGO_REPLAN_S" \
         thresh_no_replan_meter:="$EGO_NOREPLAN_M" \
         > "$OUT/ego_planner.log" 2>&1 &
     EGO_LAUNCH_PID=$!
