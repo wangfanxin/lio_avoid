@@ -431,7 +431,15 @@ class TourSequencer:
                 if self.prev_target is not None:
                     near = min(near, float(np.linalg.norm((self.p - self.prev_target)[:2])))
                 if near < self.corner_m:
-                    rate = min(rate, self.corner_mps)
+                    # A TAPER, NOT A STEP.  The cap used to switch on at exactly `corner_m`, which puts a STEP
+                    # in the reference's own speed at that radius -- and the tracking error's tail (p90 0.178
+                    # against a p50 of 0.078 in Flight Q, 0.231/0.094 in S) is made of exactly those transients.
+                    # The cap now ramps from `corner_mps` AT the corner to the unrestricted slew at the radius,
+                    # so the reference decelerates and re-accelerates smoothly and nothing has to chase a step.
+                    frac = near / max(self.corner_m, 1e-6)
+                    rate = min(rate, self.corner_mps + (self.ref_slew_mps - self.corner_mps) * frac)
+                    # ... but the VELOCITY field keeps the hard cap: it is the feed-forward, and a value above
+                    # the reference's own speed is what makes the aircraft lead the plan.
                     v = np.array([float(msg.velocity.x), float(msg.velocity.y), float(msg.velocity.z)])
                     vn = float(np.linalg.norm(v))
                     if vn > self.corner_mps:
