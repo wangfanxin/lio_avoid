@@ -229,6 +229,10 @@ EGO_SETTLE_MPS="${EGO_SETTLE_MPS:-0.08}"
 #: vertical tolerance, and `EGO_REF_Z_CLAMP_M` stops a reference that climbs away from the mission altitude.
 EGO_ARRIVE_Z_M="${EGO_ARRIVE_Z_M:-1.00}"
 EGO_REF_Z_CLAMP_M="${EGO_REF_Z_CLAMP_M:-0.0}"
+#: AND THE FLOOR (metres below the tour's own z; 0 = off).  MEASURED Flight O, leg 5: the reference froze 0.8 m
+#: LOW for four seconds and the truth's worst sample of the entire flight is at ALTITUDE 0.18 m, 0.143 m inside a
+#: pillar of the outermost column -- a one-sided ceiling cannot stop that, and the 21.35 s leg is that event.
+EGO_REF_Z_FLOOR_M="${EGO_REF_Z_FLOOR_M:-0.0}"
 #: THE FORWARDED REFERENCE'S OWN SPEED LIMIT (m/s; 0 = off).  `EGO_REF_CLAMP_M` bounds how FAR a re-plan's step
 #: may land from the vehicle; this bounds how FAST the point may move, which is what the controller feels.
 #: MEASURED Flight H at 3 m/s: tracking error p50 0.139 m but p90 0.532 and max 0.840 m -- the transients, and
@@ -331,7 +335,7 @@ case "$PLANNER" in
             PLANNER_FILE="$REPO/planner/ego_contract_shim.py"
             PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S --arrive-m $EGO_ARRIVE_M \
 --settle-mps $EGO_SETTLE_MPS --leg-timeout-s $EGO_LEG_TIMEOUT_S --leg-abort-s $EGO_LEG_ABORT_S \
---arrive-z-m $EGO_ARRIVE_Z_M --start-alt-m $EGO_START_ALT_M --ref-z-clamp-m $EGO_REF_Z_CLAMP_M \
+--arrive-z-m $EGO_ARRIVE_Z_M --start-alt-m $EGO_START_ALT_M --ref-z-clamp-m $EGO_REF_Z_CLAMP_M --ref-z-floor-m $EGO_REF_Z_FLOOR_M \
 --ref-slew-mps $EGO_REF_SLEW_MPS --corner-m $EGO_CORNER_M --corner-mps $EGO_CORNER_MPS \
 --odom-topic /ego/odom_fcu --ref-clamp-m $EGO_REF_CLAMP_M --trace-csv $OUT/shim_trace.csv ${CMD_ARGS:-}"
             PLANNER_WHAT="ego's OWN traj_server samples the plan (p+v+a) + the contract shell (tour, ids, COMPLETED)"

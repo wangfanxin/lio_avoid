@@ -69,7 +69,7 @@ class TourSequencer:
     def __init__(self, targets_l, arrive_m=0.30, hold_s=5.0, settle_mps=0.08, goal_resend_s=1.0,
                  log=None, ego_driven=False, ref_clamp_m=0.0, leg_timeout_s=0.0, leg_abort_s=0.0,
                  arrive_z_m=1.00, start_alt_m=0.0, ref_z_clamp_m=0.0, ref_slew_mps=0.0,
-                 corner_m=0.0, corner_mps=1.0):
+                 corner_m=0.0, corner_mps=1.0, ref_z_floor_m=0.0):
         self.targets = np.asarray(targets_l, dtype=float).reshape(-1, 3)
         self.arrive_m = float(arrive_m)
         self.hold_s = float(hold_s)
@@ -137,6 +137,11 @@ class TourSequencer:
         #: the supervisor's 3.00 m climb guard) and the flight never came back down.
         self.ref_z_clamp_m = float(ref_z_clamp_m)
         self.n_z_clamped = 0
+        #: THE ALTITUDE FLOOR (see `rewrite`): never forward a z more than this far BELOW the tour's own, but
+        #: only once the vehicle has been up at that altitude, so the climb off the pad is untouched.
+        self.ref_z_floor_m = float(ref_z_floor_m)
+        self.n_z_floored = 0
+        self.z_floor_armed = False
         #: True the first time a forwarded message asks for motion: see `_leg_watchdog`.
         self.motion_seen = False
         #: THE REFERENCE'S OWN SPEED LIMIT (m/s; 0 = off).  A position reference must be CONTINUOUS, and this
@@ -388,6 +393,22 @@ class TourSequencer:
             if float(msg.position.z) > z_cap:
                 msg.position.z = z_cap
                 self.n_z_clamped += 1
+        # ---- AND A FLOOR, which is NOT the same guard as the ceiling ----
+        # MEASURED Flight O, leg 5 (`_stage/leg5-forensics.py`): the reference FROZE for four seconds at
+        # (-2.037, 4.738, **z = 1.099**) -- 0.8 m below the tour's 1.884 m -- and the truth's worst sample of the
+        # entire flight is at t = 66.4 s, clearance -0.143 m, at (-4.57, 1.36) with **altitude 0.18 m**: the
+        # aircraft was dragged down to the ground and out into the outermost pillar column while the mission
+        # carried on and completed.  A one-sided CEILING cannot stop that, and the 21.35 s leg is that event.
+        # The floor is LATCHED on the vehicle having been up at the tour's altitude, so the climb off the pad --
+        # which is legitimately far below it -- is never clipped.
+        if self.ref_z_floor_m > 0.0 and self.p is not None:
+            if float(self.p[2]) > float(self.targets[-1][2]) - 0.30:
+                self.z_floor_armed = True
+            if self.z_floor_armed:
+                z_floor = float(self.targets[-1][2]) - self.ref_z_floor_m
+                if float(msg.position.z) < z_floor:
+                    msg.position.z = z_floor
+                    self.n_z_floored += 1
         # ---- THE REFERENCE'S OWN SPEED LIMIT, last, so it sees exactly what would have gone out ----
         if self.ref_slew_mps > 0.0:
             p = np.array([float(msg.position.x), float(msg.position.y), float(msg.position.z)])
@@ -614,7 +635,7 @@ def _selftest() -> int:
     for field in ("world", "calib_file", "z", "hold_s", "arrive_m", "settle_mps", "in_topic", "cmd_topic",
                   "goal_topic", "odom_topic", "trace_csv", "tour_source", "wp_index_topic",
                   "leg_timeout_s", "leg_abort_s", "arrive_z_m", "start_alt_m", "ref_z_clamp_m",
-                  "ref_slew_mps", "corner_m", "corner_mps"):
+                  "ref_slew_mps", "corner_m", "corner_mps", "ref_z_floor_m"):
         if not hasattr(a, field):
             bad.append("the start-up banner's argument surface has no %r -- main() would raise AttributeError "
                        "at start-up, in the flown mode, before the node spins" % field)
@@ -819,6 +840,26 @@ def _selftest() -> int:
                    "forwarded at %.3f m/s while the vehicle was still inside the corner's radius"
                    % float(mc3.velocity.x))
 
+    # ---- THE ALTITUDE FLOOR: Flight O lost 21 s of leg 5 to a reference that went 0.8 m low ----
+    fl = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None, ref_z_floor_m=0.60)
+    fl.on_odom([0.0, 0.0, 0.10], [0.0, 0.0, 0.0], now=t0)      # on the pad: the floor must be INERT
+    mf = M()
+    mf.position.z = 0.20
+    fl.rewrite(mf, now=t0 + 0.1)
+    pad_z, armed0, floored0 = float(mf.position.z), fl.z_floor_armed, fl.n_z_floored
+    fl.on_odom([0.0, 0.0, 1.80], [0.0, 0.0, 0.0], now=t0 + 0.2)  # up at the tour's altitude: the floor ARMS
+    mf.position.z = 1.10                                        # Flight O's frozen 1.099 m
+    fl.rewrite(mf, now=t0 + 0.3)
+    print("   altitude floor 0.60 m: on the pad z = 0.200 m was forwarded as %.3f m (armed=%s); once up, a "
+          "1.100 m reference was forwarded as %.3f m (%d floor(s))"
+          % (pad_z, armed0, float(mf.position.z), fl.n_z_floored))
+    if abs(pad_z - 0.20) > 1e-9 or armed0 or floored0 != 0:
+        bad.append("the altitude floor clipped the CLIMB OFF THE PAD (z %.3f -> %.3f) -- it must be latched on "
+                   "the vehicle having been up there" % (0.20, pad_z))
+    if abs(float(mf.position.z) - 1.40) > 1e-9 or fl.n_z_floored != 1:
+        bad.append("the altitude floor did not hold a 1.100 m reference at 2.000 - 0.600 = 1.400 m (got %.3f m, "
+                   "%d floor(s))" % (float(mf.position.z), fl.n_z_floored))
+
     if bad:
         print("\nCONTRACT SHIM SELFTEST FAILED (%d problem(s)):" % len(bad))
         for b in bad:
@@ -866,6 +907,11 @@ def _parser() -> "argparse.ArgumentParser":
                          "is OUTSIDE the rectangle, 1-1.7 m past a corner, at |v_ref| 1.8-2.4 m/s.")
     ap.add_argument("--corner-mps", type=float, default=1.0,
                     help="the reference's speed limit inside the corner governor's radius (m/s)")
+    ap.add_argument("--ref-z-floor-m", type=float, default=0.0,
+                    help="never forward an altitude more than this far BELOW the tour's own z, once the vehicle "
+                         "has been up there (0 = off).  MEASURED Flight O: the reference froze 0.8 m low for four "
+                         "seconds and the aircraft's worst sample of the whole flight is at altitude 0.18 m, "
+                         "0.143 m inside a pillar of the outermost column")
     ap.add_argument("--ref-slew-mps", type=float, default=0.0,
                     help="the forwarded reference's own SPEED LIMIT (0 = off).  The sampler restarts its clock at "
                          "every re-plan, so the point jumps; this turns each jump into a short, continuous ramp "
@@ -963,7 +1009,8 @@ def main() -> int:
                         leg_timeout_s=args.leg_timeout_s, leg_abort_s=args.leg_abort_s,
                         arrive_z_m=args.arrive_z_m, start_alt_m=args.start_alt_m,
                         ref_z_clamp_m=args.ref_z_clamp_m, ref_slew_mps=args.ref_slew_mps,
-                        corner_m=args.corner_m, corner_mps=args.corner_mps)
+                        corner_m=args.corner_m, corner_mps=args.corner_mps,
+                        ref_z_floor_m=args.ref_z_floor_m)
     print("shim: %d waypoint(s) in L from %s" % (len(targets_l), args.world))
     for i, t in enumerate(targets_l):
         print("shim: waypoint %d -> %s (L)" % (i + 1, np.round(t, 3)))
