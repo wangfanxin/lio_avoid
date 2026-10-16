@@ -1,0 +1,94 @@
+COLLISION FORENSICS: FLIGHT A -- THE PLAN WAS CLEAN AND THE AIRCRAFT LEFT IT  (2026-10-16, no flight)
+
+THE QUESTION.  The aircraft still enters a pillar.  The first thing to establish is WHICH HALF of the stack is
+responsible, because "the planner drew a line through a pillar" and "the aircraft did not fly the line it was
+given" look identical from the outside and have nothing in common as fixes.  This file answers that with the
+run's own recordings; the instruments are named so every number can be recomputed.
+
+1. THE PLAN WAS CLEAN, AND THE AIRCRAFT WAS NOT  (`_stage/flightA-plan-vs-truth.py`, `plan-frame-check.py`)
+
+   Flight A (`logs/missionA-FLIGHTA-routeb-hold`):
+     plan points, 229 170 of them ......... minimum clearance **+0.048 m**, inside a pillar body **0 (0.00 %)**
+     committed plans, 4 895 of them ........ `clr_m` minimum **+0.048 m**, NEGATIVE in **0 (0.0 %)**
+     the truth, 93 571 samples ............. minimum clearance **-0.136 m**, inside a body **397 (0.42 %)**
+
+   DIAG34 (`logs/missionA-DIAG34-routeb-pv`), the previous run of the same arm, for contrast:
+     plan points ........................... minimum clearance **-0.286 m**, 2 264 (1.03 %) inside a body
+     the truth ............................. minimum clearance -0.271 m, 3 511 (3.20 %) inside a body
+
+   **So the two runs fail for DIFFERENT reasons, and only the second one implicates the planner.**  In Flight A
+   the optimiser produced a collision-free trajectory and the vehicle did not follow it; in DIAG34 the plan
+   itself went through pillars, which is the failure rows 73-88 had already localised in the optimiser.
+
+2. HOW BIG THE EXCURSION IS  (`_stage/tap-timebase.py`, `flightA-when.py`)
+
+   * the tap runs at **1200.5 Hz** (median dt 0.000833 s, monotone, no duplicate stamps, one instance) -- NOT the
+     93 Hz of the republished `/sim/truth/odom` topic, so 397 samples is a **0.33 s** episode, not four seconds;
+   * the worst sample is at W(-2.57, -4.35) at **1.73 m** altitude, 0.166 m from the centre of the pillar at
+     (-2.50, -4.50) -- i.e. 0.136 m inside its 0.30 m surface;
+   * ground samples (altitude <= 0.30 m) never come closer than **+0.200 m**, so nothing is entered while
+     landing, and the post-COMPLETED window is clean.
+
+3. WHY IT WAS ENOUGH TO CLIP: THE MARGIN IS SMALLER THAN THE ERROR  (`_stage/jump-where.py`)
+
+   * the plan's own margin at that stretch of the route is **+0.048 m** -- the trajectory runs along the bottom
+     pillar row (pillars at N = -4.5, surfaces at N = -4.2) with a few centimetres to spare, which is what an
+     A* whose every step costs a constant returns: the SHORTEST path through the corridor, i.e. one that hugs
+     its boundary, with nothing downstream preferring the middle;
+   * the COMMAND's own steps: of 4 196 pre-COMPLETED messages, 24 move by more than 0.10 m, and the largest are
+     **0.81-0.99 m** -- against a p99 of 0.023 m, so the reference is smooth with a handful of metre-scale
+     steps (the age rule at a replan boundary: a new spline arrives with a new `start_time` and the sampled
+     point jumps).  One of those steps is **0.90 m at W(-3.86, -4.37), 1.29 m from the excursion point**, i.e.
+     on the same bottom-row stretch;
+   * the post-COMPLETED hold, for contrast, is exact: the step into it 0.0896 m, then **0.000000 m** over 641
+     messages.
+
+   **The mechanism that fits every number**: the plan hugs the pillars at 4.8 cm, the reference takes a
+   ~0.9 m step at a replan boundary, and the aircraft -- which is a real controller with real lag -- swings
+   ~1.8 m off the leg for a third of a second.  A margin of 4.8 cm cannot absorb a 0.9 m reference step.
+
+4. A FRAME QUESTION I HAD TO SETTLE BEFORE ANY OF THIS COUNTED  (`_stage/plan-frame-check.py`)
+
+   `traj.csv.points.csv` carries a `frame` column that reads `W`, but that string is the message's own
+   `header.frame_id`, which `traj_server` hard-codes to `"world"` -- and `world` is this stack's alias for **L**
+   (`docs/FRAMES.md`).  A `W` in that column is therefore NOT evidence of the W frame, and comparing the plan
+   against W pillars while it is really in L would have produced plausible numbers anyway, because the pillar
+   lattice is symmetric under N -> -N.  Two checks settle it, and both agree:
+     * the recorder CONVERTS: `src/tools/record-traj.py` loads the same `common.frames.Calib` and writes
+       `e,n,u` plus `z_min_w`/`z_max_w` (`:151`, `:131-133`), so its output is W;
+     * the tour's own corners decide it independently: the file's last point reads (-1, -1) = W2 in **W**,
+       while the L->W conversion of the same numbers would put it at (+1, -1), which is not this mission's
+       corner (in L the corner is (-1, +1));
+     * and the arithmetic agrees across two files that were measured independently: DIAG34's worst PLAN point
+       reads (E +0.49, N -1.51) and DIAG34's worst TRUTH sample, measured from the tap alone, reads
+       (E +0.48, N -1.52).
+   Under the reading that the file is W, Flight A's plan is clean (0 inside) and DIAG34's is not (2 264 inside);
+   under the other reading both become implausibly dirty (5.2 % and 12.5 % of all plan points inside a body).
+
+5. WHAT THIS DOES **NOT** ESTABLISH
+   * It does not say the sampler is the only cause: a 0.9 m reference step and a 4.8 cm plan margin are two
+     halves of one failure, and which half dominates this particular third of a second is not separated yet.
+   * It does not explain why the incident is 0.33 s and not longer, nor why only ONE such step sits on that
+     stretch while the others sit at the pad.
+   * It does not place the DIAG34 / `setpoints.csv` discrepancy (`STATUS.md` row 147): the setpoint row nearest
+     the excursion is 4.6 m away from it, which is either a coverage difference or a frame difference in that
+     file -- and the bridge's own definition of its `fcu_*` columns has NOT been read yet.
+
+6. THE TWO FIXES THIS POINTS AT, IN ORDER
+   1. **Give the plan margin.**  Nothing in this optimiser prefers the middle of free space (its distance term
+      measures against other DRONES, empty for one vehicle), and the A* step cost is a constant, so the plan
+      will keep hugging boundaries at centimetres.  The candidates that already exist: the A* proximity cost
+      (PATCH CLEARANCE/1 -- its single flown result was the best of the one-cell runs at -0.057 m, then a
+      geofence abort, and it was never reproduced) and the distance-field feed (`cps_.base_point`/`direction`
+      from a real distance field -- written, reverted, and its one flight was a flyaway, so it is UNTESTED).
+   2. **Cut the execution error.**  Review step 5, the `traj_server` continuity patch (~25 lines: re-anchor the
+      sampled point onto the vehicle's actual position, keep it monotone, and look 0.5 s ahead), removes the
+      metre-scale reference steps that the age rule produces at every replan boundary.  It is still the owner's
+      call, and `posvelacc` must not be re-enabled before it.
+
+REPRODUCTION (each is one command, no simulator, ~1 min)
+  python3 _stage/flightA-plan-vs-truth.py      # plan vs truth, and the run's own per-plan clearance column
+  python3 _stage/plan-frame-check.py           # the frame question, both readings side by side
+  python3 _stage/jump-where.py                 # the command's own steps and where they are
+  python3 _stage/flightA-when.py               # the excursion: commanded point, FCU, LIO, and the phase rows
+  python3 _stage/tap-timebase.py               # the tap's rate and time base
