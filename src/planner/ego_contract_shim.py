@@ -157,6 +157,8 @@ class TourSequencer:
         self.corner_m = float(corner_m)
         self.corner_mps = float(corner_mps)
         self.n_corner_capped = 0
+        #: the corner the tour has just LEFT: the governor holds through the turn (see `rewrite`)
+        self.prev_target = None
     # ---- inputs ---------------------------------------------------------------------------------------
     def on_odom(self, p_l, v_l=None, now=0.0):
         self.p = np.asarray(p_l, dtype=float).reshape(3)
@@ -195,6 +197,7 @@ class TourSequencer:
             self.t_dwell = None
             self.t_leg_start = now
             self.t_last_leg_warn = None
+            self.prev_target = self.targets[self.i_goal - 1].copy()
             self.log("shim: next waypoint %d of %d" % (self.i_goal + 1, len(self.targets)))
 
     def _leg_watchdog(self, now: float) -> bool:
@@ -397,7 +400,16 @@ class TourSequencer:
             # told "2.4 m/s" while being handed a point that is standing still.
             rate = self.ref_slew_mps
             if self.corner_m > 0.0 and self.p is not None:
-                if float(np.linalg.norm((self.p - self.target)[:2])) < self.corner_m:
+                # THROUGH THE TURN, not only into it.  MEASURED Flight L: two of the five contact episodes
+                # happened at |v_ref| 2.02 and 2.80 m/s, i.e. just OUTSIDE the governor's radius -- the moment
+                # the tour advances, the vehicle is far from the NEW corner, the governor releases, and the
+                # reference is back at full speed while the aircraft is still carrying momentum through a 90
+                # degree turn.  The cap therefore applies within `corner_m` of the corner the tour is ON OR the
+                # one it has just LEFT, which is the same physical place during the turn.
+                near = float(np.linalg.norm((self.p - self.target)[:2]))
+                if self.prev_target is not None:
+                    near = min(near, float(np.linalg.norm((self.p - self.prev_target)[:2])))
+                if near < self.corner_m:
                     rate = min(rate, self.corner_mps)
                     v = np.array([float(msg.velocity.x), float(msg.velocity.y), float(msg.velocity.z)])
                     vn = float(np.linalg.norm(v))
@@ -782,6 +794,30 @@ def _selftest() -> int:
     if abs(float(mc2.velocity.x) - 2.40) > 1e-9 or cg2.n_corner_capped != 0:
         bad.append("the corner governor capped the reference FAR from the corner (%.3f m/s) -- it must only act "
                    "inside its radius" % float(mc2.velocity.x))
+    # ... AND IT MUST HOLD THROUGH THE TURN: once the tour has advanced, the vehicle is far from the NEW corner
+    # and inside the radius of the one it has just LEFT (MEASURED Flight L: two of five contacts at 2.02 and
+    # 2.80 m/s, just outside a radius that only looked at the current corner).
+    cg3 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None, ref_slew_mps=6.0,
+                        corner_m=1.50, corner_mps=0.60, arrive_m=0.35, hold_s=0.1, settle_mps=0.0)
+    cg3.on_odom([0.10, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0)          # arrive at waypoint 1 (0,0,2)
+    cg3.on_odom([0.10, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0 + 0.2)    # ... dwell 0.1 s -> advance to (5,0,2)
+    moved = (cg3.i_goal == 1)
+    cg3.on_odom([0.60, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0 + 0.3)    # 0.6 m from the corner LEFT, 4.4 from the new
+    mc3 = M()
+    mc3.trajectory_id, mc3.trajectory_flag = 0, 0
+    mc3.position, mc3.velocity, mc3.acceleration = Vec(), Vec(), Vec()
+    mc3.position.x, mc3.position.z = 1.0, 2.0
+    mc3.velocity.x = 2.40
+    cg3.rewrite(mc3, now=t0 + 0.4)
+    print("   corner governor THROUGH the turn: tour advanced=%s, vehicle 0.6 m past the old corner (4.4 m from "
+          "the new one) -> forwarded at %.3f m/s (%d cap(s))"
+          % (moved, float(mc3.velocity.x), cg3.n_corner_capped))
+    if not moved:
+        bad.append("the through-the-turn test did not advance the tour, so it proves nothing")
+    elif abs(float(mc3.velocity.x) - 0.60) > 1e-9 or cg3.n_corner_capped != 1:
+        bad.append("the corner governor released at the moment the tour advanced -- a 2.40 m/s reference was "
+                   "forwarded at %.3f m/s while the vehicle was still inside the corner's radius"
+                   % float(mc3.velocity.x))
 
     if bad:
         print("\nCONTRACT SHIM SELFTEST FAILED (%d problem(s)):" % len(bad))

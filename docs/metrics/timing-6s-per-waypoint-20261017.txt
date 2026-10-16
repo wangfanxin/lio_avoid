@@ -169,3 +169,55 @@ tail is spent -- so the last two moves are (a) the tracking tail, which is a con
 continuous now, the shaper has authority, the plan is clean at 3 of 3), and (b) the four legs still over 6 s,
 which are the ones whose corners cost 2-3 s.  The figure shows both: the truth follows the rectangle, with a
 bulge at each corner where it comes back.
+
+============================================================================================================
+ROUND 3: THE STOPPED TIME IS GONE, THE STRAIGHT LEGS ARE FREE, AND THE LOSS IS ONE CORNER EXCURSION.
+============================================================================================================
+
+FLIGHT M'S TIME IS NOW FULLY DECOMPOSED, and none of the three remaining losses is what it was assumed to be:
+
+  * STOPPED TIME 6.7 s of 50.7 s (`_stage/leg-budget.py`) -- against Flight E's 43 s of 132.  The dwell and the
+    arrival gate are CLOSED as causes.
+  * THE STRAIGHT LEGS ARE FREE IN THE MAP.  `_stage/leg-free.py` walks each leg's straight line at the flight
+    altitude through the run's OWN `DIAG/2` occupancy slices: every leg reads **0 % blocked with occ_max 0** --
+    the planner never once called a cell on any of them occupied, across every slice in which that part of the
+    leg was within the map's update range.  So the 1-3 m detours are NOT map-forced, which retires the lever
+    that three rounds were spent on.
+  * THE TRUTH FLIES MOST LEGS STRAIGHT.  `_stage/truth-path.py` gives path/net 1.01-1.15 with 0.26-0.35 m of
+    lateral deviation (the deliberate slalom between pillars) for legs 3, 4, 5 and 6 -- at 5.0-6.2 s each,
+    which is INSIDE the owner's 6 s.  The four that fail are the ones with a corner excursion:
+        leg2 7.71 s  1.30x  dev 1.33 m
+        leg7 6.97 s  1.15x  dev 1.55 m
+        leg8 8.90 s  **1.67x  dev 3.34 m**
+    and the worst truth sample of the whole flight, -0.239 m at (0.55, 2.47), lies ON leg8's excursion, 1.5 m
+    inside the field from the top edge where that leg runs.
+  * AND THE AIRCRAFT'S MEAN SPEED WHILE MOVING IS 1.36 m/s against a 2.0 m/s command (p50 1.36 / p90 1.86), so
+    an 8 m leg is already ~5.9 s of pure flight BEFORE a corner costs anything.
+
+FLIGHT N -- the governor now holds through the turn.  Flight L's forensics had named the moment: two of its five
+contact episodes happened at |v_ref| 2.02 and 2.80 m/s, just OUTSIDE the governor's radius, because the instant
+the tour advances the vehicle is far from the NEW corner and the cap releases while the aircraft is still
+carrying momentum through a 90 degree turn.  The cap now applies within `corner_m` of the corner the tour is ON
+**or the one it has just LEFT** (selftested with that case: "tour advanced=True, vehicle 0.6 m past the old
+corner (4.4 m from the new one) -> forwarded at 0.600 m/s"), and the radius/speed were re-tuned to 1.00 m /
+1.10 m/s.
+
+    legs   0.92 / 5.04 / 8.93 / 5.06 / 9.81 / 5.40 / 9.14 / 8.81 s  -- 4 of 8 under 6.0 s, max 9.81 s
+    C2     1200 Hz truth minimum **-0.228 m**, 1.11 % of samples inside a body (M: -0.239 / 1.94 %) -- the best
+           of the fast flights, and it is a real body entry, not a graze
+    B1     E 8.772 / N 9.782 m -- WORSE than M's 6.514 / 8.589
+    A1/A2  15.36 / 6.92 mm rms; C1 the aircraft stopped 0.213 m from the last commanded point [PASS]
+
+SO N TRADED TIME FOR SAFETY AND NEITHER IS FINISHED.  What both flights share, and what the figure shows, is a
+SINGLE shape: on the RIGHT edge (the two legs from the bottom-right corner to the top-right one, 8.93 s and
+9.14 s) the plan and the truth both bulge 1.5-2 m OUTWARD, to x = 4.5-5.0, into the outer pillar row -- and the
+worst sample of both sorties is on that bulge (N: -0.228 m at (3.57, 1.52), a pillar at (3.5, 1.5)).  The map
+says that leg is free, the aircraft is not forced out there by anything the reference clamp or the governor
+does, and the bulge is present in the LIGHT-BLUE PLANS -- so it is the planner's own answer, and that is the one
+thing round 4 has to explain.
+
+PROCESS CHANGE, at the owner's instruction ("每次飞完都画俯视图"): `_stage/rect68-fly.sh` now regenerates the top
+view AT THE END OF EVERY SORTIE, from that run's own recording, with `--inflation` taken from the arm's own
+environment so the dashed ring is the obstacle that planner had.  A run that cannot draw one has not recorded
+what it claims to have recorded.  Both figures of this round were produced that way:
+`docs/figures/traj-xy-FLIGHTM-rect68-2laps.png` and `docs/figures/traj-xy-FLIGHTN-rect68-2laps.png`.
