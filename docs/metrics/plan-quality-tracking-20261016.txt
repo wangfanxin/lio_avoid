@@ -1,0 +1,84 @@
+PLAN QUALITY AND TRACKING, PER PLAN, WITH THE ACCELERATION RESOLVED IN TAU  (2026-10-16, no flight)
+
+Instrument: `_stage/plan-quality.py`.  Everything from ONE file -- `setpoints.csv`, whose every row carries the
+command AND the FCU's own position/velocity AT THE SAME INSTANT -- so no cross-clock alignment is needed; the
+plan boundaries come from `traj_server.log`'s own `NEW-SPLINE` lines (traj_id, duration, start_time).  One clock
+fact had to be handled first: that file's `t_wall` is written from `time.monotonic()` while `traj_server`'s log
+stamps are `time.time()`, offset 1792054448.432 (fitted by the planner audit, rms 0.78 mm/sample).  The check
+that it is right: **1664 of 1664 rows fall inside the logged plan windows**.
+
+1. WHY THE ACCELERATION IS JITTERY: IT IS A BURST AT THE HEAD OF EVERY REPLAN, NOT A PROFILE
+
+   The plan's own acceleration demand, binned by tau = time since that plan started:
+
+       tau band (s)      rows    median     p90     p99      max
+       0.0 - 0.1          100      1.66    4.31    6.98     7.08
+       0.1 - 0.3          197      3.38    5.03    6.68     6.88
+       0.3 - 0.6          281      1.90    4.37    7.48    13.84
+       0.6 - 1.2          436      0.00    2.78    3.70     3.91
+       1.2 - 2.0          205      0.00    2.68    3.67     3.70
+       > 2.0              445      0.00    0.00    0.00     0.00
+
+   * **24.4 % of all 1664 sent setpoints demand more than the flight controller can shape (2.463 m/s2 measured;
+     `WPNAV_ACCELERATION_MS` 2.5), 3.2 % demand more than 5 m/s2, and the maximum is 13.84 m/s2** -- and those
+     demands live almost entirely in the first 0.6 s of each plan.
+   * The `tau > 2 s` band is EXACTLY zero in median, p90, p99 and max, because those rows are plans that have
+     already expired: `traj_server` holds the spline's endpoint with v = a = 0 (`traj_server.cpp:214-225`).
+   * So the sequence the FCU receives is: ~0 (holding an expired plan) -> 3-7 m/s2 (a fresh plan's head) -> ~0
+     again, **once per second**, with a step at each boundary rather than a continuous profile.  That IS the
+     jitter.  It is generated where the reference is SAMPLED (a fresh spline is evaluated at t = 0 next to the
+     previous one's tail), not by the aircraft and not by the vehicle's dynamics.
+
+2. PER-PLAN TRACKING (command vs the FCU's own estimate, same instants)
+
+   23 of the 30 plans have enough rows to measure.  Median error / max error per plan, in metres:
+
+       worst:  plan 22  0.536 / 0.724   plan 9  0.426 / 0.777   plan 13 0.393 / 0.511
+               plan 14  0.375 / 0.881   plan 25 0.312 / 0.408   plan 26 0.294 / 0.464
+               plan 23  0.282 / 0.922
+       best:   plan 19  0.016 / 0.094   plan 29 0.020 / 0.161   plan 12 0.032 / 0.060
+               plan 21  0.040 / 0.107
+       whole flight: median 0.085 m, p95 0.514 m, max 0.922 m
+
+   The best-tracked plans are the ones where the command was ZERO (the vehicle hovering while the plan had
+   expired).  **Every plan that actually moves is tracked with a 0.1-0.5 m error.**
+
+3. IS THE PLAN TOO FAST?  YES, AND THE ERROR SCALES WITH IT
+
+       commanded speed band    rows    err median   err p95   the vehicle flew (median)
+       0.0 - 0.5 m/s           1039       0.041       0.395        0.10 m/s
+       0.5 - 1.0 m/s            169       0.047       0.265        0.57 m/s
+       1.0 - 1.5 m/s            188       0.185       0.512        1.25 m/s
+       1.5 - 2.0 m/s            215       0.346       0.709        1.44 m/s
+       2.0 +   m/s               53       0.130       0.304        1.96 m/s
+
+   * the median error grows **8x** between the 0-0.5 band and the 1.5-2.0 band;
+   * in the 1.5-2.0 band the plan asks for 1.5-2.0 m/s and the aircraft delivers **1.44 m/s** with a 0.35 m
+     median error -- it is not keeping up, and the shortfall has a p95 of **+0.68 m/s**;
+   * the plan's own speed ceiling is `optimization/max_vel` 2.0 (soft), the commanded maximum in this run 2.35,
+     the flown maximum 2.24 m/s.
+
+4. WHAT THIS MEANS FOR THE FIXES (and it corrects the one the owner questioned)
+
+   My earlier item 3 -- "clamp the acceleration we send to the shaper's ceiling" -- treats the symptom in the
+   wrong place: the jitter is generated UPSTREAM (a fresh spline every second, whose first 0.6 s asks for
+   3-14 m/s2), so clipping it downstream would hide the demand without removing the discontinuity, and DIAG33's
+   abort (posvelacc, 22 m/s2 alternating) was itself a symptom of the same upstream jitter.  The order that the
+   measurements support is:
+
+     a. **Make the reference continuous where it is generated** -- re-anchor the sampled point onto the vehicle,
+        keep it monotone, look ~0.5 s ahead (review step 5).  This is what removes the once-per-second
+        acceleration step, and it is also what removes the 0.281 m median / 0.927 m max reference steps.
+     b. **Make the plan feasible for the vehicle**: at 1.0-1.5 m/s the tracking error is 0.185 m and at
+        0.5-1.0 m/s it is 0.047 m, while the plan's own margin on the tight stretch is 0.05-0.17 m.  So a plan
+        whose speed stays near **~1.0 m/s** (and whose acceleration demand stays under the 2.5 m/s2 the FCU will
+        shape) would be tracked inside the margin this route gives.  `max_vel` 2.0 / `max_acc` 3.0 are SOFT
+        quadratic penalties and the optimiser is under no obligation to respect them -- that is a planner change,
+        not a bridge change.
+     c. Only after (a) and (b): reconsider the acceleration feed-forward (`posvelacc`).  Sending acceleration
+        that the FCU discards is a real waste, but it is not the jitter's cause.
+
+   The honest summary for the owner's question: **the plan is not "bad" (collision-free, min +0.048 m) but it is
+   UNFEASIBLE -- too fast and too abrupt at every replan boundary -- and the aircraft, which can hold roughly
+   1.0-1.4 m/s with 0.05-0.35 m of error on this route, is being asked for 1.5-2.35 m/s with acceleration bursts
+   5x what its controller will shape.**
