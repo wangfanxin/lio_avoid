@@ -1604,3 +1604,50 @@ So the honest reading of the five-run table is:
 
 The bench already shows the corrected chain running end to end (round 79: 48 Hz, `in 810 out 810`, ego's
 "no odom." = 0); what has NOT happened is a sortie on it.
+
+=== ROUND 81: WHAT THE MESS IN `traj-xy-DIAG34-routeb-pv.png` IS =========================================
+
+The owner looked at the last top view and asked what the tangle is.  Three separate things are drawn on top of one
+another, and only the third is a fault:
+
+  1. THE BLUE SPAGHETTI IS NOT A FLIGHT PATH.  It is ~50 REPLANS overlaid: ego republishes a B-spline about once
+     a second and `/plan/cmd` carries every published point, so the figure draws the union of every plan the box
+     ever emitted.  One mission, one aircraft, one path -- fifty plans.
+  2. THE AIRCRAFT DID FLY pad -> waypoint 1 -> waypoint 2 CORRECTLY FIRST.  From the tap: at rest on the pad until
+     sim 36 s, waypoint 1 reached and held at (-4.00,-4.00) from sim 44 to 56 s (the 5 s dwell included), the
+     second leg flown at ~1 m/s, waypoint 2 reached at sim ~58-60 s, and the shell's own log records
+     `ARRIVED at waypoint 1 (0.203 m)`, `ARRIVED at waypoint 2 (0.219 m)`, then TOUR COMPLETE.
+  3. THEN IT WANDERED FOR ~20 s, AND THE WIRE SAYS THE COMMAND DID IT.  `setpoints.csv` -- one row per message
+     the FCU actually received -- for the window after waypoint 2:
+
+        t_sim   commanded (x,y,z)        FCU (x,y,z)            |v_cmd|   error
+         58    (-0.76,-1.17, 1.79)     (-1.05,-1.27, 2.36)      0.971     0.31
+         60    (-0.89,-1.00, 1.99)     (-0.63,-0.96, 1.86)      2.112     0.26
+         62    (-2.52,-1.24, 1.98)     (-2.91,-1.46, 2.02)      1.694     0.45
+         64    (-0.16,-1.04, 1.97)     ( 0.38,-1.25, 2.03)      0.000     0.57
+         66    (-0.55,-0.72, 1.98)     (-0.45,-0.37, 1.97)      2.034     0.37
+         68    (-0.77,-0.78, 2.00)     (-2.12,-0.72, 1.94)      0.000     1.35
+         70    ( 1.10,-1.99, 1.88)     ( 1.15,-1.98, 1.99)      0.658     0.05
+         72    (-0.58,-1.61, 2.07)     (-0.99,-1.62, 2.34)      1.395     0.40
+         74    (-1.10,-0.30, 1.92)     (-0.99,-0.10, 1.98)      0.000     0.23
+         76..82 (-1.00,-1.00, 1.83..2.00)  converges            0.000    0.04-0.24
+
+     the commanded point itself is being thrown around -- to (-2.5,-1.2), then (+0.4,-1.25), then (+1.1,-2.0) and
+     back -- at 1.4-2.1 m/s, and the implied speed of the command between messages reaches **4.25 m/s at the 95th
+     percentile and 14.5 m/s at the maximum** (median 0, i.e. it alternates between holding and jumping).  That is
+     the AGE RULE again (`t_cur = now - start_time`, `traj_server.cpp:171-172`): each replan re-evaluates a
+     different spline from a reset time, so the reference sweeps out and snaps back, and after the tour the box
+     keeps MOVING when all the contract asks is that it keeps TALKING.
+
+  The aircraft's tracking error in that window is 0.05-1.35 m, i.e. it was doing what it was told, badly served.
+
+TWO FIXES, and they are separable:
+
+  * **THE CHEAP ONE, INSIDE THE SHELL, AND IT NEEDS NOBODY'S PERMISSION**: after COMPLETED, forward the HELD
+    position with zero velocity instead of ego's sweeping point.  The contract requires the stream to keep
+    talking after the tour is complete -- not to keep flying -- and this run shows the difference costing ~20 s of
+    loops during the landing window.  It is a few lines in `planner/ego_contract_shim.py` and it changes nothing
+    before COMPLETED (the shell stays verbatim where it matters);
+  * **THE STRUCTURAL ONE, STILL THE OWNER'S CALL**: the `traj_server` continuity patch (re-anchor on a new spline +
+    monotone advance + lookahead), which removes the sweep-and-restart for the whole flight rather than only
+    after the tour.
