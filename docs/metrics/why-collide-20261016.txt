@@ -1,0 +1,201 @@
+WHY IT STILL COLLIDES -- THREE INDEPENDENT AUDITS, AND THE ANSWER IS TWO HALVES, NEITHER OF THEM THE PLANNER
+(2026-10-16, no flight; every number below is measured in `logs/missionA-FLIGHTA-routeb-hold`)
+
+THE QUESTION.  The aircraft entered a pillar for 0.33 s (0.42 % of the samples, minimum clearance -0.136 m) on a
+run whose mission completed and landed normally.  Three independent audits were run -- planner/FSM, command path,
+perception/map -- each given only the data pipeline and the symptom, with no access to the others' findings.  I
+also measured the plan-vs-truth comparison myself.  This file is the synthesis, including the two places where
+the audits corrected me.
+
+WHAT IS *NOT* THE CAUSE (all measured, each would have been a plausible story)
+  * **Not the plan.**  Reconstructing all 30 committed splines from `traj_server`'s own `NEW-SPLINE` records and
+    measuring each over its WHOLE duration against all 46 pillars: minimum clearance **+0.0480 m**, and **zero of
+    30 plans below 0**.  The plan in force at the strike (`traj_id 22`, committed sim 56.468, 3.300 s) had its
+    own minimum at **+0.1668 m** and its clearance where it was being flown at **+0.495 m**.  The planner's own
+    per-plan column agrees (min +0.0480 m over 4 895 rows, none below 0), and so does the independent set
+    (`traj.csv`, 100 Hz, segment-aware).
+  * **Not the wire, and this was checked AT THE FLIGHT CONTROLLER.**  Three records of the commanded point agree:
+    `setpoints.csv` cmd_* (min +0.0483 m, **0 inside**), the bridge's `wire.csv`, and -- the decisive one --
+    **`flight.BIN` message GUIP ("Guided mode position target"), which is what the FCU itself received**: min
+    +0.0483 m, **0 inside**, and GUIP row 1 equals wire.csv row 1 to 1e-6 m.  (The FCU's flight log is a new
+    instrument for this project and it settles a question the audits had listed as open.)
+  * **Not the estimate.**  Across the intrusion window the FCU's own EKF estimate is 0.020-0.065 m from the truth
+    (at sim 57.20: fcu-truth = (+0.041, -0.006) m while the command was 0.658 m away in N).
+  * **Not the map.**  ego's own DIAG/2 occupancy slice one second BEFORE the strike (sim 56.468) has the pillar
+    at W(-2.5,-4.5) marked (20 of 29 cells within 0.31 m of its axis read '1', 18 of 19 pillar axes in the slice
+    marked), and **477 of the 600 truth samples of the strike window (79.5 %) fall in cells the planner's map
+    already marked OCCUPIED**.  The optimiser also refused 183 candidate plans from that neighbourhood in sim
+    57.499-57.876 with "First 3 control points in obstacles".
+  * **Not the invalid-time branch** (0 INVALID-TIME lines; every spline arrived with `age_at_arrival=0.000`).
+
+HALF ONE -- WE THROW THE PLAN'S ACCELERATION AWAY, AND THE FLIGHT CONTROLLER THEN FLIES ITS OWN REFERENCE MODEL
+  The wire carries `type_mask` **2496** = position + velocity + yaw, with **AFX/AFY/AFZ set to literal zero**
+  (`bridge/mavlink_impl.py:55`; `BRIDGE_FIELDS=posvel`).  In ArduPilot 4.7.1 that path is
+  `GCS_MAVLink_Copter.cpp:1094-1098` -> `mode_guided.cpp:925-943` -> `AC_PosControl::input_pos_vel_accel_NE_m`,
+  which runs the position through `shape_pos_vel_accel_xy` (`AP_Math/control.cpp:346-400`): **our position is only
+  a GOAL for an acceleration-limited reference model**, our velocity is added unshaped, and the acceleration is
+  limited to `WPNAV_ACCELERATION_MS` (2.5 m/s2 -- realised 2.463 m/s2, measured from PSCN).
+
+  What the plan asks for, and what the FCU will produce:
+      the plan's own acceleration .......... p90 3.63, p99 6.15, max 13.84 m/s2   (`setpoints.csv` acc_*)
+      the wire's 0.2 s-smoothed |a| ........ p99 4.69, max 5.77 m/s2
+      the FCU's reference realises ........ 2.463 m/s2                            (max |d2ref/dt2| from PSCN)
+      12.4 % of wire samples (N axis) demand > 2.0 m/s2 sustained over 0.2 s.
+
+  So the FCU's internal reference trails the wire -- and **the vehicle follows its own reference, not the wire**.
+  That is not an interpretation: `PSCN.TVN - PSCN.DVN = PSC_NE_POS_P x (DPN - PN)` holds to **0.000000 m/s** over
+  330 samples on both axes (`PSC_NE_POS_P = 1.0` from the BIN's PARM), i.e. the loop closes on `_pos_desired`
+  (`AC_PosControl.cpp:721-723`).  At sim 57.075:
+
+      WIRE setpoint (msg 84)  ............ W(-2.616, -3.808, 1.924)   clearance **+0.4020 m**
+      FCU internal reference ............ W(-2.625, -4.280, 1.927)   clearance **-0.0470 m**  <- inside
+      FCU position estimate (= truth) ... W(-2.616, -4.399, 1.927)   clearance **-0.1460 m**
+      wire->ref 0.4725 m | ref->pos 0.1193 m | wire->pos 0.5914 m
+
+  Over the flight: |truth - wire| median 0.052 / p90 0.348 / max 0.691 m, while **|FCU-reference - wire| median
+  0.066 / p90 0.287 / max 0.591 m** and |truth - FCU-reference| median 0.046 / p90 0.160 / max 0.263 m.  **0.47 of
+  the 0.59 m gap is manufactured inside ArduPilot, before the control loop runs.**
+
+HALF TWO -- THE REFERENCE IS DISCONTINUOUS, NOTHING BOUNDS IT, AND THE FSM WATCHES THE PLAN INSTEAD OF THE VEHICLE
+  * **The 1 Hz sawtooth, in the air**: `t_cur = now - start_time` (`traj_server.cpp:195`) resets to ~0 when a new
+    spline arrives (`:62`), and the new spline is anchored on the vehicle's estimate -- so the sampled reference
+    teleports.  Measured on the wire: **14 of 16 replans step more than 0.05 m, median 0.281 m, max 0.927 m**, and
+    the tracking error collapses from a median 0.234 m just before a replan to 0.022 m just after.  The consequence
+    is structural: **the error is RESET at each replan and then has the whole spline interval to grow** -- the
+    intrusion is 1.24 s after the 55.897 reset, and no replan came until 57.896.
+  * **The excitation before this intrusion**: a single 10 ms `/plan/cmd` message stepping **0.4030 m** where
+    0.0158 m was due (25x, 28 deg direction change, |v| 1.55 -> 0.38 m/s) at sim 55.910.  It came from one of two
+    **sub-second commits** (gaps 0.617 s and 0.549 s at 55.919 and 56.468) which the FSM's own replan gate cannot
+    produce (every `EXEC_TRAJ -> REPLAN_TRAJ` path requires `t_cur > 1.0 s`; the goal did not change;
+    EMERGENCY_STOP never fired).  The only remaining silent commit path is
+    `checkCollisionCallback -> planFromCurrentTraj` (`ego_replan_fsm.cpp:1236`), whose success prints nothing --
+    attributed by elimination, not by a logged reason.  The vehicle had been commanded a south-east acceleration
+    on the replaced plan, carried that lateral velocity through the reset (velocity lag 0.36 s E / 0.42 s N), and
+    drifted.
+  * **The drift is CROSS-TRACK, not a lag**: at the worst sample the truth is 0.499 m to the side of the plan and
+    only 0.173 m behind it, and the cross-track component grows monotonically 0.002 -> 0.499 m over 56.0 ->
+    57.14 s while the along-track one saturates.  The plan's clearance where it was flying was +0.495 m, so the
+    aircraft overran the plan's own margin by 4 mm.
+  * **The FSM never reacted.** `checkCollisionCallback` evaluates `info->position_traj_.evaluateDeBoorT(...)`
+    (`ego_replan_fsm.cpp:1201`, `:1213`) -- the PLAN -- and `odom_pos_` is never compared with the map anywhere in
+    the FSM.  Counters for the whole run: `Suddenly discovered obstacles` **0**, `current traj in collision,
+    replan` **0**, `Depth Lost` **0**, emergency_stop 0 -- while the vehicle sat inside a pillar for 0.33 s and the
+    next commit came 0.95 s later.
+  * **Nothing bounds the commanded point's distance from the vehicle.**  `traj_server` has no odometry
+    subscription at all (`traj_server.cpp:289-306`); the shell's `jump_m` is recorded and never acted on; the
+    bridge sends the newest sample with no comparison to the last.  The only distance test in the stack is the
+    shell's arrival gate, which sequences the MISSION.
+
+AND THE MARGIN THE PLAN GIVES ITSELF IS 5-17 cm
+  Nothing in this optimiser prefers the middle of free space: `dyn_a_star.cpp:216` is
+  `static_cost = sqrt(dx^2+dy^2+dz^2)` and the file is BYTE-IDENTICAL to its `.pre-clearance1` backup, i.e. the
+  clearance experiment is not in flight.  The only obstacle term is `calcDistanceCostRebound`, which is exactly
+  zero until `check_collision_and_rebound` has filled `cps_.direction[]`, and its target is 0.5 m from the chord's
+  entry point, not a real obstacle distance.  Also structural: `check_collision_and_rebound` scans only the first
+  ~two thirds of the control points (`bspline_optimizer.cpp:1319-1326`), `rebound_optimize`'s acceptance test
+  samples only `t < 2/3` of the duration (`:1638`), and the second clearance check is `#ifdef`'d out (`:1663`) --
+  and **12 of the 30 plans have their tightest point at tau > 2/3**, including the two tightest of the flight.
+  Two further findings worth their own line: an occupied control point is re-classified FREE if any accumulated
+  `base_point`/`direction` projects to less than one cell (`:1334-1343`), and when its A* fails the segment is
+  ERASED and the function still returns TRUE (`:1403-1409`, `:1510-1511`), i.e. that segment gets no repulsion at
+  all.  A* also exhausts its 100^3 pool (56 times in this run, all on the pad) and its start-escape loop marches
+  the start away from the goal with no cap (`dyn_a_star.cpp:96-105`).
+
+WHAT WOULD HAVE PREVENTED THIS SPECIFIC INTRUSION, IN ORDER OF LEVERAGE
+  1. **Make the FSM's safety check look at the VEHICLE** -- `odom_pos_` against the map, next to the plan check it
+     already does.  A handful of lines, and it would have reacted inside the 0.33 s instead of 0.95 s later.  (This
+     is also the one check whose absence made "0 counter fired" possible.)
+  2. **Tag the commit reason** on the existing plan-start line, so the sub-second silent replans are visible, and
+     re-commit from odometry when a plan expires (`traj_server.cpp:214-225` currently commands the spline's END
+     with v = 0 -- a full-authority "go there" at whatever distance; 8 silences > 1.2 s, max 7.26 s).
+  3. **Do not send the flight controller an acceleration it must discard, or clamp what we send.**  Restoring the
+     feed-forward (`posvelacc`) is the direct fix for half one, but it was refuted by DIAG33 -- and the reason is
+     half two: with the age-rule sawtooth in place, the acceleration we send alternates at 22 m/s2.  So the order
+     matters: continuity first (review step 5), then `posvelacc`; or clamp the acceleration to the shaper's
+     ceiling (2.5 m/s2) and keep `posvel`.
+  4. **Review step 5** -- re-anchor the sampled point onto the vehicle, keep it monotone, look 0.5 s ahead:
+     removes the median 0.281 m / max 0.927 m reference steps and the error-reset behaviour.
+  5. **Give the plan margin** -- an A* proximity term and a real distance cost -- and **check the last third** of
+     every spline.  This is a margin fix, not this run's cause: with a 0.5 m tracking error, no margin below 0.5 m
+     is enough on its own.
+
+INSTRUMENTS (all read-only; the auditors wrote only new scratch files under `_stage/`)
+  `AUDIT-planner-fsm-routeb-hold.md` (603 lines) + a1..a19/s1..s4; `cmdaudit_report.py` + 5 companions;
+  `flightA-plan-vs-truth.py`, `plan-frame-check.py`, `jump-where.py`, `flightA-when.py`, `tap-timebase.py`,
+  `cmd-path-corrected.py`, `cmd-vs-vehicle.py`, `setpoint-columns.py`, `lag-or-offset.py`.
+  **The most valuable new source is the FCU's own `flight.BIN`**: `GUIP` (what the FCU received) and
+  `PSCN/PSCE/PSCD` (the reference model it built).  Until this round only the bridge's OUTGOING record existed,
+  and "what the FCU actually got" was an open question in three earlier rounds.
+
+TWO CORRECTIONS THE AUDITS MADE TO MY OWN ANALYSIS (both mine, both recorded)
+  * I attributed the excursion to a lag (the commanded speed median 1.34 m/s against the truth's 0.79 m/s).  The
+    decomposition says **cross-track 0.499 m, along-track -0.173 m** -- a lateral drift, not a lag -- and the
+    excitation is the 0.403 m reference discontinuity, not a speed shortfall.
+  * I reported the commanded stream as 3.55 % inside a pillar and a command 6.58 m from the vehicle: both were my
+    own frame error on `setpoints.csv` (see the correction appended to `collision-forensics-20261016.txt`).
+
+=== THE THIRD AUDIT (perception and frames), AND THE CONVERGED ANSWER ====================================
+
+The perception/map audit ran the same way -- given only the pipeline and the symptom -- and it also clears its
+own layer, while adding one defect nobody had found:
+
+* **The map held the pillar, and its marks sit exactly where the aircraft was.**  In the DIAG/2 slice nearest the
+  impact (t = 57.58, 0.44 s after): 57 occupied cells within 0.70 m of that pillar's axis, 19 of the 27 cells
+  inside its true footprint -- and the truth path's minimum distance to any MAP MARK over the whole flight is
+  **0.000 m at t = 57.14**, i.e. there was a marked cell exactly where the aircraft was.  (The 1 Hz slice rate
+  brackets the impact at -0.66 / +0.44 s; that coincident mark is the only exactly-timed datum.)
+* **Where the map thought the vehicle was**: its pose is the FCU's EKF estimate in L, L(-4.344, 2.517, 1.816),
+  against the truth's L(-4.348, 2.578, 1.719) -- 44 mm horizontal, 105 mm vertical -- and that put the map's own
+  vehicle 0.151 m from the pillar's axis, i.e. **0.149 m inside the surface and inside the map's own marked band,
+  so its own cell read OCCUPIED**.
+* **NEW DEFECT, its own fix: the map's pillar is a HOLLOW ANNULUS.**  Along the vehicle's approach ray the first
+  mark appears at **0.06-0.18 m from the axis** (median 0.10) although the true surface is at 0.30 m, and the last
+  at 0.30-0.72 m (median 0.52).  So the map leaves free space up to ~0.20 m INSIDE the pillar and makes the
+  effective obstacle ~0.20 m fatter outside; the corridor between two pillars 1.414 m apart is only about 0.4 m
+  wide in map terms.  **Why marks reach inside is UNRESOLVED**: the only cloud sample recorded is clean (radial p05
+  0.288 m, peak 0.28-0.33 m) and `/ego/cloud` was not recorded at the impact -- re-running with the relay's output
+  at 5 Hz settles it.
+* **The map marks the vehicle itself**: the pad top and the virtual-ceiling slab (z in [2.90, 3.00)) both produce
+  marks under the camera, which is where `the drone is in obstacle` 4346 comes from (4165 of them during the climb
+  off the pad, 173 at t 60.7-61.3 s).
+* **Two instrument facts**: `diag_msgs` is declared and printed but never incremented, so `msgs=0` in every DIAG/1
+  line is a DEAD COUNTER and not "no cloud arrived" (points reached 3.6 M); and the stdout(DIAG)/stderr(rclcpp)
+  interleave carries a few-tenths-of-a-second ordering bias, so DIAG times must be fitted (median residual 43 mm).
+* **The relay is cleared**: the 8 s union does not smear a pillar along the direction of travel (static world, LIO
+  pose 7.7 mm rms against the truth); it costs 1.6-10.7x in point count; it crashed at teardown (t ~75.5 s, the
+  landing), not at the encounter.
+* And it names the frame trap explicitly for future audits: `setpoints.csv` has `cmd_*` and `fcu_*` in W but
+  `lio_*` in L, and taken at face value it reports a phantom 5.81 m rms error and a phantom 448 ms lag.
+
+CONVERGED, ONE LINE PER LAYER -- EACH INDEPENDENTLY MEASURED
+
+    the planner .......... plan clean: min +0.0480 m, 0 of 30 committed splines inside a pillar
+    the contract ......... command clean: min +0.0483 m, 0 of 1664 setpoints inside
+    the wire / the FCU ... clean AT THE CONTROLLER: flight.BIN `GUIP` (what the FCU received) min +0.0483 m,
+                           0 inside, row 1 = wire.csv row 1 to 1e-6 m
+    the map .............. held the pillar; a mark sits exactly at the aircraft's position at impact
+    the estimate ......... FCU's own EKF 0.020-0.065 m from the truth across the window
+    ------------------------------------------------------------------------------------------------
+    INSIDE THE FCU ....... its internal reference `_pos_desired` was **-0.0470 m inside the pillar** while the
+                           wire asked for +0.4020 m; |reference - wire| median 0.066 / max 0.591 m; the vehicle
+                           follows the REFERENCE (PSCN identity to 0.000000 m/s)
+    THE REFERENCE ........ 14 of 16 replans step > 0.05 m (median 0.281, max 0.927 m); a 0.403 m step 1.06 s
+                           before impact; sub-second commits (0.617/0.549 s) from the ONE ungated commit path
+    THE VEHICLE .......... 0.499 m CROSS-TRACK off a plan that cleared by +0.495 m: it overran the plan's own
+                           margin by 4 mm
+    THE BLINDNESS ........ the FSM's only in-flight check tests the plan, never the vehicle: `Suddenly discovered
+                           obstacles` 0, `current traj in collision` 0, `Depth Lost` 0 for the whole run
+    THE MARGIN ........... the plan hugs boundaries at 4.8-17 cm, and the last THIRD of every spline is never
+                           collision-checked (12 of 30 plans are tightest there)
+
+  So the answer to "why does it still collide" is NOT one bug.  The aircraft was flown 0.499 m to the side of a
+  clean plan by a reference that (a) is generated as a wall-clock function of a spline rather than of the
+  vehicle's progress, (b) is discontinuous at every replan and occasionally steps 0.4-0.9 m, and (c) is then
+  handed to a flight controller whose own acceleration-limited reference model trails it by a further 0.47 m
+  because we zero the acceleration field; while the only safety check in the loop watches the plan, not the
+  aircraft, and the plan gives itself 5-17 cm of margin.
+
+  The single most cost-effective change is also the smallest: **make the FSM's collision check test `odom_pos_`
+  against the map, next to the plan check it already does.**  It would have reacted inside the 0.33 s instead of
+  0.95 s later, and its absence is the reason every safety counter read zero while the aircraft was inside a
+  pillar.
