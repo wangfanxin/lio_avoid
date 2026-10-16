@@ -1,34 +1,38 @@
 #!/usr/bin/env python3
-"""THE FCU'S OWN POSE, FED TO EGO INSTEAD OF THE RAW LIO.
+"""THE FCU'S OWN ESTIMATE, FED TO EGO INSTEAD OF THE RAW LIO.
 
-WHY (the owner's call, 2026-10-16): a planner that plans on one state estimate while the flight controller
-controls on another is planning in a different world from the one it is flying in.  The FCU's EKF sits between
-the LIO and everything downstream, and its innovation gates REJECT a wild jump that the LIO would hand straight
-to a planner; feeding ego the raw LIO puts the planner in front of that filter instead of behind it.
+*** CORRECTED 2026-10-16 (round 79), BECAUSE THE FIRST VERSION OF THIS FILE HAD THE WRONG SOURCE ***
 
-THE HONEST SIZE OF THE BENEFIT, because it is not accuracy: measured on this stack, the LIO odometry and the
-FCU's own estimate agree to **6.58 mm** (metric A1 of the acceptance report), so today the two are
-interchangeable to within millimetres.  What changes is what a FAILURE looks like: an LIO that flies away moves
-ego's world immediately, while the FCU's estimate moves only as far as its gates allow -- and the supervisor's
-own geofence and climb gates are watching the FCU, not the LIO.
+What this file fed ego until round 79 was `/sim/truth/odom`, and its docstring called that "the FCU's own pose".
+**It is not.**  `/sim/truth/odom` is republished by `sim/truth_rx.py` from the SITL **truth tap**, which
+`ardupilot/libraries/SITL/SIM_Aircraft.cpp:708-716` describes in its own words:
 
-WHAT IT DOES: subscribes `/sim/truth/odom` -- the tap of the FCU's own `LOCAL_POSITION_NED`, position AND
-velocity, republished in W by `sim/truth_rx.py:334-355` at up to 100 Hz -- converts it into L with the same
-`frames.Calib` the rest of this repo uses (`p_L = R_WL^T (p_W - t_WL)`, `v_L = R_WL^T v_W`, `q_L = R_WL^T q_W`),
-and publishes ONE topic carrying pose AND twist:
+    "Truth tap: one ASCII line per model step with **the simulator's own state**, for external estimators (the
+     LIO) that need a ground truth far finer than SIMSTATE."
 
-    /ego/odom_fcu   (nav_msgs/Odometry, frame_id = lio_world)
+So that channel is the SIMULATOR'S MODEL STATE -- ground truth.  It never passes through the EKF, it cannot be
+fed to a planner on a real aircraft (the channel does not exist there), and the rationale written here ("the
+EKF's innovation gates stand between the sensor and the planner") was therefore FALSE.
 
-Both of ego's odometry inputs point at it: `grid_map/odom` (the map reads `pose.pose.position` only) and
-`odom_world` (the FSM reads pose AND `twist.twist.linear`, which is the gate it uses to leave EMERGENCY_STOP).
-One topic rather than two because there is nothing to differ between them -- and two topics that are supposed to
-agree are two topics that can disagree.
+WHAT IT CONVERTS NOW, and this is the owner's actual request -- "ego should read what the FLIGHT CONTROLLER
+believes": the FCU's **MAVLink `LOCAL_POSITION_NED` (#32)**, which our bridge already receives (it requests it at
+`bridge/mavlink_impl.py:93` and parses it at `:115-119`) and now republishes as a ROS topic
+(`bridge_node.py --fcu-odom-topic`, W frame = ENU, z up, pose AND velocity).  Both of ego's odometry inputs point
+at this node's output -- the map reads `pose.pose.position` only, the FSM reads pose AND `twist.twist.linear` --
+so the planner and the controller close their loops on ONE state: the estimate the flight controller is actually
+controlling in.
 
-STAMPS: the incoming stamp is copied through verbatim (it is the tap's simulation clock, the same clock
-`truth_rx` publishes on `/clock`).  Ego reads no stamps -- there is no TF anywhere in its tree and its map takes
-the newest position -- so this choice is for OUR recorders, and it is stated rather than assumed.
+WHY IT MATTERS EVEN THOUGH THE TWO AGREE TODAY: measured on this stack the LIO and the FCU's estimate differ by
+**6.58 mm** (metric A1), so this is not an accuracy change.  It is a FAILURE change: an LIO that flies away moves
+a planner fed directly from it immediately, while an estimate moves only as far as the EKF's innovation gates
+allow -- and the supervisor's geofence and climb gates watch the FCU, not the LIO.
 
-usage: fcu_pose_feed.py --calib-file _stage/calib.json [--in /sim/truth/odom] [--out /ego/odom_fcu]
+THE CONVERSION, unchanged and shared with the rest of the repo (`common/frames.Calib`):
+
+    p_L = R_WL^T (p_W - t_WL)      v_L = R_WL^T v_W      q_L = R_WL^T q_W
+
+usage: fcu_pose_feed.py --calib-file _stage/calib.json [--in /fcu/odom] [--out /ego/odom_fcu]
+       fcu_pose_feed.py --in /sim/truth/odom      # the SITL truth tap: a TEST channel, not the FCU estimate
        fcu_pose_feed.py --selftest
 """
 from __future__ import annotations
@@ -93,7 +97,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--selftest", action="store_true")
     ap.add_argument("--calib-file", default="/mnt/d/distill_self/_stage/calib.json")
-    ap.add_argument("--in", dest="in_topic", default="/sim/truth/odom")
+    ap.add_argument("--in", dest="in_topic", default="/fcu/odom",
+                    help="the FCU's OWN estimate (bridge --fcu-odom-topic).  `/sim/truth/odom` is the SITL "
+                         "simulator's model state, a TEST channel that does not exist on hardware")
     ap.add_argument("--out", dest="out_topic", default="/ego/odom_fcu")
     ap.add_argument("--quiet-hz", type=float, default=10.0)
     args = ap.parse_args()

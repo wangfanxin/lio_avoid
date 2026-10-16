@@ -309,6 +309,11 @@ case "$BRIDGE_FIELDS" in
     *) echo "BRIDGE_FIELDS='$BRIDGE_FIELDS' -- use pos, posvel or posvelacc" >&2; exit 4 ;;
 esac
 BRIDGE_ARGS="--fields $BRIDGE_FIELDS ${BRIDGE_ARGS:-}"
+# THE FCU'S OWN ESTIMATE ON A TOPIC, but only when the Route B contract is in use: `fcu_pose_feed` converts it
+# into L for ego.  NOT the SITL truth tap -- see `planner/fcu_pose_feed.py`'s header (round 79's correction).
+if [ "$EGO_CONTRACT" = "shim" ]; then
+    BRIDGE_ARGS="--fcu-odom-topic /fcu/odom ${BRIDGE_ARGS:-}"
+fi
 
 # A KNOB THAT CANNOT BE CHECKED BREAKS SILENTLY, and this one did.  MEASURED 2026-10-16 while writing it:
 # the first version of the block above stood ~40 lines EARLIER, where `$VERTICAL_ARG` and `$TRAJ_CALIB_ARG`
@@ -330,7 +335,8 @@ if [ "${PLANNER_DRY_RUN:-0}" = "1" ]; then
         echo "                                   python3 $REPO/planner/cloud_relay.py --out $EGO_CLOUD_TOPIC --window $EGO_CLOUD_WINDOW --self-blind $EGO_SELF_BLIND"
         if [ "$EGO_CONTRACT" = "shim" ]; then
             echo "                    ROUTE B: ros2 run ego_planner traj_server -p traj_server/time_forward:=1.0"
-            echo "                             python3 $REPO/planner/fcu_pose_feed.py --in /sim/truth/odom --out /ego/odom_fcu"
+            echo "                             python3 $REPO/planner/fcu_pose_feed.py --in /fcu/odom --out /ego/odom_fcu  (the FCU's OWN estimate, #32)"
+            echo "                             the bridge publishes --fcu-odom-topic /fcu/odom for it"
         fi
     fi
     exit 0
@@ -617,7 +623,7 @@ if [ "$EGO_STACK" = "1" ]; then
         EGO_ODOM_TOPIC="/ego/odom_fcu"
         EGO_ODOM_VEL_TOPIC="/ego/odom_fcu"
         python3 "$REPO/planner/fcu_pose_feed.py" --calib-file "$CALIB" \
-            --in /sim/truth/odom --out /ego/odom_fcu > "$OUT/fcu_pose_feed.log" 2>&1 &
+            --in /fcu/odom --out /ego/odom_fcu > "$OUT/fcu_pose_feed.log" 2>&1 &
         EGO_FCU_POSE_PID=$!
         ros2 run ego_planner traj_server --ros-args -p traj_server/time_forward:=1.0 \
             > "$OUT/traj_server.log" 2>&1 &
@@ -633,7 +639,7 @@ if [ "$EGO_STACK" = "1" ]; then
     echo "   ego stack : contract $EGO_CONTRACT; cloud_relay pid $EGO_RELAY_PID -> $EGO_CLOUD_TOPIC;"
     echo "               ego_planner pid $EGO_LAUNCH_PID, odom $EGO_ODOM_TOPIC (twist: $EGO_ODOM_VEL_TOPIC)"
     [ -n "$EGO_TRAJ_SERVER_PID" ] && echo "               traj_server pid $EGO_TRAJ_SERVER_PID (time_forward 1.0)"
-    [ -n "$EGO_FCU_POSE_PID" ] && echo "               fcu_pose_feed pid $EGO_FCU_POSE_PID (/sim/truth/odom -> /ego/odom_fcu)"
+    [ -n "$EGO_FCU_POSE_PID" ] && echo "               fcu_pose_feed pid $EGO_FCU_POSE_PID (/fcu/odom = the FCU's OWN estimate -> /ego/odom_fcu)"
     sleep 6
     kill -0 "$EGO_RELAY_PID" 2>/dev/null || { echo "the cloud relay died:"; tail -20 "$OUT/ego_relay.log"; exit 1; }
     kill -0 "$EGO_LAUNCH_PID" 2>/dev/null || { echo "the ego launch died:"; tail -20 "$OUT/ego_planner.log"; exit 1; }

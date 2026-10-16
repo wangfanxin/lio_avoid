@@ -1517,3 +1517,63 @@ rule) spent 36.0% of its tour below 0.30 m; this run (ego's own age rule) spent 
 outcome -- so the ground sweep is not explained by the sampling rule alone.
 
 Figure `docs/figures/traj-xy-DIAG34-routeb-pv.png`, sha256 daa258c10874db9e6a84636360a8e6122a3faad4aa38625d15fabb54b21d0c38 -- Route B's first complete mission, plan and truth on the pillar field.
+
+=== ROUND 79: THE CORRECTION -- "THE FCU'S OWN POSE" WAS THE SIMULATOR'S TRUTH ==============================
+
+THE OWNER SAID: "他拿的是 31、32 转过去的信息" -- and he was right that the source was a converted stream, and
+righter than he knew about WHICH one.  R1 (round 76) fed ego `/sim/truth/odom` and every record since called that
+"the FCU's own estimate".  **It is not.**  That topic is republished by `sim/truth_rx.py` from the SITL **truth
+tap**, and the tap says what it is in its own comment
+(`ardupilot/libraries/SITL/SIM_Aircraft.cpp:708-716`):
+
+    "Truth tap: one ASCII line per model step with **the simulator's own state**, for external estimators (the
+     LIO) that need a ground truth far finer than SIMSTATE.  Frames are SITL-native: position/velocity NED
+     (origin = the simulator origin, i.e. the EKF origin) ..."
+
+So what ego planned on was **SIMULATED GROUND TRUTH**: a channel that never passes through the EKF, that exists
+only in SITL, and that cannot be fed to a planner on a real aircraft at all.  The rationale written into round 76
+-- "the EKF's innovation gates stand between the sensor and the planner" -- was therefore **false**, and it is
+corrected here rather than left standing.  (For the record: the FCU's own estimate is MAVLink
+`LOCAL_POSITION_NED` **#32** plus `ATTITUDE`/`ATTITUDE_QUATERNION` **#30/#31**; the bridge has always read #32
+for its own state, `bridge/mavlink_impl.py:93,115-119`, and the supervisor reads it as its truth.)
+
+WHAT WAS CHANGED, so that ego reads WHAT THE FLIGHT CONTROLLER BELIEVES:
+  1. **the bridge now publishes the FCU's estimate** (`bridge_node.py --fcu-odom-topic`, W frame, ENU, z up, pose
+     AND velocity, taken from the same `LocalState` the FSM uses) -- one flag, off by default so no earlier
+     sortie's behaviour changes;
+  2. **`planner/fcu_pose_feed.py` consumes it** (`--in /fcu/odom`, default) and converts W -> L as before; its
+     header now states exactly which stream it is, and names `/sim/truth/odom` for what it is: a TEST channel;
+  3. `run-mission.sh` passes `--fcu-odom-topic /fcu/odom` only on the Route B contract, and the feed's argv is
+     `/fcu/odom -> /ego/odom_fcu`.
+
+TWO BRIDGE DEFECTS THE BENCH FOUND ON THE WAY, both worth their own line:
+
+  * **THE REQUEST MUST BE REPEATED.**  `MAV_CMD_SET_MESSAGE_INTERVAL` sent before the FCU's EKF has an origin is
+    dropped -- `mavlink_impl.py:86-92` recorded the measurement and calls the request "a METHOD the consumer must
+    verify and repeat".  Measured here: on a bare parked rig the bridge received **no #32 at all** (`st.t_us`
+    stayed 0, `/fcu/odom` published nothing, ego printed "no odom." for a whole run with its subscription
+    correctly wired).  `tick()` now re-asks every 2 s while no position has arrived, up to 30 times.
+  * **PUBLISH ON CHANGE, NOT ON EVERY TICK.**  The first version published the latest state on every tick and the
+    tick runs at ~900 Hz: `ros2 topic hz /fcu/odom` measured **800-918 Hz** for a stream whose source is #32 at
+    ~48 Hz.  Ego's own odometry subscription is `create_subscription<Odometry>("odom_world", 1, ...)` -- HISTORY
+    DEPTH 1 -- and a 900 Hz duplicate flood against a depth-1 reader is a reader that can starve.  Keyed on
+    `st.t_us`, the topic now carries exactly what the FCU said.
+
+AND THE RIG HAS TO LOOK LIKE THE MISSION, which was the last piece: a bare SITL (no `--defaults`) never sent #32
+even with 11 re-asks, while the same rig started with the mission's five parameter files sent it after a single
+re-ask.  `_stage/s7-parked-routeb.sh` and `_stage/s11d-live.sh` now pass them, and the route-B rig starts the
+bridge (it owns the #32 link) -- otherwise `/fcu/odom` has no publisher at all.
+
+BENCH RESULT, the whole chain, parked (`_stage/s11d-live.sh`):
+
+    SITL (mission params) -> bridge #32 -> /fcu/odom (48 Hz, on change) -> fcu_pose_feed (W->L)
+      -> /ego/odom_fcu -> ego (grid_map/odom AND odom_world)
+    fcu_pose_feed: in 810 out 810   (~48 Hz, the FCU's own rate)
+    re-asks needed: 1               (then the stream flowed)
+    ego "no odom." lines: **0**     (against 11-per-12-s on the same rig before the parameter files were loaded)
+    p_L at the pad: (0.003, 0.002, -0.005) m
+
+So the answer to the owner's question is: **yes, ego is fed a converted stream, and until this round it was the
+wrong one -- the simulator's.  It is now the flight controller's own `LOCAL_POSITION_NED`**, which is what "the
+planner and the controller close their loops on the same state" actually requires, and which is the only one of
+the two that exists on hardware.

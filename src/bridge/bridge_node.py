@@ -282,6 +282,10 @@ class BridgeProcess:
                     "v": np.zeros(3), "n": 0, "rate": 0.0, "rate_slow": 0.0, "last_wall": 0.0,
                     "prev_p": None, "v_source": "diff", "v_seen": 0}
         self.nav_sent = 0
+        #: the re-ask loop for the FCU's own streams (see `tick()`): without it a request sent before the EKF has
+        #: an origin is dropped and the FCU never sends LOCAL_POSITION_NED at all
+        self._reask_t = 0.0
+        self._reask_n = 0
         self.nav_hz_measured = 0.0
         self._nav_t0 = None
         self._nav_n = 0
@@ -349,6 +353,16 @@ class BridgeProcess:
         self.node.create_subscription(Odometry, self.args.lio_vel_topic, self.on_lio_vel, best_effort)
         self.node.create_subscription(PoseStamped, self.args.trigger_topic, self.on_trigger, latched)
         self.status_pub = self.node.create_publisher(String, self.args.status_topic, 10)
+        # the FCU's own estimate on a topic (see `tick()`); empty topic = off, which is what every sortie up to
+        # round 78 used
+        self._Odometry = Odometry
+        self._fcu_odom_n = 0
+        self._fcu_odom_last_us = 0
+        self.fcu_odom_pub = None
+        if self.args.fcu_odom_topic:
+            self.fcu_odom_pub = self.node.create_publisher(Odometry, self.args.fcu_odom_topic, 10)
+            self.log("bridge: the FCU's OWN estimate is published on %s (MAVLink LOCAL_POSITION_NED, W frame) -- "
+                     "a DIFFERENT stream from the SITL truth tap" % self.args.fcu_odom_topic)
         self.relay = CmdRelay(self.bridge, self.calib, rate_hz=self.args.wire_hz,
                               fields=self.args.setpoint_mode, yaw_rad=self.args.yaw,
                               log=self.log, silence_abort_s=self.args.silence_abort_s,
@@ -389,6 +403,19 @@ class BridgeProcess:
     # ---- the loop ----------------------------------------------------------------------------------
     def tick(self, now):
         """One wire tick: the estimator feed at --nav-hz, then the relay's setpoint at --wire-hz."""
+        # ASK AGAIN UNTIL THE FCU ANSWERS.  `MAV_CMD_SET_MESSAGE_INTERVAL` sent once, before the FCU's EKF has
+        # an origin, is a request the firmware drops -- `mavlink_impl.py:86-92` records the measurement ("the
+        # second channel received LOCAL_POSITION_NED at 50.2 Hz once it asked AFTER the first channel's preflight
+        # had run") and calls the request a METHOD the consumer must verify and repeat.  MEASURED 2026-10-16 on
+        # the parked Route B bench: without a re-ask the bridge received **no #32 at all** -- `st.t_us` stayed 0,
+        # `/fcu/odom` published nothing, and ego printed "no odom." for the whole run while its subscription was
+        # correctly wired.  This is the re-ask, bounded so a dead link cannot spam.
+        if self.bridge is not None and not self.bridge.state().last_position_us \
+                and (now - self._reask_t) > 2.0 and self._reask_n < 30:
+            self._reask_t = now
+            self._reask_n += 1
+            self.bridge.request_rates()
+            self.log("bridge: no LOCAL_POSITION_NED yet -- re-asking for the FCU's streams (%d)" % self._reask_n)
         if self.next_nav is None:
             self.next_nav = now
         if now >= self.next_nav:
@@ -403,6 +430,40 @@ class BridgeProcess:
                 if now - self._nav_t0 > 1.0:
                     self.nav_hz_measured = self._nav_n / (now - self._nav_t0)
         sent = self.relay.tick(now)
+        # THE FCU'S OWN ESTIMATE, AS A ROS TOPIC.  `LocalState.pos/vel` is what the flight controller
+        # BELIEVES -- parsed from MAVLink `LOCAL_POSITION_NED` (#32, requested at `--nav-hz`-ish rate in
+        # `mavlink_impl.py:93` and already used by the FSM) -- and it is a DIFFERENT stream from the SITL truth
+        # tap (`/sim/truth/odom`), which is the SIMULATOR's model state (`ardupilot/libraries/SITL/
+        # SIM_Aircraft.cpp:708-716`) and does not exist on a real aircraft.  A planner that is fed the estimate
+        # plans inside the same world the controller controls in, WITH the EKF's innovation gates in between;
+        # that is the reason this topic exists (the owner's call, 2026-10-16).  It is published in W (ENU, z up),
+        # the same convention as the tap, so ONE converter (`planner/fcu_pose_feed.py`) turns either into L.
+        if self.fcu_odom_pub is not None and self.bridge is not None:
+            st = self.bridge.state()
+            # ONCE PER NEW SAMPLE, NOT ONCE PER TICK.  The first version of this block published the latest
+            # state on every tick, and the tick runs at ~900 Hz (`tick()` is called from the node's own loop):
+            # measured `ros2 topic hz /fcu/odom` = **800-918 Hz** for a stream whose source is MAVLink #32 at
+            # ~48 Hz, i.e. 19 copies of every sample.  That is not harmless: ego's own odometry subscription is
+            # `create_subscription<Odometry>("odom_world", 1, ...)` -- HISTORY DEPTH 1 -- and a 900 Hz flood of
+            # duplicates against a depth-1 reader is a reader that can starve (measured: the FSM printed
+            # "no odom." for a whole parked run while this publisher was at 900 Hz).  `st.t_us` advances once per
+            # received #32, so keying the publication on it makes the topic carry exactly what the FCU said.
+            if st.t_us and st.t_us != self._fcu_odom_last_us:
+                self._fcu_odom_last_us = st.t_us
+                if st.last_position_us and (int(now * 1e6) - st.last_position_us) < 1_000_000:
+                    m = self._Odometry()
+                    m.header.stamp = self.node.get_clock().now().to_msg()
+                    m.header.frame_id = "world_w"
+                    m.child_frame_id = "fcu_ekf"
+                    m.pose.pose.position.x, m.pose.pose.position.y, m.pose.pose.position.z = (float(st.pos[0]),
+                                                                                            float(st.pos[1]),
+                                                                                            float(st.pos[2]))
+                    m.pose.pose.orientation.w = 1.0
+                    m.twist.twist.linear.x, m.twist.twist.linear.y, m.twist.twist.linear.z = (float(st.vel[0]),
+                                                                                              float(st.vel[1]),
+                                                                                              float(st.vel[2]))
+                    self.fcu_odom_pub.publish(m)
+                    self._fcu_odom_n += 1
         if sent is not None and self.wire_log is not None:
             p_f, yaw_out, cmd = sent
             from bridge.mavlink_impl import (POS_YAW_MASK, POS_VEL_YAW_MASK,
@@ -573,6 +634,9 @@ def bridge_main(argv=None) -> int:
     ap.add_argument("--fields", dest="setpoint_mode", default="pos", choices=["pos", "posvel", "posvelacc"])
     ap.add_argument("--yaw", type=float, default=0.0)
     ap.add_argument("--silence-abort-s", type=float, default=3.0)
+    ap.add_argument("--fcu-odom-topic", default="",
+                    help="publish the FCU'S OWN estimate (MAVLink LOCAL_POSITION_NED #32, W frame) on this "
+                         "topic; empty = off.  NOT the SITL truth tap: that one is the simulator's model state")
     ap.add_argument("--setpoint-log", default="")
     ap.add_argument("--wire-log", default="",
                     help="one row per setpoint PUT ON MESSAGE 84: the L input beside the W/wire "
