@@ -42,7 +42,26 @@
 #
 # FLOWN WITH: EXTRA_PARM=params/guided_limits_fast.parm   (run-mission.sh appends it LAST to --defaults; the
 # path is printed in the revision block, so a sortie's own log names the arm it flew).
-WP_ACC 6.0
-PSC_NE_JERK 30.0
+WP_ACC 8.0
+PSC_NE_JERK 100.0
 ATC_ANGLE_MAX 40.0
 WP_SPD 4.0
+#
+# NOTE ON THE TWO NUMBERS THAT MOVED ON 2026-10-17 (Flight I): this file used to end `WP_ACC 6.0 /
+# PSC_NE_JERK 30.0`, and the Flight-I section below was APPENDED, which left two `WP_ACC` lines in the file.
+# ArduPilot takes the last one, so the FCU did get 8.0/100.0 -- but the sortie's own banner read the file with
+# `grep -m1 '^WP_ACC'` and printed 6.0/30.0, i.e. the banner lied about the arm that was flown.  The old lines
+# are therefore GONE rather than duplicated: one parameter, one line, and the banner is the file.
+#
+# ADDED 2026-10-17 (Flight I), and here is the measurement that asks for it.  Flight H flew the same arm at
+# 3.0 m/s and the REFERENCE itself reached p90 2.72 / p99 3.07 / max 3.33 m/s -- the speed is no longer the
+# plan's limit -- but the tracking error grew with it: |cmd - fcu| went from p50 0.034 m (Flight C, 0.8 m/s) to
+# p50 0.139 / p90 0.532 / max 0.840 m.  Those transients are the flight controller's SHAPER lagging the
+# reference it is given (`shape_pos_vel_accel_xy`, driven by WP_ACC and PSC_NE_JERK), and they are exactly where
+# a plan whose real margin is 0.10-0.20 m runs out of it (Flight H: minimum pillar-surface distance -0.258 m,
+# 4.89 % of samples inside a body).  So the shaper gets more authority, not the plan less speed.
+#
+#   PSC_NE_JERK    5.0 -> 30.0 -> **100.0**: 3 m/s2 in 30 ms instead of 100 ms.  This is the one that binds:
+#                  the plan's own accelerations are 3 m/s2 or less, so a shaper that can reach the limit in
+#                  30 ms tracks a step-free reference within centimetres.
+#   WP_ACC         6.0 -> **8.0**: still under the 8.2 m/s2 the 40 deg tilt allows (g*tan(40 deg)).

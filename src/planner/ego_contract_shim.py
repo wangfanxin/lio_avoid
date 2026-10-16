@@ -67,7 +67,8 @@ class TourSequencer:
     """
 
     def __init__(self, targets_l, arrive_m=0.30, hold_s=5.0, settle_mps=0.08, goal_resend_s=1.0,
-                 log=None, ego_driven=False, ref_clamp_m=0.0):
+                 log=None, ego_driven=False, ref_clamp_m=0.0, leg_timeout_s=0.0, leg_abort_s=0.0,
+                 arrive_z_m=1.00, start_alt_m=0.0, ref_z_clamp_m=0.0, ref_slew_mps=0.0):
         self.targets = np.asarray(targets_l, dtype=float).reshape(-1, 3)
         self.arrive_m = float(arrive_m)
         self.hold_s = float(hold_s)
@@ -98,7 +99,56 @@ class TourSequencer:
         self.ref_clamp_m = float(ref_clamp_m)
         self.n_clamped = 0
         self.t_last_clamp_log = None
-
+        #: THE PER-LEG WATCHDOG (seconds; 0 = off).  Flight E spent 374.3 s frozen at waypoint 7 -- the FSM was
+        #: stuck in GEN_NEW_TRAJ ("First 3 control points in obstacles": the odometry start inside the inflated
+        #: map) while `traj_server` kept publishing a HELD point, so the stream looked alive and the supervisor's
+        #: 3.0 s plan-silence rule never fired.  A frozen reference and a hover are the same bytes; the only
+        #: thing that can tell them apart is the CLOCK, and this is where the mission's clock lives.
+        self.leg_timeout_s = float(leg_timeout_s)
+        self.leg_abort_s = float(leg_abort_s)
+        self.t_leg_start = None
+        self.t_last_leg_warn = None
+        self.n_leg_warn = 0
+        #: True once a leg has timed out and the stream has been stopped on purpose.
+        self.abort = False
+        #: the last point forwarded on `/plan/cmd`, so the watchdog can print WHERE the reference is stuck
+        self.last_ref = (0.0, 0.0, 0.0)
+        #: THE SLEW LIMITER'S OWN DECISION, recorded so the trace and the selftest can see it
+        self.n_slewed = 0
+        self.t_last_fwd = None
+        self.last_fwd = None
+        #: HOW FAR ABOVE THE CORNER THE VEHICLE MAY BE AND STILL COUNT AS ARRIVED (metres).  Flight F MEASURED
+        #: why a purely spherical gate cannot work on a tour whose legs are 5-8 m of HORIZONTAL travel:
+        #: `metrics.txt` scored "corner 1: closest horizontal approach 84.4 mm PASS, vertical +0.834 m" -- the
+        #: aircraft stood 8 cm from the corner and 83 cm high, so the 3-D distance 0.838 m never fell under
+        #: `arrive_m` and the tour could not advance at all.  The vertical is a tolerance, not a target.
+        self.arrive_z_m = float(arrive_z_m)        #: START-ALTITUDE GATE for the TOUR: no goal is published until the vehicle's z reaches this (0 = off).
+        #: This is PATCH 0008's `fsm/waypoint_start_alt` idea applied to Route B, where the SHELL owns the tour
+        #: and ego's gate (which only arms `flight_type 2`) does not apply.  MEASURED Flight F: goals were sent
+        #: from mission t=1.9 s, so ego spent the whole 19 s take-off replanning a climb that nothing was
+        #: following -- 87 "First 3 control points in obstacles", 83 "A star error", and at the trigger the FCU
+        #: inherited a plan already 19 s into its clock.
+        self.start_alt_m = float(start_alt_m)
+        self.t_first_goal = None
+        #: AN UPPER CLAMP ON THE FORWARDED ALTITUDE, metres above the tour's own z (0 = off).  One-sided on
+        #: purpose: the climb off the pad must be free to be BELOW the tour's altitude, but MEASURED in Flight F
+        #: the reference ran to z = 3.25 m for a 1.884 m tour (the aircraft followed it to 3.32 m, 0.44 m under
+        #: the supervisor's 3.00 m climb guard) and the flight never came back down.
+        self.ref_z_clamp_m = float(ref_z_clamp_m)
+        self.n_z_clamped = 0
+        #: True the first time a forwarded message asks for motion: see `_leg_watchdog`.
+        self.motion_seen = False
+        #: THE REFERENCE'S OWN SPEED LIMIT (m/s; 0 = off).  A position reference must be CONTINUOUS, and this
+        #: one is not: `t_cur = now - start_time` restarts at every 1 Hz re-plan, so the point jumps (MEASURED
+        #: Flight A: median 0.281 m, max 0.927 m).  `--ref-clamp-m` bounds how FAR the jump may land from the
+        #: vehicle; this bounds how FAST the forwarded point may move, which is the part the flight controller
+        #: actually feels -- MEASURED Flight H at 3 m/s: a 0.139 m median tracking error but p90 0.532 and max
+        #: 0.840 m, i.e. the transients, and the aircraft's 0.10-0.20 m of real margin is gone exactly there.
+        #: A legitimate 3 m/s reference advances 0.03 m per 100 Hz message; a re-plan step is 20x that.
+        self.ref_slew_mps = float(ref_slew_mps)
+        self.n_slewed = 0
+        self.t_last_fwd = None
+        self.last_fwd = None
     # ---- inputs ---------------------------------------------------------------------------------------
     def on_odom(self, p_l, v_l=None, now=0.0):
         self.p = np.asarray(p_l, dtype=float).reshape(3)
@@ -110,13 +160,23 @@ class TourSequencer:
             return                      # PLAN X: ego's `wp_index` is the only thing that advances this tour
         if self.done or self.p is None:
             return
-        d = float(np.linalg.norm(self.p - self.target))
+        if self._leg_watchdog(now):
+            return
+        # ARRIVAL IS HORIZONTAL, WITH A VERTICAL TOLERANCE -- see `arrive_z_m`.  The speed test is skipped
+        # entirely when `settle_mps` is 0, which is what "fly THROUGH the waypoint" means: a 3 m/s aircraft
+        # spends ~0.2 s inside a 0.35 m disc and a gate that also demands |v| < 0.30 m/s never fires at all
+        # (Flight F: the aircraft passed 0.314 m from corner 1 at 1.6 m/s and the tour did not advance).
+        d_xy = float(np.linalg.norm((self.p - self.target)[:2]))
+        d_z_ok = abs(float(self.p[2] - self.target[2])) <= self.arrive_z_m
         speed = float(np.linalg.norm(self.v)) if self.v is not None else float("inf")
+        slow_ok = (self.settle_mps <= 0.0) or (speed < self.settle_mps)
         if self.t_dwell is None:
-            if d <= self.arrive_m and speed < self.settle_mps:
+            if d_xy <= self.arrive_m and d_z_ok and slow_ok:
                 self.t_dwell = now
-                self.log("shim: ARRIVED at waypoint %d of %d (%.3f m), dwelling %.1f s"
-                         % (self.i_goal + 1, len(self.targets), d, self.hold_s))
+                self.log("shim: ARRIVED at waypoint %d of %d (%.3f m horizontal, %.3f m vertical, |v| %.2f "
+                         "m/s), dwelling %.1f s"
+                         % (self.i_goal + 1, len(self.targets), d_xy, float(self.p[2] - self.target[2]),
+                            speed if np.isfinite(speed) else -1.0, self.hold_s))
             return
         if now - self.t_dwell >= self.hold_s:
             if self.i_goal >= len(self.targets) - 1:
@@ -125,7 +185,54 @@ class TourSequencer:
                 return
             self.i_goal += 1
             self.t_dwell = None
+            self.t_leg_start = now
+            self.t_last_leg_warn = None
             self.log("shim: next waypoint %d of %d" % (self.i_goal + 1, len(self.targets)))
+
+    def _leg_watchdog(self, now: float) -> bool:
+        """SAY IT, AND THEN STOP TALKING.  Returns True when the leg has been given up on.
+
+        The rule is the mission's own clock, not a guess about the planner: a leg that has not advanced in
+        `leg_timeout_s` is announced once a second with the distance still to go, and at `leg_abort_s` this
+        process STOPS PUBLISHING -- which is the one signal the supervisor already treats as fatal (its 3.0 s
+        plan-silence rule).  The tour is NOT advanced: a leg that was not flown must never be scored as
+        reached, and the missing `ARRIVED` line is the evidence.
+        """
+        if self.leg_timeout_s <= 0.0:
+            return False
+        # A LEG CLOCK ONLY MEANS SOMETHING ONCE THE PLAN BOX HAS COMMANDED MOTION AT ALL.  MEASURED Flight F:
+        # the tour is released at mission t=1.9 s, the FCU is not allowed to see the plan until the supervisor's
+        # trigger at t=20.4 s, and the watchdog counted those 19 s of take-off hold -- it aborted a healthy
+        # flight at t=27.5 s while the aircraft was still on its first leg.  `motion_seen` is set by `rewrite()`
+        # the first time a message asks for more than 0.20 m/s, i.e. when the flight has demonstrably begun.
+        if not self.motion_seen:
+            self.t_leg_start = now
+            self.t_last_leg_warn = None
+            return False
+        if self.t_leg_start is None:
+            self.t_leg_start = now
+        held = now - self.t_leg_start
+        if held < self.leg_timeout_s:
+            return False
+        if self.abort:
+            return True
+        if self.t_last_leg_warn is None or (now - self.t_last_leg_warn) >= 1.0:
+            self.t_last_leg_warn = now
+            self.n_leg_warn += 1
+            d = float(np.linalg.norm(self.p - self.target)) if self.p is not None else float("nan")
+            self.log("shim: LEG %d/%d HAS NOT ADVANCED FOR %.1f s -- the reference is at (%.3f, %.3f, %.3f), the "
+                     "vehicle is %.3f m from the corner, dwelling=%s (this is a STALL, not a hover: see the "
+                     "planner's PLANNER-STALL / EMERGENCY_STOP lines)"
+                     % (self.i_goal + 1, len(self.targets), held,
+                        self.last_ref[0], self.last_ref[1], self.last_ref[2],
+                        d, "yes" if self.t_dwell is not None else "no"))
+        if self.leg_abort_s > 0.0 and held >= self.leg_abort_s:
+            self.abort = True
+            self.log("shim: LEG %d/%d TIMEOUT after %.1f s -- STOPPING THE STREAM (no more messages are "
+                     "published) so the supervisor's plan-silence rule ends the sortie.  The leg is NOT counted "
+                     "as reached and the tour does NOT advance." % (self.i_goal + 1, len(self.targets), held))
+            return True
+        return False
 
     # ---- PLAN X: the tour driven by EGO's own sequencer -------------------------------------------------
     def on_wp_index(self, idx: int, now: float = 0.0) -> None:
@@ -164,9 +271,21 @@ class TourSequencer:
 
         PLAN X: under `ego_driven` there is NOTHING to send -- ego's own sequencer owns the tour, and a goal
         sent to a FSM that is not subscribed to `/move_base_simple/goal` would be a message with no reader.
-        The re-send cadence that used to drive the mission is exactly what Plan X removes."""
-        if self.ego_driven or self.done:
+        The re-send cadence that used to drive the mission is exactly what Plan X removes.
+
+        AND NOTHING IS SENT AFTER A TIMEOUT either: the watchdog's whole signal is the silence."""
+        if self.ego_driven or self.done or self.abort:
             return None
+        # THE START-ALTITUDE GATE (see `start_alt_m`): nothing is sent while the vehicle is still on the pad,
+        # so ego's first plan is made from an AIRBORNE state instead of a 19 s-old climb nobody was following.
+        if self.start_alt_m > 0.0:
+            if self.p is None or float(self.p[2]) < self.start_alt_m:
+                return None
+            if self.t_first_goal is None:
+                self.t_first_goal = now
+                self.log("shim: START-ALTITUDE GATE OPEN -- the vehicle is at z = %.3f m (gate %.2f m); the tour "
+                         "starts NOW, so ego's first plan is made from the air" % (float(self.p[2]),
+                                                                                   self.start_alt_m))
         if self.t_last_goal is not None and (now - self.t_last_goal) < self.goal_resend_s:
             return None
         self.t_last_goal = now
@@ -205,6 +324,9 @@ class TourSequencer:
         every clamp is logged, so the fix is measurable rather than assumed.
         """
         msg.trajectory_id = int(self.i_goal) + 1
+        self.last_ref = (float(msg.position.x), float(msg.position.y), float(msg.position.z))
+        if float(np.hypot(msg.velocity.x, msg.velocity.y)) > 0.20 or abs(float(msg.velocity.z)) > 0.20:
+            self.motion_seen = True
         if self.done:
             if self._hold_yaw is None:
                 self._hold_yaw = float(msg.yaw)          # latch once: a yaw jump mid-landing is a spin command
@@ -232,6 +354,29 @@ class TourSequencer:
                                               100.0 * self.n_clamped / max(1, self.n_clamped + self.n_ready)))
             msg.trajectory_flag = TRAJECTORY_STATUS_READY
             self.n_ready += 1
+        # ---- THE ONE-SIDED ALTITUDE CLAMP, applied to BOTH branches (see `ref_z_clamp_m`) ----
+        # It is deliberately AFTER the COMPLETED hold as well as before it: the hold pins z to the last
+        # waypoint, which is already the tour's altitude, so it is a no-op there -- but keeping it in one place
+        # means the forwarded z can never exceed the tour's z by more than the cap, whatever branch wrote it.
+        if self.ref_z_clamp_m > 0.0:
+            z_cap = float(self.targets[-1][2]) + self.ref_z_clamp_m
+            if float(msg.position.z) > z_cap:
+                msg.position.z = z_cap
+                self.n_z_clamped += 1
+        # ---- THE REFERENCE'S OWN SPEED LIMIT, last, so it sees exactly what would have gone out ----
+        if self.ref_slew_mps > 0.0:
+            p = np.array([float(msg.position.x), float(msg.position.y), float(msg.position.z)])
+            if self.last_fwd is not None and self.t_last_fwd is not None:
+                dt = max(now - self.t_last_fwd, 1e-4)
+                d = p - self.last_fwd
+                dist = float(np.linalg.norm(d))
+                cap = self.ref_slew_mps * dt
+                if dist > cap:
+                    p = self.last_fwd + d * (cap / dist)
+                    msg.position.x, msg.position.y, msg.position.z = float(p[0]), float(p[1]), float(p[2])
+                    self.n_slewed += 1
+            self.last_fwd = p
+            self.t_last_fwd = now
         return msg
 
     def summary(self):
@@ -416,7 +561,9 @@ def _selftest() -> int:
     print("   -- the argument surface and the banners, built from the REAL parser")
     a = _parser().parse_args([])
     for field in ("world", "calib_file", "z", "hold_s", "arrive_m", "settle_mps", "in_topic", "cmd_topic",
-                  "goal_topic", "odom_topic", "trace_csv", "tour_source", "wp_index_topic"):
+                  "goal_topic", "odom_topic", "trace_csv", "tour_source", "wp_index_topic",
+                  "leg_timeout_s", "leg_abort_s", "arrive_z_m", "start_alt_m", "ref_z_clamp_m",
+                  "ref_slew_mps"):
         if not hasattr(a, field):
             bad.append("the start-up banner's argument surface has no %r -- main() would raise AttributeError "
                        "at start-up, in the flown mode, before the node spins" % field)
@@ -424,7 +571,7 @@ def _selftest() -> int:
         bad.append("the default tour source is %r, not 'shell' (the flown behaviour must be the default)"
                    % a.tour_source)
     try:
-        _print_p3_2_banner(a.arrive_m, a.settle_mps, a.hold_s)
+        _print_p3_2_banner(a.arrive_m, a.settle_mps, a.hold_s, a.arrive_z_m)
         _print_tour_source_banner(a.tour_source, a.goal_topic, TourSequencer([[0, 0, 2]]).goal_resend_s,
                                   a.arrive_m, a.settle_mps, a.hold_s, a.wp_index_topic)
         _print_tour_source_banner("ego", a.goal_topic, 1.0, a.arrive_m, a.settle_mps, a.hold_s,
@@ -432,6 +579,131 @@ def _selftest() -> int:
     except Exception as e:                                                       # noqa: BLE001
         bad.append("building the start-up banners raised %s: %s -- this is the exact failure that killed the "
                    "shell at start-up on 2026-10-16" % (type(e).__name__, e))
+    # ---- THE PER-LEG WATCHDOG (2026-10-16): a leg that never advances must not be silent ----
+    # The assertions are the behaviour's own definition: the first timeout is ANNOUNCED, the tour does NOT
+    # advance, and at the abort threshold the sequencer refuses goals AND sets the flag the node uses to stop
+    # publishing.  The last one is the whole point -- Flight E's 374.3 s freeze looked alive on the wire.
+    wlog = []
+    w = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], arrive_m=0.30, hold_s=0.3, settle_mps=0.3,
+                      log=lambda s: wlog.append(s), leg_timeout_s=2.0, leg_abort_s=5.0)
+    wm = M()                                                  # the plan box commands motion: the flight has begun
+    wm.velocity.x = 1.5
+    w.rewrite(wm, now=t0)
+    for k in range(80):                                       # 8 s parked 1 m from waypoint 1 (never arrives)
+        w.on_odom([1.0, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0 + 0.1 * k)
+    announced = [s for s in wlog if "HAS NOT ADVANCED" in s]
+    print("   watchdog: %d announcement(s) over 8 s at timeout 2.0 / abort 5.0; abort=%s; %d goal(s) after"
+          % (len(announced), w.abort, sum(1 for k in range(20) if w.goal_to_send(now=t0 + 9.0 + 0.1 * k) is not None)))
+    if not announced:
+        bad.append("the leg watchdog never announced a stall")
+    if not w.abort:
+        bad.append("the leg watchdog did not abort at the abort threshold")
+    if w.i_goal != 0:
+        bad.append("the watchdog advanced the tour to waypoint %d -- a leg that was not flown must never be "
+                   "scored as reached" % (w.i_goal + 1))
+    if any(w.goal_to_send(now=t0 + 9.0 + 0.1 * k) is not None for k in range(20)):
+        bad.append("a goal was still offered after the leg timeout -- the silence IS the signal")
+    w2 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0], [9.0, 0.0, 2.0]], arrive_m=0.30, hold_s=0.3,
+                       settle_mps=0.3, log=lambda s: None, leg_timeout_s=2.0, leg_abort_s=5.0)
+    w2.rewrite(wm, now=t0)
+    # THE FLIGHT'S OWN ORDER, leg by leg, each one inside the 2 s timeout: the vehicle must arrive, dwell,
+    # advance -- and a leg that DOES advance must get a FRESH clock, or the watchdog would kill a healthy tour.
+    for k in range(5):
+        w2.on_odom([0.0, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0 + 0.1 * k)         # at waypoint 1
+    for k in range(10, 15):
+        w2.on_odom([5.0, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0 + 0.1 * k)         # at waypoint 2
+    for k in range(20, 25):
+        w2.on_odom([9.0, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0 + 0.1 * k)         # at waypoint 3
+    print("   watchdog: after a real arrival the tour is at waypoint %d of 3, abort=%s (a fresh leg gets a fresh"
+          " clock)" % (w2.i_goal + 1, w2.abort))
+    if w2.abort or w2.i_goal != 2:
+        bad.append("the watchdog killed a tour that was arriving normally (waypoint %d of 3, abort %s)"
+                   % (w2.i_goal + 1, w2.abort))
+    w3 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], arrive_m=0.30, hold_s=0.3, settle_mps=0.3,
+                       log=lambda s: None, leg_timeout_s=1.0, leg_abort_s=3.0)
+    for k in range(50):                                       # 5 s of PRE-FLIGHT hold: no message ever moves
+        w3.on_odom([0.0, 0.0, 0.1], [0.0, 0.0, 0.0], now=t0 + 0.1 * k)
+    print("   watchdog: 5 s of pre-flight hold with the plan box silent-but-talking -> abort=%s (the clock must "
+          "not run before the flight does)" % w3.abort)
+    if w3.abort:
+        bad.append("the watchdog counted the pre-flight hold -- MEASURED Flight F: that aborted a healthy flight "
+                   "at t=27.5 s, 19 s of which was the take-off the FCU is not even allowed to see")
+
+    # ---- THE ARRIVAL GATE: HORIZONTAL, WITH A VERTICAL TOLERANCE, AND OPTIONALLY NO SPEED TEST ----
+    # Flight F's own numbers: "corner 1: closest horizontal approach 84.4 mm PASS, vertical +0.834 m", and the
+    # tour never advanced because a SPHERICAL 0.35 m gate was 0.838 m away.  The assertions are that geometry.
+    g1 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], arrive_m=0.35, hold_s=0.3, settle_mps=0.0,
+                       log=lambda s: None, arrive_z_m=1.00)
+    g1.on_odom([0.084, 0.0, 2.834], [1.60, 0.0, 0.0], now=t0)   # 84 mm away horizontally, 834 mm HIGH, moving
+    g1.on_odom([0.084, 0.0, 2.834], [1.60, 0.0, 0.0], now=t0 + 0.4)
+    print("   arrival gate: 84 mm horizontal / 834 mm vertical at 1.60 m/s -> waypoint %d of 2 (expect 2)"
+          % (g1.i_goal + 1))
+    if g1.i_goal != 1:
+        bad.append("the horizontal+vertical gate did not accept Flight F's own arrival geometry (waypoint %d)"
+                   % (g1.i_goal + 1))
+    g2 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], arrive_m=0.35, hold_s=0.3, settle_mps=0.0,
+                       log=lambda s: None, arrive_z_m=1.00)
+    g2.on_odom([0.10, 0.0, 3.20], [0.0, 0.0, 0.0], now=t0)      # same corner, but 1.2 m high
+    for k in range(10):
+        g2.on_odom([0.10, 0.0, 3.20], [0.0, 0.0, 0.0], now=t0 + 0.1 * k)
+    if g2.i_goal != 0:
+        bad.append("the vertical tolerance let a 1.2 m altitude error count as an arrival")
+    # and the z clamp: a reference 1.4 m above a 2.0 m tour must be pulled to the cap
+    g3 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None, ref_z_clamp_m=0.50)
+    m6 = M()
+    m6.position.x, m6.position.z = 4.0, 3.25
+    g3.rewrite(m6, now=t0)
+    print("   altitude clamp: a reference at z = 3.250 m for a 2.000 m tour was forwarded at %.3f m (%d clamp(s))"
+          % (float(m6.position.z), g3.n_z_clamped))
+    if abs(float(m6.position.z) - 2.50) > 1e-9 or g3.n_z_clamped != 1:
+        bad.append("the altitude clamp is not 2.000 + 0.500 (got %.3f m, %d clamp(s))"
+                   % (float(m6.position.z), g3.n_z_clamped))
+    m7 = M()
+    m7.position.x, m7.position.z = 1.0, 1.10                      # BELOW the tour: must be left alone
+    g3.rewrite(m7, now=t0 + 0.1)
+    if abs(float(m7.position.z) - 1.10) > 1e-9:
+        bad.append("the altitude clamp touched a reference BELOW the tour (%.3f m) -- it must be one-sided, or "
+                   "the climb off the pad is clipped" % float(m7.position.z))
+    # and the start-altitude gate
+    g4 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None, start_alt_m=0.50)
+    g4.on_odom([0.0, 0.0, 0.10], [0.0, 0.0, 0.0], now=t0)
+    pre = sum(1 for k in range(10) if g4.goal_to_send(now=t0 + 0.1 * k) is not None)
+    g4.on_odom([0.0, 0.0, 0.90], [0.0, 0.0, 0.0], now=t0 + 2.0)
+    post = sum(1 for k in range(10) if g4.goal_to_send(now=t0 + 2.0 + 0.1 * k) is not None)
+    print("   start-altitude gate 0.50 m: %d goal(s) on the pad, %d once at 0.90 m" % (pre, post))
+    if pre != 0 or post == 0:
+        bad.append("the start-altitude gate is not gating (on the pad %d goal(s), airborne %d)" % (pre, post))
+
+    # ---- THE SLEW LIMITER: a step must become a ramp ----
+    sl = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None, ref_slew_mps=2.0)
+    m8 = M()
+    m8.velocity.x = 1.0
+    m8.position.x = 0.0
+    m8.position.z = 2.0
+    sl.rewrite(m8, now=t0)                                   # the first message: taken as it is
+    m8.position.x = 3.0                                      # a 3 m re-plan step, 0.1 s later
+    sl.rewrite(m8, now=t0 + 0.1)
+    print("   slew limiter 2.0 m/s: a 3.000 m step in 0.100 s was forwarded as %.3f m (%d slew(s))"
+          % (float(m8.position.x), sl.n_slewed))
+    if abs(float(m8.position.x) - 0.2) > 1e-6 or sl.n_slewed != 1:
+        bad.append("the slew limiter did not turn a 3 m step into 0.2 m in one 0.1 s message (got %.3f m, %d)"
+                   % (float(m8.position.x), sl.n_slewed))
+    for k in range(1, 300):                                  # and it must CONVERGE on the requested point
+        m8.position.x = 3.0                                  # a FRESH message every time (the node's real case)
+        sl.rewrite(m8, now=t0 + 0.1 + 0.01 * k)
+    print("   slew limiter: after 3 s of messages the forwarded point is at x = %.3f m (requested 3.000; at "
+          "2.0 m/s a 3 m step takes 1.5 s, which is the point -- it is a RAMP, not a refusal)"
+          % float(m8.position.x))
+    if abs(float(m8.position.x) - 3.0) > 1e-6:
+        bad.append("the slew limiter never converged on the requested point (%.3f m)" % float(m8.position.x))
+    sl2 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None)   # limiter OFF
+    m9 = M()
+    m9.position.x = 3.0
+    sl2.rewrite(m9, now=t0)
+    if abs(float(m9.position.x) - 3.0) > 1e-12 or sl2.n_slewed != 0:
+        bad.append("with the slew limiter OFF the reference was changed -- the flown behaviour must stay "
+                   "byte-identical when the knob is 0")
+
     if bad:
         print("\nCONTRACT SHIM SELFTEST FAILED (%d problem(s)):" % len(bad))
         for b in bad:
@@ -456,7 +728,35 @@ def _parser() -> "argparse.ArgumentParser":
     ap.add_argument("--z", type=float, default=2.0)
     ap.add_argument("--hold-s", type=float, default=5.0)
     ap.add_argument("--arrive-m", type=float, default=0.30)
-    ap.add_argument("--settle-mps", type=float, default=0.08)
+    ap.add_argument("--settle-mps", type=float, default=0.08,
+                    help="the speed under which the vehicle counts as ARRIVED; 0 disables the speed test, which "
+                         "is what 'fly THROUGH the waypoint' needs -- a 3 m/s aircraft spends ~0.2 s inside a "
+                         "0.35 m disc, so a gate that also demands it be slow never fires")
+    ap.add_argument("--arrive-z-m", type=float, default=1.00,
+                    help="SECOND arrival tolerance, VERTICAL (metres).  Flight F MEASURED why it is needed: the "
+                         "aircraft stood 84.4 mm from corner 1 horizontally and 0.834 m high, so a spherical "
+                         "gate never opened however close it got -- while ego's OWN 3-D arrival (1.0 m) had "
+                         "already fired.  The tour is a horizontal one; the altitude is reported, not gated.")
+    ap.add_argument("--start-alt-m", type=float, default=0.0,
+                    help="no goal is published until the vehicle's z reaches this (0 = off).  The Route B twin of "
+                         "PATCH 0008's `fsm/waypoint_start_alt`, which only arms ego's own `flight_type 2` tour")
+    ap.add_argument("--ref-z-clamp-m", type=float, default=0.0,
+                    help="never forward an altitude more than this far ABOVE the tour's own z (0 = off, one-sided "
+                         "on purpose so the climb off the pad is untouched).  Flight F's reference ran to 3.25 m "
+                         "for a 1.884 m tour and the aircraft followed it")
+    ap.add_argument("--ref-slew-mps", type=float, default=0.0,
+                    help="the forwarded reference's own SPEED LIMIT (0 = off).  The sampler restarts its clock at "
+                         "every re-plan, so the point jumps; this turns each jump into a short, continuous ramp "
+                         "instead of a step the flight controller has to chase.  0.06 m at 100 Hz = 6 m/s, which "
+                         "is 20x a legitimate 3 m/s reference's 0.03 m step")
+    ap.add_argument("--leg-timeout-s", type=float, default=0.0,
+                    help="a leg that has not advanced in this many seconds is ANNOUNCED once a second (0 = off). "
+                         "A frozen reference produces exactly the same bytes as a hover, so only the clock can "
+                         "tell them apart -- Flight E lost 374.3 s to the difference.")
+    ap.add_argument("--leg-abort-s", type=float, default=0.0,
+                    help="at this many seconds the shell STOPS PUBLISHING, which trips the supervisor's 3.0 s "
+                         "plan-silence rule and ends the sortie loudly (0 = off).  The leg is not scored as "
+                         "reached and the tour does not advance.")
     ap.add_argument("--in-topic", default=DEFAULT_IN_TOPIC)
     ap.add_argument("--cmd-topic", default=DEFAULT_CMD_TOPIC)
     ap.add_argument("--goal-topic", default=DEFAULT_GOAL_TOPIC)
@@ -477,7 +777,7 @@ def _parser() -> "argparse.ArgumentParser":
     return ap
 
 
-def _print_p3_2_banner(arrive_m: float, settle_mps: float, hold_s: float) -> None:
+def _print_p3_2_banner(arrive_m: float, settle_mps: float, hold_s: float, arrive_z_m: float = 1.0) -> None:
     """P3-2 OF THE MISSION-B REVIEW: "任务结束" is decided in THREE places whose thresholds differ, and two of
     them were only discoverable by reading three files.  They are printed HERE, once, at start-up, with the
     source of each -- so a run's own log says which rule ended it.  (The fourth number, the supervisor's
@@ -486,10 +786,11 @@ def _print_p3_2_banner(arrive_m: float, settle_mps: float, hold_s: float) -> Non
     `--selftest` -- see `_parser`."""
     print("shim: ARRIVAL RULES IN THIS STACK -- (1) EGO's own: `plan_done && wp_d_veh < "
           "fsm/waypoint_advance_m` (`ego_replan_fsm.cpp:879`, launch default 1.000 m, PATCH 0008's advance); "
-          "(2) THIS SHELL's: d <= %.3f m AND |v| < %.3f m/s, held %.1f s (`--arrive-m/--settle-mps/--hold-s`); "
+          "(2) THIS SHELL's: d_xy <= %.3f m AND |dz| <= %.3f m AND |v| < %.3f m/s (0 = no speed test, i.e. fly "
+          "THROUGH), held %.1f s (`--arrive-m/--arrive-z-m/--settle-mps/--hold-s`); "
           "(3) the SUPERVISOR's: the contract's `trajectory_flag = COMPLETED` (`supervisor.py:295`) -- silence "
           "is NOT completion.  The supervisor's 3.0 s plan-silence window is a FAILURE rule, not an arrival "
-          "rule." % (arrive_m, settle_mps, hold_s))
+          "rule." % (arrive_m, arrive_z_m, settle_mps, hold_s))
 
 
 def _print_tour_source_banner(tour_source: str, goal_topic: str, goal_resend_s: float, arrive_m: float,
@@ -536,13 +837,16 @@ def main() -> int:
     ego_driven = (args.tour_source == "ego")
     seq = TourSequencer(targets_l, arrive_m=args.arrive_m, hold_s=args.hold_s,
                         settle_mps=args.settle_mps, log=lambda s: print(s, flush=True),
-                        ego_driven=ego_driven, ref_clamp_m=args.ref_clamp_m)
+                        ego_driven=ego_driven, ref_clamp_m=args.ref_clamp_m,
+                        leg_timeout_s=args.leg_timeout_s, leg_abort_s=args.leg_abort_s,
+                        arrive_z_m=args.arrive_z_m, start_alt_m=args.start_alt_m,
+                        ref_z_clamp_m=args.ref_z_clamp_m, ref_slew_mps=args.ref_slew_mps)
     print("shim: %d waypoint(s) in L from %s" % (len(targets_l), args.world))
     for i, t in enumerate(targets_l):
         print("shim: waypoint %d -> %s (L)" % (i + 1, np.round(t, 3)))
     print("shim: TRAJ_SERVER's %s is forwarded to %s with trajectory_id per waypoint and a real COMPLETED"
           % (args.in_topic, args.cmd_topic))
-    _print_p3_2_banner(args.arrive_m, args.settle_mps, args.hold_s)
+    _print_p3_2_banner(args.arrive_m, args.settle_mps, args.hold_s, args.arrive_z_m)
 
     # the CONTRACT's QoS is not negotiable: RELIABLE + KEEP_LAST(5) + TRANSIENT_LOCAL, exactly as
     # `planner/ego_source.py:421-424` publishes it (a latched subscriber must still find the newest sample)
@@ -569,6 +873,11 @@ def main() -> int:
                     v, now=node.get_clock().now().nanoseconds * 1e-9)
 
     def on_cmd(m: PositionCommand):
+        if seq.abort:
+            # THE WATCHDOG'S OWN ACTUATION.  After a leg times out the contract asks the supervisor to end the
+            # sortie by going SILENT -- a frozen reference is otherwise indistinguishable from a hover, which is
+            # exactly how Flight E spent 374.3 s with the stream looking healthy.
+            return
         seq.rewrite(m, now=node.get_clock().now().nanoseconds * 1e-9)
         p = np.array([m.position.x, m.position.y, m.position.z])
         jump = 0.0 if last[0] is None else float(np.linalg.norm(p - last[0]))

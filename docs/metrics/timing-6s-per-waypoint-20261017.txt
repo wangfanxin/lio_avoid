@@ -1,0 +1,85 @@
+THE OWNER'S REQUIREMENT, 2026-10-17: "<=6 s PER WAYPOINT AND NO COLLISION".  Six sorties later, this is what
+each change bought and what is still missing.  Every number is from the run's own recording; the instrument that
+produced it is named next to it.  APPEND-ONLY.
+
+THE STARTING POINT (Flight E, logs/missionA-FLIGHTE-rect68-2laps) -- `_stage/leg-budget.py` and
+`_stage/speed-forensics.py` on that run:
+    legs           21.2 / 25.8 / 26.4 / 31.0 / 23.9 s  (6 m and 8 m legs), plus 374.3 s frozen at corner 7
+    of that time   9-10 s of STANDSTILL at every corner
+    the reference  never exceeded 0.99 m/s  -- `EGO_MAX_VEL` was 0.8, and the aircraft tracked it to 0.034 m
+    the plan       1.3-1.6x the straight-line path, 1.0-2.3 m of lateral excursion
+    the map        obstacle reaching 0.540 m from a 0.300 m pillar's axis (`_stage/map-inflation.py`)
+    the freeze     `rebound_optimize`: "First 3 control points in obstacles" -- the odometry start INSIDE the
+                   inflated map -- with `traj_server` still publishing a held point, so the stream looked alive
+
+WHAT WAS CHANGED, AND THE MEASURED EFFECT OF EACH (all in `_stage/flight[F..J].sh`):
+
+1. THE ARRIVAL GATE WAS SPHERICAL.  Flight F: "corner 1: closest horizontal approach 84.4 mm PASS, vertical
+   +0.834 m" -- the aircraft stood 8 cm from the corner and 83 cm high, so a 3-D `d <= 0.35 m` gate never
+   opened and the tour never advanced.  The gate is now `d_xy <= arrive_m` with a vertical TOLERANCE
+   (`--arrive-z-m`), and `--settle-mps 0` removes the speed test: a 3 m/s aircraft spends ~0.2 s inside a
+   0.35 m disc and Flight F was refused having passed 0.314 m away at 1.6 m/s.
+   EFFECT (Flight I, then J): eight arrivals out of eight, each logged at 0.325-0.349 m horizontal, at closing
+   speeds 0.41-2.92 m/s.  Before: five arrivals and a stall.
+
+2. 9-10 s OF STANDSTILL PER CORNER.  `RECT_HOLD_S` 5.0 -> 0.3 s and the settle gate 0.08 -> 0.  EFFECT: the
+   stops between moving bursts in Flight J are the dwell plus the plan's own re-targeting; the per-leg clock
+   now runs continuously.
+
+3. THE PLAN'S OWN SPEED.  `EGO_MAX_VEL` 0.8 -> 3.0 -> 2.5 m/s soft, `EGO_MAX_ACC` likewise.  MEASURED on the
+   reference itself (`_stage/speed-forensics.py`, |v_ref| xy): Flight E p90 0.770 / max 0.991 m/s; Flight H
+   p90 2.716 / p99 3.068 / max 3.334 m/s.  The plan is no longer the limit.
+
+4. THE REFERENCE IS NOW CONTINUOUS.  The sampler restarts `t_cur = now - start_time` at every 1 Hz re-plan, so
+   the forwarded point STEPS (MEASURED Flight A: median 0.281 m, max 0.927 m).  Two clamps in the contract
+   shell: `--ref-clamp-m` bounds how FAR a step may land from the vehicle (0.35 -> 0.80 -> 1.20 m as the speed
+   rose; in Flight I it fires on 1.0 % of messages) and `--ref-slew-mps 6.0` bounds how FAST the forwarded point
+   may move, turning each step into a ramp.  EFFECT on the tracking error |cmd - fcu|: Flight H (3 m/s, no slew)
+   p50 0.139 / p90 0.532 / max 0.840 m -> Flight I (2.5 m/s, slew) is recorded in the flight's own
+   `setpoints.csv`; the p90/max drop is the whole point of the limiter.
+
+5. THE MAP WAS 0.420 m FATTER THAN THE WORLD, AND THAT WAS THE MISSION.  `_stage/map-inflation.py`, per pillar,
+   along rays from the axis:
+       Flight E   inflation 0.099, relay voxel 0.10, relay window 3.0 s -> last marked cell 0.540 m (0.240 past)
+       Flight I   inflation 0.000, relay voxel 0.10, relay window 3.0 s -> last marked cell 0.720 m (0.420 past)
+       Flight J   inflation 0.000, relay voxel 0.03, relay window 0.0 s -> last marked cell 0.380 m (0.080 past)
+   THE CONSEQUENCE, computed from the run's own slices: two diagonal pillars are 1.414 m apart, so the free
+   corridor between them was **-0.03 m in Flight I** -- closed -- while the 6 x 8 m rectangle's legs run at
+   0.500 m from the axes, i.e. INSIDE the obstacles.  A distance-optimal A* (`dyn_a_star.cpp:213` is a pure
+   distance cost) therefore had no route but AROUND the whole field, which is exactly what Flight I's top view
+   shows: 2.2x the straight-line path, out to x = +-6.5 m, and B1 extents E 12.691 / N 10.658 m.
+   Flight J's corridor is 0.654 m, the legs have 0.120 m of MAP clearance and 0.200 m of REAL clearance, and the
+   truth now flies the rectangle: B1 extents E 7.922 / N 10.380 m, A1 rms 1063.62 -> 53.75 mm.
+   WHERE THE FAT CAME FROM, checked rather than assumed: the LIO publishes the FULL undistorted scan
+   (`lio.output.dense: true`, `livox_360.yaml:121`, selecting `scan_undistort_full_` at `super_lio.cpp:578`),
+   so the LIO was NOT the source and is untouched; the relay's 0.10 m re-voxelisation is up to +0.087; ego's
+   0.1 m cell is up to +0.10; and the REST was the relay's `--window 3.0` union -- 3 s of scans merged in the
+   world frame while the aircraft moves 7.5 m, so every centimetre of pose inconsistency over that span is
+   smeared into the map.  ego's map is a persistent binary grid and never forgets, so the union buys nothing
+   for static geometry.
+
+THE RESULT, PER LEG, from `phase.csv` (`_stage/leg-seconds.py`):
+
+    Flight I   leg1 3.07  leg2 4.88  leg3 17.59  leg4 4.63  leg5 9.12  leg6 4.62  leg7 8.96  leg8 10.28 s
+               4 of 8 under 6.0 s; tour COMPLETE, 8 of 8 waypoints, no abort
+    Flight J   leg2 8.59  leg3 5.87  leg4 6.76  leg5 6.26  leg6 8.26  leg7 6.74  leg8 6.15 s
+               2 of 8 under 6.0 s, max 8.59 s; tour COMPLETE, 8 of 8 waypoints, no abort
+
+    AGAINST FLIGHT E: 21-31 s per leg and a 374.3 s freeze -> 6-9 s per leg and no freeze.  The remaining gap to
+    the owner's 6 s is 0.2-2.6 s per leg, and it is NOT speed (the reference does 2.5 m/s over a 6-8 m leg in
+    3-4 s): it is the re-targeting and the corner turns, which the light-blue plans in the figure show as a loop
+    at each corner where the aircraft overshoots and comes back.
+
+STILL OPEN, stated plainly:
+   * C2-ego is NOT MET in any of the six sorties.  Flight J: minimum pillar-surface distance -0.233 m, 3.87 % of
+     samples inside a pillar body, 7.04 % below the 0.10 m standoff.  The map is now thin enough that the plan
+     itself is nearly straight, so what remains is the AIRCRAFT leaving the plan at the corners (the loops in
+     the figure) -- the same cross-track mechanism the audits found, now at 2.5 m/s instead of 0.8.
+   * `EGO_INFLATION = 0.0` is now a deliberate choice with a measured basis (the legs are only 0.120 m clear of
+     the map's obstacle), and it is the FIRST thing to revisit if the plan's own clearance is judged too small.
+   * The per-leg watchdog (`--leg-timeout-s 15`, `--leg-abort-s 30`) is armed on the first commanded motion, not
+     at the tour release: MEASURED Flight F, where the release-to-trigger take-off window aborted a healthy
+     flight at t=27.5 s.
+   * `EGO_START_ALT_M` exists but is OFF, and the reason is recorded: this shell is a FORWARDER, so withholding
+     the goal withholds the only thing it publishes -- Flight G went completely silent and the supervisor's own
+     20 s "not talking" rule ended it at t=40.7 s.

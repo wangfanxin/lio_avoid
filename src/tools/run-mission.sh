@@ -180,6 +180,17 @@ PLANNER_TOPIC="${PLANNER_TOPIC:-/plan/cmd}"
 #: so they shape the plan rather than bound the flight -- the FCU is what bounds the flight.
 EGO_MAX_VEL="${EGO_MAX_VEL:-2.0}"
 EGO_MAX_ACC="${EGO_MAX_ACC:-3.0}"
+#: HOW FAT THE PLANNER'S OBSTACLE IS ON TOP OF THE MARKED CELLS (`grid_map/obstacles_inflation`).  0.099 above is
+#: one 0.1 m cell and has been the flown value since DIAG14.  MEASURED consequence, Flight E's own DIAG/2 slices
+#: via `_stage/map-inflation.py`: the map's obstacle reaches 0.540 m from a pillar's axis, i.e. 0.240 m past the
+#: true 0.300 m surface, while the 6 x 8 m rectangle's legs run 0.500 m from those axes.  Every leg so far has
+#: therefore been INSIDE the planner's obstacle -- the 1-2 m detours, the 0.33 m map corridor and the
+#: "First 3 control points in obstacles" deadlock all follow from it.  0.0 removes the 27-cell cube (`inf_step`
+#: is an INTEGER cell count, so 0.099 and 0.0 are the only two values this parameter can express).
+EGO_INFLATION="${EGO_INFLATION:-0.099}"
+#: `fsm/thresh_replan_time`: how long a committed spline is executed before the FSM re-plans from its own tail.
+#: Every re-plan also restarts `traj_server`'s clock, so this is "how much of each spline the aircraft flies".
+EGO_REPLAN_S="${EGO_REPLAN_S:-1.0}"
 #: THE ARRIVAL GATE AN EGO PLANNER CAN ACTUALLY MEET, and the number is not a preference.
 #: `EGOPlannerManager::reboundReplan` REFUSES to plan when the replan's start is within 0.2 m of its local
 #: target -- `planner_manager.cpp:55`, whose own patch comment calls it "a DELIBERATE refusal to plan when the
@@ -191,6 +202,39 @@ EGO_MAX_ACC="${EGO_MAX_ACC:-3.0}"
 #: consequence -- ego cannot meet the 0.060 m corner-arrival rows without a patch to that line -- is recorded
 #: rather than hidden.
 EGO_ARRIVE_M="${EGO_ARRIVE_M:-0.30}"
+#: HOW SLOW THE VEHICLE MUST BE FOR THE SHELL TO CALL IT "ARRIVED" (m/s), and how long the tour then holds.
+#: Both are the contract shell's own numbers (`--settle-mps`, `--hold-s`).  Exposed on 2026-10-16 because the
+#: owner's requirement is now a TIME PER WAYPOINT (<=6 s), and MEASURED in Flight E the two of them together
+#: cost **9-10 s of standstill at every corner**: 5.0 s of dwell (`RECT_HOLD_S`) plus 4-5 s of waiting for a
+#: 0.08 m/s settle -- on a 6 m leg that is more than the flight itself.  `--settle-mps` 0.30 lets the tour
+#: advance while the aircraft is still rolling, which is what "fly through the waypoint" means.
+EGO_SETTLE_MPS="${EGO_SETTLE_MPS:-0.08}"
+#: THE VERTICAL TOLERANCE OF THE SHELL'S ARRIVAL GATE (metres) and an UPPER CLAMP ON THE FORWARDED ALTITUDE.
+#: Both exist because of ONE measurement (Flight F, 2026-10-17): the aircraft arrived at corner 1 **84.4 mm away
+#: horizontally and 0.834 m high**, the 3-D gate therefore never opened in 21 s, and the reference itself had
+#: meanwhile run to z = 3.25 m for a 1.884 m tour and taken the aircraft with it (truth 3.32 m, 0.44 m under the
+#: supervisor's 3.00 m climb guard).  The tour is a horizontal one, so the arrival test is horizontal with a
+#: vertical tolerance, and `EGO_REF_Z_CLAMP_M` stops a reference that climbs away from the mission altitude.
+EGO_ARRIVE_Z_M="${EGO_ARRIVE_Z_M:-1.00}"
+EGO_REF_Z_CLAMP_M="${EGO_REF_Z_CLAMP_M:-0.0}"
+#: THE FORWARDED REFERENCE'S OWN SPEED LIMIT (m/s; 0 = off).  `EGO_REF_CLAMP_M` bounds how FAR a re-plan's step
+#: may land from the vehicle; this bounds how FAST the point may move, which is what the controller feels.
+#: MEASURED Flight H at 3 m/s: tracking error p50 0.139 m but p90 0.532 and max 0.840 m -- the transients, and
+#: they are exactly where a 0.10-0.20 m real margin disappears.  A legitimate 3 m/s reference advances 0.03 m
+#: per 100 Hz message, so a 6 m/s cap touches nothing but the steps.
+EGO_REF_SLEW_MPS="${EGO_REF_SLEW_MPS:-0.0}"
+#: NO GOAL IS PUBLISHED UNTIL THE VEHICLE IS THIS HIGH (metres; 0 = off).  Route B's twin of PATCH 0008's
+#: `fsm/waypoint_start_alt`; without it ego plans a climb for the whole take-off that nothing is following
+#: (Flight F: goals from t=1.9 s, 87 "First 3 control points in obstacles" before the trigger at t=20.4 s).
+EGO_START_ALT_M="${EGO_START_ALT_M:-0.0}"
+#: THE PER-LEG WATCHDOG (seconds; 0 = off = the behaviour of every sortie up to and including Flight E).
+#: `--leg-timeout-s` is when the shell starts SAYING so, once a second; `--leg-abort-s` is when it STOPS
+#: PUBLISHING, which trips the supervisor's own 3.0 s plan-silence rule and ends the sortie loudly.  It exists
+#: because Flight E spent **374.3 s frozen at waypoint 7** and nothing in any log said why: the FSM was stuck in
+#: GEN_NEW_TRAJ ("First 3 control points in obstacles", the odometry start inside the inflated map) while
+#: `traj_server` kept publishing a held point, so the stream looked alive and the silence rule never fired.
+EGO_LEG_TIMEOUT_S="${EGO_LEG_TIMEOUT_S:-0.0}"
+EGO_LEG_ABORT_S="${EGO_LEG_ABORT_S:-0.0}"
 #: WHETHER THE EGO STACK IS STARTED, decided HERE so that the banner below can tell the truth about it.
 #: `PLANNER=ego` implies it; `EGO_STACK=0` overrides it for an ego that is already running elsewhere.
 EGO_STACK="${EGO_STACK:-$([ "$PLANNER" = "ego" ] && echo 1 || echo 0)}"
@@ -219,6 +263,14 @@ EGO_CLOUD_TOPIC="${EGO_CLOUD_TOPIC:-/ego/cloud}"
 #: the memory the planner assumes it has is restored here, on our side.  ~3 s is what the geometry asks for: the
 #: measured closing speed on the diagonal is ~0.4 m/s, so 3 s spans the whole approach the map forgets.
 EGO_CLOUD_WINDOW="${EGO_CLOUD_WINDOW:-0.0}"
+#: THE RELAY'S DECIMATION CELL (m).  0.10 has been the flown value since the relay existed, and it is HALF of
+#: the measured reason the 6 x 8 m rectangle cannot be flown straight: `_stage/map-inflation.py` on Flight I's
+#: own DIAG/2 slices (inflation 0.0, so NOTHING is added by ego) measures the map's obstacle at **0.720 m from a
+#: 0.300 m pillar's axis -- 0.420 m past the true surface**, which CLOSES the 1.414 m corridor between two
+#: diagonal pillars (it computes to -0.03 m) and leaves the planner no route but AROUND the whole field -- which
+#: is exactly what Flight I's top view shows.  Of that 0.420: the map's own 0.1 m cell is ~0.05-0.10, this
+#: decimation is up to 0.087, and the REST is the union below.  0.03 keeps the points where the lidar put them.
+EGO_CLOUD_VOXEL="${EGO_CLOUD_VOXEL:-0.10}"
 #: RADIUS OF THE SELF-BLIND BUBBLE the relay clears around the vehicle (0 = off, the behaviour of every round
 #: up to 13).  ego's hard collision check treats its OWN POSITION inside the inflated map as fatal
 #: (`bspline_optimizer.cpp:1341-1345`), and MEASURED with two cells of inflation that produced 112 729
@@ -259,6 +311,9 @@ case "$PLANNER" in
             # the tour and the contract's `trajectory_id` / `trajectory_flag` (see the knob block above).
             PLANNER_FILE="$REPO/planner/ego_contract_shim.py"
             PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S --arrive-m $EGO_ARRIVE_M \
+--settle-mps $EGO_SETTLE_MPS --leg-timeout-s $EGO_LEG_TIMEOUT_S --leg-abort-s $EGO_LEG_ABORT_S \
+--arrive-z-m $EGO_ARRIVE_Z_M --start-alt-m $EGO_START_ALT_M --ref-z-clamp-m $EGO_REF_Z_CLAMP_M \
+--ref-slew-mps $EGO_REF_SLEW_MPS \
 --odom-topic /ego/odom_fcu --ref-clamp-m $EGO_REF_CLAMP_M --trace-csv $OUT/shim_trace.csv ${CMD_ARGS:-}"
             PLANNER_WHAT="ego's OWN traj_server samples the plan (p+v+a) + the contract shell (tour, ids, COMPLETED)"
             PLANNER_TOPIC="/plan/cmd"
@@ -344,7 +399,7 @@ if [ "${PLANNER_DRY_RUN:-0}" = "1" ]; then
     echo "   argv           : $PLANNER_ARGS"
     echo "   wire fields    : $BRIDGE_FIELDS (position, velocity, acceleration the FCU receives)"
     echo "   what would run : python3 $PLANNER_FILE $PLANNER_ARGS"
-    echo "   ego stack      : $EGO_STACK (contract $EGO_CONTRACT; cloud_relay /lio/cloud_world -> $EGO_CLOUD_TOPIC; ego max_vel $EGO_MAX_VEL max_acc $EGO_MAX_ACC; cloud window ${EGO_CLOUD_WINDOW}s, self-blind ${EGO_SELF_BLIND}m)"
+    echo "   ego stack      : $EGO_STACK (contract $EGO_CONTRACT; cloud_relay /lio/cloud_world -> $EGO_CLOUD_TOPIC; ego max_vel $EGO_MAX_VEL max_acc $EGO_MAX_ACC; inflation $EGO_INFLATION; replan $EGO_REPLAN_S s; cloud window ${EGO_CLOUD_WINDOW}s, self-blind ${EGO_SELF_BLIND}m)"
     if [ "$EGO_STACK" = "1" ]; then
         echo "                    would also run: ros2 launch ego_planner ego_on_lio.launch.py"
         echo "                                   python3 $REPO/planner/cloud_relay.py --out $EGO_CLOUD_TOPIC --window $EGO_CLOUD_WINDOW --self-blind $EGO_SELF_BLIND"
@@ -413,7 +468,7 @@ echo "               $PLANNER_FILE  ->  $PLANNER_TOPIC (quadrotor_msgs/PositionC
 echo "               (the BRIDGE and the SUPERVISOR do not know which planner this is: they read the topic)"
 if [ "${EGO_STACK:-0}" = "1" ]; then
     echo "   ego stack : ON -- ego_planner_node (src/planner/ego_on_lio.launch.py) + cloud_relay"
-    echo "               /lio/cloud_world -> ${EGO_CLOUD_TOPIC:-/ego/cloud} at 0.10 m; ego max_vel ${EGO_MAX_VEL:-2.0} max_acc ${EGO_MAX_ACC:-3.0} (SOFT)"
+    echo "               /lio/cloud_world -> ${EGO_CLOUD_TOPIC:-/ego/cloud} at 0.10 m; ego max_vel ${EGO_MAX_VEL:-2.0} max_acc ${EGO_MAX_ACC:-3.0} (SOFT); inflation ${EGO_INFLATION:-0.099} m"
 fi
 echo "   world     : $WORLD  ($CORNERS)"
 echo "   airframe  : sim model '$SITL_MODEL' against FRAME_TYPE 1 (X) -- the two must agree (see SITL_MODEL above)"
@@ -423,6 +478,12 @@ echo "   sensor    : the SAME world file ($REPO/sim/lidar_imu.py --world \"$WORL
 echo "   geofence  : $GEOFENCE_M m, take-off altitude $TAKEOFF_ALT m"
 echo "   dwell     : ${RECT_HOLD_S} s at every corner -- from ${RECT_HOLD_FROM}; the world file's"
 echo "               mission.hold_s is ${WORLD_HOLD_S} and is deliberately NOT what a default sortie flies"
+if [ "${EGO_CONTRACT:-shim}" = "shim" ]; then
+    echo "   arrival   : the shell's gate is d_xy <= ${EGO_ARRIVE_M} m, |dz| <= ${EGO_ARRIVE_Z_M} m AND |v| < ${EGO_SETTLE_MPS} m/s, then ${RECT_HOLD_S} s"
+    echo "   altitude  : the forwarded z is capped at tour_z + ${EGO_REF_Z_CLAMP_M} m (0 = off); goals withheld below ${EGO_START_ALT_M} m"
+    echo "   watchdog  : a leg that has not advanced in ${EGO_LEG_TIMEOUT_S} s is announced; at ${EGO_LEG_ABORT_S} s the stream"
+    echo "               STOPS so the supervisor's plan-silence rule ends the sortie (0 = off)"
+fi
 echo "   take-off  : ${TAKEOFF_PROFILE}"
 # THE CLIMB-LEG LINES DESCRIBE THE PLANNER THAT IS ACTUALLY RUNNING, not the one the take-off profile was
 # written for.  MEASURED while preparing the first `PLANNER=ego` sortie: `VERTICAL_ARG` is built for the
@@ -629,6 +690,7 @@ if [ "$EGO_STACK" = "1" ]; then
     set -u
     export ROS_LOCALHOST_ONLY=1
     python3 "$REPO/planner/cloud_relay.py" --in /lio/cloud_world --out "$EGO_CLOUD_TOPIC" \
+        --voxel "$EGO_CLOUD_VOXEL" \
         --window "$EGO_CLOUD_WINDOW" --self-blind "$EGO_SELF_BLIND" \
         > "$OUT/ego_relay.log" 2>&1 &
     EGO_RELAY_PID=$!
@@ -649,6 +711,7 @@ if [ "$EGO_STACK" = "1" ]; then
     ros2 launch ego_planner ego_on_lio.launch.py \
         odom_vel_topic:="$EGO_ODOM_VEL_TOPIC" odom_topic:="$EGO_ODOM_TOPIC" cloud_topic:="$EGO_CLOUD_TOPIC" \
         max_vel:="$EGO_MAX_VEL" max_acc:="$EGO_MAX_ACC" \
+        obstacles_inflation:="$EGO_INFLATION" thresh_replan_time:="$EGO_REPLAN_S" \
         > "$OUT/ego_planner.log" 2>&1 &
     EGO_LAUNCH_PID=$!
     echo "   ego stack : contract $EGO_CONTRACT; cloud_relay pid $EGO_RELAY_PID -> $EGO_CLOUD_TOPIC;"

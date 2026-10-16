@@ -91,6 +91,26 @@ def generate_launch_description():
                               description='SOFT: a quadratic penalty, not a constraint'),
         DeclareLaunchArgument('max_acc', default_value='3.0', description='SOFT, likewise'),
         DeclareLaunchArgument('planning_horizon', default_value='7.5', description='both fsm/ and manager/'),
+        DeclareLaunchArgument('obstacles_inflation', default_value='0.099',
+                              description="HOW FAT THE PLANNER'S OBSTACLE IS ON TOP OF THE MARKED CELLS. "
+                                          "0.099 = ONE 0.1 m cell, and because `inflatePoint` grows a CUBE "
+                                          "(`inf_step` in all three axes, `grid_map.cpp:842`) it is +0.10 m on "
+                                          "the axes and +0.141 m on the in-plane diagonal.  Exposed as an "
+                                          "argument on 2026-10-16 because the MISSION GEOMETRY moved: the "
+                                          "6 x 8 m rectangle's legs run 0.50 m from the pillar axes, and "
+                                          "`_stage/map-inflation.py` MEASURES the map's obstacle reaching "
+                                          "0.540 m from the axis in Flight E's own DIAG/2 slices (0.240 m past "
+                                          "the 0.300 m true surface, from the cell + cube + the relay's 0.10 m "
+                                          "voxel).  A leg at 0.50 m is therefore INSIDE the planner's obstacle "
+                                          "in every sortie so far, which is why the plans detour 1-2 m and why "
+                                          "the odometry start can land in an obstacle at all.  0.0 is the only "
+                                          "other value the integer `inf_step = ceil(inflation/resolution)` can "
+                                          "express besides one cell, and it is the point of Flight F."),
+        DeclareLaunchArgument('thresh_replan_time', default_value='1.0',
+                              description="`fsm/thresh_replan_time`: how long a committed spline is EXECUTED "
+                                          "before the FSM re-plans from its own tail.  Exposed because a re-plan "
+                                          "restarts `traj_server`'s clock, so this is also 'how much of each "
+                                          "spline the aircraft ever flies'."),
         DeclareLaunchArgument('flight_type', default_value='1',
                               description="1 = MANUAL_TARGET (one goal at a time on /move_base_simple/goal, our "
                                           "shell owns the tour); 2 = PRESET_TARGET (ego's own sequencer walks "
@@ -138,7 +158,7 @@ def generate_launch_description():
         # ---- the FSM: one goal at a time on /move_base_simple/goal, and it must WAIT for one
         'fsm/flight_type': LaunchConfiguration('flight_type'),
         'fsm/realworld_experiment': LaunchConfiguration('realworld_experiment'),
-        'fsm/thresh_replan_time': 1.0,
+        'fsm/thresh_replan_time': LaunchConfiguration('thresh_replan_time'),
         'fsm/thresh_no_replan_meter': 1.0,
         'fsm/planning_horizon': LaunchConfiguration('planning_horizon'),
         'fsm/planning_horizen_time': 3.0,
@@ -168,18 +188,23 @@ def generate_launch_description():
         'grid_map/local_update_range_x': 5.5,
         'grid_map/local_update_range_y': 5.5,
         'grid_map/local_update_range_z': 4.5,
-        'grid_map/obstacles_inflation': 0.099,   # ONE VOXEL.  The two-cell route is now CLOSED, and not for the
-                                                # old reason: `cloud_relay.py --self-blind` did fix the defect
-                                                # that made two cells hang -- `the drone is in obstacle` fell
-                                                # from 112 729 to **3 107** and the sortie completed (DIAG16) --
-                                                # but the flown result got WORSE, not better: truth minimum
-                                                # -0.100 m and **27 999 of 100 127** samples inside the C2
-                                                # footprint (15.8%), the worst of any ego crossing.  So the
-                                                # 0.20 m footprint is not reachable by raising this parameter,
-                                                # with or without the bubble, and the map-side levers are
-                                                # exhausted.  See STATUS row 84.
+        'grid_map/obstacles_inflation': LaunchConfiguration('obstacles_inflation'),   # ONE VOXEL by default.  The
+                                                # two-cell route is CLOSED, and not for the old reason:
+                                                # `cloud_relay.py --self-blind` did fix the defect that made two
+                                                # cells hang -- `the drone is in obstacle` fell from 112 729 to
+                                                # **3 107** and the sortie completed (DIAG16) -- but the flown
+                                                # result got WORSE, not better: truth minimum -0.100 m and
+                                                # **27 999 of 100 127** samples inside the C2 footprint (15.8%),
+                                                # the worst of any ego crossing.  So the 0.20 m footprint is not
+                                                # reachable by RAISING this parameter, with or without the bubble.
                                                 # ONE CELL is flown and healthy (DIAG14: rc=0, `a star error` 1,
                                                 # truth min -0.222 m); its best crossing cleared by +0.150 m.
+                                                # WHAT WAS NEVER TRIED, and is Flight F's question: ZERO, i.e.
+                                                # no cube at all.  `map-inflation.py` on Flight E measures the
+                                                # map's obstacle at 0.540 m from the axis while the rectangle's
+                                                # legs run at 0.500 m, so every leg so far has been planned
+                                                # through an obstacle; the cube is the only part of that 0.240 m
+                                                # this parameter can remove.
         'grid_map/local_map_margin': 10,
         'grid_map/ground_height': LaunchConfiguration('ground_height'),
         'grid_map/virtual_ceil_height': LaunchConfiguration('virtual_ceil_height'),
