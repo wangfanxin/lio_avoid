@@ -92,3 +92,47 @@ REPRODUCTION (each is one command, no simulator, ~1 min)
   python3 _stage/jump-where.py                 # the command's own steps and where they are
   python3 _stage/flightA-when.py               # the excursion: commanded point, FCU, LIO, and the phase rows
   python3 _stage/tap-timebase.py               # the tap's rate and time base
+
+=== CORRECTION (2026-10-16, appended): TWO OF MY OWN FRAME ERRORS, AND THE MECHANISM THEY HID ==============
+
+`setpoints.csv`'s columns do NOT share a frame, and I assumed two of them did.  Settled empirically by asking
+which column traces the mission's own path (mean distance to the truth's path, `_stage/setpoint-columns.py`):
+
+    cmd_*   raw, NO conversion ....... 0.139 m   <-- it is ALREADY W; converting it from L is WRONG
+    fcu_*   raw (F, ENU labels) ...... 0.132 m   <-- as labelled; same origin as W to within cm
+    lio_*   converted L -> W ......... 0.058 m   <-- L; the conversion is correct
+    (converting cmd_* or fcu_* gives 3.66 / 3.69 m from the truth's path, i.e. wrong)
+
+Two numbers in this file were therefore WRONG and are retracted here:
+
+  * "the command's own record: 59 of 1664 commanded points (3.55 %) inside a pillar body, worst -0.284 m" --
+    that was the mis-converted command column.  **Corrected: 0 of 1664 commanded points inside a body, minimum
+    clearance +0.048 m, 0.66 % below 0.10 m.**
+  * "the commanded point was 6.58 m from the vehicle at the excursion" -- same error (it mixed a rotated
+    command with a correct vehicle position).  **Corrected: 0.62 m there, and at most 0.92 m anywhere in the
+    flight.**
+  * and the "4.6 m" in `STATUS.md` rows 147-148 is the same mistake: the setpoint row nearest the excursion is
+    0.196 m from it, not 4.6 m.
+
+WHAT THE CORRECTED NUMBERS SAY -- and the mechanism is NOT the one this file first named.  Everything is now in
+one frame (`_stage/cmd-path-corrected.py`, Flight A):
+
+    the COMMAND, 1664 setpoints ...... min clearance +0.048 m, inside a body 0 (0.00 %), below 0.10 m 0.66 %
+    the VEHICLE (FCU's belief) ....... min clearance -0.162 m, inside a body 20 (1.20 %)
+    |command - vehicle| .............. median 0.085 m, p90 0.406, p99 0.756, max 0.922; 17.8 % above 0.30 m
+    AT THE EXCURSION (t_sim 57.105) .. vehicle W(-2.56, -4.38) clearance -0.162 m, 0.196 m from the truth
+                                       commanded W(-2.56, -3.75) clearance +0.449 m, velocity 1.73 m/s
+                                       gap 0.623 m; in that whole second the command never went below +0.167 m
+
+  So neither the plan nor the command was ever inside a pillar.  **The command ran a collision-free line with
+  5-17 cm of margin on the tight stretch, the aircraft trailed it by 0.4-0.9 m at the p90-max, and the margin
+  could not absorb the tracking error.**  The one mechanism that makes a trailing vehicle fall further behind
+  rather than catch up is the sampler's age rule: `t_cur = now - start_time` advances at WALL-CLOCK rate, so the
+  reference keeps moving whether or not the aircraft is keeping up, until the next replan re-anchors it -- which
+  is why the gap grows to ~0.9 m and why review step 5 (re-anchor onto the vehicle, monotone, 0.5 s look-ahead)
+  is the fix for THIS half of the failure.
+
+WHAT SURVIVES FROM THE ORIGINAL FILE, unchanged: the plan-side result (0 of 229 170 plan points inside a body,
+min +0.048 m, 0 of 4 895 committed plans with a negative clearance, against DIAG34's plan at min -0.286 m with
+2 264 points inside), the tap's 1200.5 Hz rate, the 0.33 s episode, the excursion's location and altitude, and
+the exactness of the post-COMPLETED hold (0.000000 m over 641 messages).
