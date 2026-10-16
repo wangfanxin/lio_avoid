@@ -138,12 +138,14 @@ def main() -> int:
 
     # ---------------------------------------------------------------- 3b. WHAT THE WIRE CARRIES (round 76)
     #     `--fields` decides which of position / velocity / acceleration the FCU receives, and the two planners
-    #     need DIFFERENT answers: ego's reference has a velocity and an acceleration, the rectangle's has
-    #     neither (its v/a are zero by construction, so pva would order the FCU to brake).  Checked in all four
-    #     directions -- the frozen default, ego's new default, an override, and a value that is not a mode.
+    #     need DIFFERENT answers: ego's reference has a velocity (and an acceleration the sampler cannot yet
+    #     deliver smoothly -- measured, DIAG33-routeb), the rectangle's has neither (its v/a are zero by
+    #     construction, so pv/pva would order the FCU to brake).  Checked in all four directions -- the frozen
+    #     default, ego's new default, an override, and a value that is not a mode.
     for env, want, label in (({}, "pos", "rectangle (the frozen mission) keeps pos"),
-                             ({"PLANNER": "ego"}, "posvelacc", "ego defaults to pva"),
-                             ({"PLANNER": "ego", "BRIDGE_FIELDS": "posvel"}, "posvel", "and it is overridable"),
+                             ({"PLANNER": "ego"}, "posvel", "ego defaults to position + velocity"),
+                             ({"PLANNER": "ego", "BRIDGE_FIELDS": "posvelacc"}, "posvelacc",
+                              "and pva is one knob away"),
                              ({"TAKEOFF_COMMAND_M": "0.2", "VERTICAL_FIRST": "1"}, "pos",
                               "the promoted take-off profile does not change it")):
         rc, out, argv = dry_run(env)

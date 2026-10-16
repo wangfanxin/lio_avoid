@@ -1312,3 +1312,58 @@ THE PREDICTIONS:
   5. THE CROSSING IS STILL BOUNDED BY THE PLAN.  The aircraft's minimum pillar clearance should track the plan's
      own minimum within 0.05 m (S4: 0.056 m, S6: 0.035 m) -- nothing in Route B changes what ego PLANS, and
      25 of 29 crossings have a plan that touches a pillar body.
+
+=== ROUND 77b: ROUTE B AS-IS FLEW AND WAS REFUTED -- AND THE ACCELERATION IS THE REASON ==================
+
+The sortie: `DIAG33-routeb`, window 8, `EGO_CONTRACT=shim` (ego's OWN `traj_server` sampling), `--fields
+posvelacc`, ego fed the FCU's own pose.  ONE variable against S6: whose sampler produces `/plan/cmd`.
+
+THE SORTIE DID NOT COMPLETE, and the harness said why in one named line:
+
+    [  32.66] ABORT: geofence: truth at [-5.65 -6.61]        (the gate is 6.60 m)
+    [  32.66] phase -> land
+    [  39.41] landed: armed=False mode=LAND
+    no FCU failsafe; the FCU's words are Initialising / Arming / SIM Hit ground / Disarming
+
+The aircraft left the arena 32.7 s in, at 8.7 m from the pad.  The five predictions, answered:
+
+    1. the wire really carries pva .............. **MET**: velocity non-zero (max 2.91 m/s) and acceleration
+       non-zero (max 22.22 m/s^2) on 437 of 707 wire samples -- the first sortie in this project with
+       feed-forward on the wire at all;
+    2. pva shrinks the tail ..................... **REFUTED, badly**: inside-tour same-instant error 95th
+       **3.039 m** (S6: 0.975 m), share above 1 m **47.38%** (S6: 4.23%), median 0.818 m (S6: 0.280 m);
+    3. the ground-sweeping comes back ............ **REFUTED**: 0.0% of the tour below 0.30 m.  The same AGE rule
+       that produced 36.0% in round 69 produced none here -- because the sortie was thrown out of the arena before
+       the sweep could matter, not because the rule changed;
+    4. the reference still jumps ................. **MET**: 9 single-message steps above 0.5 m in 21.1 s (one every
+       2.3 s), the largest **3.405 m**, and the stream travelled **42.0 m over a ~10 m route**;
+    5. the crossing stays plan-bounded .......... **REFUTED**: the plan/flown gap is 0.215 m (S4 0.056, S6 0.035)
+       -- with the aircraft being flung around, "following the plan" is not what happened.
+
+**WHY IT WAS THROWN OUT, MEASURED IN THE REFERENCE'S OWN NUMBERS** (`_stage/s9-pv-vs-pva.py`, 2091 consecutive
+messages of ego's `traj_server`):
+
+    position      step between messages: median 0.01032 m, 95th 0.02696, 99th 0.02926, MAX 3.4046 m
+    velocity      step                  : median 0.02315 m/s, 95th 0.04808, 99th 0.17970, MAX 2.6463 m/s
+    acceleration  step                  : median 0.03703, 95th 0.37825, 99th 1.57646, MAX 22.2242 m/s^2
+      share of steps above 0.1 m/s^2 : acceleration **20.18%**, velocity 1.15%
+      share above 3.0 m/s^2          : acceleration 0.72%, velocity 0.00%
+
+The wire's own record shows the shape of it: at t = 6.56 s the commanded POSITION moves 8 mm while the commanded
+VELOCITY collapses to 0.008 m/s and the commanded ACCELERATION is (2.53, -20.36, -8.54) m/s^2; a tenth of a second
+later it swings the other way.  The mechanism is the sampling rule: `t_cur = now - start_time_` means consecutive
+messages can be evaluated on TWO DIFFERENT SPLINES (ego replans about once a second and each message re-reads the
+newest), and while the POSITION of two plans that start from the same state is nearly the same, the SECOND
+DERIVATIVE is not.  ±20 m/s^2 with alternating sign is a 2 g shake, and the FCU did what it was told.
+
+DISPOSITION, taken as a measurement rather than a preference:
+  * **the acceleration comes off the wire for now**: the ego arm's `--fields` default is **`posvel`** (position +
+    velocity), the rectangle keeps `pos`, and `posvelacc` is one knob away (`BRIDGE_FIELDS=posvelacc`) for when
+    the sampler is continuous.  `tools/test-planner-knob.py` asserts all four directions;
+  * **Route B as-is is REFUTED as a route to a better crossing**: it is faithful (p+v+a, ego's own code, verbatim
+    forwarding) and it is unsafe while the sampler switches trajectories between messages.  The next sortie is
+    `posvel`, which is the feed-forward the reference can actually justify;
+  * **and this upgrades the case for the `traj_server` continuity patch**: the acceleration spikes are a
+    CONSEQUENCE of the age rule, so making the sampling continuous (re-anchor + monotone + lookahead) is what
+    would let pva -- and the plan's own detour -- reach the FCU at all.  That patch stays the owner's call, and
+    the adapter path (rounds 73-75) remains the flight-verified one.

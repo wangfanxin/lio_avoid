@@ -285,10 +285,22 @@ esac
 # WHY IT IS NOT GLOBAL: the rectangle planner publishes ZERO velocity and acceleration by construction
 # (`planner/rectangle_source.py` has no velocity model), so `--fields posvelacc` on THAT arm would order the FCU
 # to hold v = 0, a = 0 while chasing a position -- a brake.  The frozen mission's behaviour must not change, so
-# ego gets pva and the rectangle keeps pos, both overridable:
-#     BRIDGE_FIELDS=posvel  bash src/tools/diagonal-fly.sh ego <TAG>
+# ego gets feed-forward and the rectangle keeps pos, both overridable:
+#     BRIDGE_FIELDS=posvelacc  bash src/tools/diagonal-fly.sh ego <TAG>
+#
+# AND WHY EGO GETS `posvel` RATHER THAN `posvelacc`, WHICH IS A MEASUREMENT AND NOT A PREFERENCE.  MEASURED
+# 2026-10-16 on `DIAG33-routeb`, the first sortie whose wire carried pva: the aircraft left the 6.60 m geofence
+# and the supervisor aborted BY NAME ("ABORT: geofence: truth at [-5.65 -6.61]") 32.7 s in.  The cause is in the
+# reference's own numbers (`_stage/s9-pv-vs-pva.py`, 2091 consecutive messages of ego's traj_server):
+#     position      step: median 0.0103 m, 99th 0.029 m, BUT max 3.40 m   (the age rule switches trajectories)
+#     velocity      step: median 0.023 m/s, 99th 0.18 m/s   -- 0.9% of steps above 0.5 m/s
+#     acceleration  step: median 0.037, 99th 1.58, MAX 22.2 m/s^2  -- 20.2% of steps above 0.1 m/s^2
+# i.e. the velocity is a feed-forward a controller can use and the acceleration is not: the second derivative is
+# the most sensitive to sampling two different splines in consecutive messages.  Feeding ±20 m/s^2 with
+# alternating sign is what threw the aircraft out of the arena.  The acceleration goes back on the wire when the
+# SAMPLER is continuous (the `traj_server` patch the owner has been asked about), not before.
 if [ "${PLANNER:-}" = "ego" ]; then
-    BRIDGE_FIELDS="${BRIDGE_FIELDS:-posvelacc}"
+    BRIDGE_FIELDS="${BRIDGE_FIELDS:-posvel}"
 else
     BRIDGE_FIELDS="${BRIDGE_FIELDS:-pos}"
 fi
