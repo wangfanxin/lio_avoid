@@ -129,7 +129,15 @@ dwell 5.0 s, leg timeout 20 s.  It publishes ONE target at a time with velocity 
 stream keeps publishing.  Optional `--approach-shaping-m` inserts a waypoint short of each corner, stopped at
 but not held (`docs/metrics/b1-approach-shaping-20261016.txt`).
 
-### 4.2 `ego` — `src/planner/ego_source.py` (adapter; NOT flown since F1/F2)
+### 4.2 `ego` — `src/planner/ego_source.py` (adapter) and `src/planner/ego_contract_shim.py` (Route B)
+
+**CORRECTED 2026-10-16 (mission B): this heading said "NOT flown since F1/F2", which is no longer true.**
+The ego planner has flown repeatedly since: the window-8 arm and the alternatives (`DIAG20`-`DIAG28`), the
+distance-cost sorties (`DIAG29`), the reference-fix sorties (`S4` = `DIAG31`, `S6` = `DIAG32`), the Route B
+sorties (`DIAG33`, `DIAG34`) and the parked benches -- `STATUS.md` rows 123-139 carry the numbers.  There
+are now TWO contracts in this package: the adapter samples ego's B-spline itself, and the shell lets ego's
+OWN `traj_server` sample it while the shell owns the tour and rewrites `trajectory_id`/`trajectory_flag`
+(`EGO_CONTRACT=adapter|shim`).
 
 ego-planner-swarm (ROS2 port, upstream `23a8d5a` under `/home/fanxin/lio_avoid/src/ego-planner-swarm`) is a
 different KIND of planner: it optimises a timed cubic B-spline through a local occupancy map, replanning

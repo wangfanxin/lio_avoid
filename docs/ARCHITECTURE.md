@@ -10,11 +10,15 @@ Gazebo-based pipeline had `/mid360/*` (Gazebo Transport), `gz_livox_bridge`, `/s
 orphan parameter files, this pipeline has exactly one interface per function and no orphans -- a parameter
 file that nothing loads is a bug (verifiable by grep).
 
-**No planner anywhere either, since 2026-10-15.**  An ego-planner was built behind the trajectory interface
-of `PLAN.md` §4.1, flown, and then dropped by the owner; its files, its patches, its parameters, its RViz
-view and the two tools that existed only to watch it left the tree in the same change
-(`STATUS.md`'s last section keeps the measurement).  The boxes below are what remains, and the diagram is
-the chain as it runs, not a design intent.
+**CORRECTED 2026-10-16 (mission B): a planner is in the tree again, and it is the one flying.**  The
+sentence that stood here -- "No planner anywhere either, since 2026-10-15.  An ego-planner was built
+behind the trajectory interface of `PLAN.md` §4.1, flown, and then dropped by the owner; its files ... left
+the tree" -- was true when it was written and is false now: `src/planner/` holds `rectangle_source.py`
+(method 1, the frozen mission A), and `ego_source.py`, `ego_contract_shim.py`, `ego_on_lio.launch.py`,
+`cloud_relay.py`, `fcu_pose_feed.py` (method 2 / Route B, the ego-planner behind the same `/plan/cmd`
+contract, flying since round 76 and recorded in `STATUS.md` rows 123-139).  Everything below about the
+BOXES still holds: the interface, the bridge and the supervisor did NOT change between the two methods,
+which is exactly what `src/tools/test-planner-swap.py` guards.
 
 ---
 
@@ -77,7 +81,8 @@ the chain as it runs, not a design intent.
                 │ /plan/cmd (L)                                          [F1: this arrow replaced
                 ▼                                                         the nav_msgs/Path one]
 ┌═══════════════════════════════════════════════════════════════════════════════════════════┐
-║ BOX 5   fsm/mission_fsm.py + src/bridge/     the supervisor's seat, frames, FCU communication   ║
+║ BOX 5   src/supervisor/supervisor.py         the supervisor's seat, frames, FCU communication   ║
+║         (CORRECTED 2026-10-16: this read `fsm/mission_fsm.py`, a path that does not exist)      ║
 ║   in : /plan/cmd (L, latched)         <- src/bridge/bridge_node.py::CmdRelay consumes it and    ║
 ║                                          writes the NEWEST sample to message 84 at 50 Hz    ║
 ║        /lio/robo/odom 200 Hz (L)      /lio/odom (the velocity)                             ║

@@ -203,7 +203,11 @@ EGO_STACK="${EGO_STACK:-$([ "$PLANNER" = "ego" ] && echo 1 || echo 0)}"
 #:                  `traj_server` (`time_forward:=1.0`; its own default is -1.0, a yaw look-ahead into the PAST)
 #:                  and `planner/fcu_pose_feed.py`, which feeds ego the FCU'S OWN estimate (W -> L) so that the
 #:                  planner and the controller close their loops on the same state instead of on the raw LIO.
-EGO_CONTRACT="${EGO_CONTRACT:-adapter}"
+#: DEFAULT IS `shim` SINCE ROUND 83, because that is the route the owner asked for and the shell is now
+#: verified: bench-checked end to end (round 76: 100 Hz, verbatim forwarding, ids/flags; round 82: the
+#: post-COMPLETED hold, a pinned point with |v| = 0) and flown in `DIAG34`.  The `adapter` default existed
+#: only while the shim was unverified; `EGO_CONTRACT=adapter` still selects it.
+EGO_CONTRACT="${EGO_CONTRACT:-shim}"
 case "$EGO_CONTRACT" in
     adapter|shim) ;;
     *) echo "EGO_CONTRACT='$EGO_CONTRACT' -- use adapter or shim" >&2; exit 4 ;;
@@ -286,7 +290,8 @@ esac
 # (`planner/rectangle_source.py` has no velocity model), so `--fields posvelacc` on THAT arm would order the FCU
 # to hold v = 0, a = 0 while chasing a position -- a brake.  The frozen mission's behaviour must not change, so
 # ego gets feed-forward and the rectangle keeps pos, both overridable:
-#     BRIDGE_FIELDS=posvelacc  bash src/tools/diagonal-fly.sh ego <TAG>
+#     BRIDGE_FIELDS=posvelacc  bash _stage/diagonal-fly.sh ego <TAG>      (the script lives in _stage/, not
+#                                                                        in src/tools/ -- corrected round 83)
 #
 # AND WHY EGO GETS `posvel` RATHER THAN `posvelacc`, WHICH IS A MEASUREMENT AND NOT A PREFERENCE.  MEASURED
 # 2026-10-16 on `DIAG33-routeb`, the first sortie whose wire carried pva: the aircraft left the 6.60 m geofence

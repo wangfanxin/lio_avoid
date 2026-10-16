@@ -1,0 +1,394 @@
+# 方法2（ego-planner）审阅 — 2026-10-16
+
+审阅方式：**只读代码 + 已有日志**，没有启动任何进程、没有跑测试、没有飞行。
+代码位置说明（这一条本身就是一个问题，见 §7.1）：本仓库在 `D:\distill_self\lio_avoid`（代码、文档、世界文件），
+运行时树在 WSL `/home/fanxin/lio_avoid`（`logs/`、`lio_ws/`、`src/ego-planner-swarm/`、`planner_ws/`）。
+本文引用 `src/...` = 仓库内路径；`ego-planner-swarm/src/...` = WSL 运行时树里的 ego 源码。
+
+当前 HEAD：`6e38593`（round 81）。
+
+---
+
+## 1. 管线全图
+
+### 1.1 方法1（已验证）与方法2（在调）的差别，只在 BOX 4
+
+```
+   /livox/lidar + /livox/imu ──► super_lio_node ──► /lio/robo/odom 200 Hz (L, 只有位姿)
+   (自研解析光线投射 + IMU 模型)                    /lio/odom       10 Hz (L, 带 twist)
+                                                    /lio/cloud_world (L, 配准点云)
+                                                          │
+        ┌─────────────────────────────────────────────────┴──────────────────────────┐
+        ▼                                                                            ▼
+  【方法1 / BOX 4a】                                                        【方法2 / BOX 4b】
+  src/planner/rectangle_source.py                                          N 个进程（ego 栈）
+    · 自己产生航点、到达、settle、dwell                                       · ego_planner_node（ego_on_lio.launch.py）
+    · 100 Hz 直接发 /plan/cmd                                                · cloud_relay（/lio/cloud_world → /ego/cloud）
+    · 一个进程，无地图，无搜索                                                · traj_server → /position_cmd
+                                                                            · ego_contract_shim → /plan/cmd
+                                                                            （或 ego_source.py，见下文两条 Route）
+        └─────────────────────────────────┬────────────────────────────────────────┘
+                                          ▼ /plan/cmd
+   src/bridge/bridge_node.py ── MAVLink 84 @50 Hz（设定点）+ 331 @48 Hz（外部导航）──► ArduPilot SITL
+   src/supervisor/supervisor.py ── 独立端点 5761，只发 class 76（解锁/起飞/放行/门/LAND）
+```
+
+BOX 1/2/3/5/6/7（SITL、仿真传感器、LIO、桥、RViz、工具）**在两种方法中一字未改**——这是设计，
+`src/tools/test-planner-swap.py` 就是在守护它。
+
+### 1.2 方法2 内部有两条 Route，默认那条不是你要的
+
+| | Route A（`EGO_CONTRACT=adapter`） | Route B（`EGO_CONTRACT=shim`，**"继承 traj_server"**） |
+|---|---|---|
+| 谁采样样条 | **我们的** `planner/ego_source.py`（Python B-spline 求值器） | **ego 自己的** `traj_server`（C++，`plan_manage/src/traj_server.cpp`） |
+| 采样规则 | 车辆进度投影 + 单调 + 0.5 s lookahead（`ego_source.py:256-302, 361-386`） | **年龄法则** `t_cur = now - start_time_`（`traj_server.cpp:170-172`） |
+| 线上字段 | pos（vel 已算但默认不上线） | pos+vel（`BRIDGE_FIELDS=posvel`） |
+| 任务语义 | ego_source 自己算 | `ego_contract_shim.py` 改写 id/flag |
+| 里程计来源 | LIO（`/lio/robo/odom` + `/lio/odom`） | **FCU 估计**（`/fcu/odom` → `fcu_pose_feed` → `/ego/odom_fcu`） |
+
+`src/tools/run-mission.sh:206`：`EGO_CONTRACT="${EGO_CONTRACT:-adapter}"`。
+**如果你按 `PLANNER=ego <TAG>` 跑而没有显式 `EGO_CONTRACT=shim`，你跑的是 Route A，不是 traj_server。**
+考虑到 Route A 的采样器已经把你抱怨的那类问题修掉了（§2.1），这一条值得先确认。
+
+> 读本文引用的数字时要注意：`missionA-DIAG34-routeb-pv`（本文引用最多的那次）是 **round 79 之前** 飞的，
+> 它的 `fcu_pose_feed` 吃的是 `/sim/truth/odom`（SITL 仿真器真值），不是 `/fcu/odom`
+> （`logs/missionA-DIAG34-routeb-pv/fcu_pose_feed.log` 第一行自己写着），
+> STATUS row 136 因此判定它的 0.015 m gap 是**上界**而非 Route B 的成绩。
+> 当前代码已经是 `/fcu/odom`（今天 11:03 的 `ego-diag-odom-*` 的运行日志确认 `odom_world <- /ego/odom_fcu`）。
+
+---
+
+## 2. 状态机：方法2 里有 **四层** 各自独立的状态机在互相握手
+
+这是方法2 比方法1 复杂一个量级的根本原因。方法1 只有"TourPacer + supervisor"两层。
+
+### 2.1 ego 的 FSM（`ego_replan_fsm.cpp:652-1066`，10 ms 定时器）
+
+```
+INIT ──(有 odom)──► WAIT_TARGET ──(have_target_ && have_trigger_)──► SEQUENTIAL_START
+                         ▲                                                  │
+                         │                                            planFromGlobalTraj(10)
+                         │                                                  ▼
+        ┌────────────────┴────────────┐                              EXEC_TRAJ
+        │  goal 到达 → planNextWaypoint│                                    │
+        │  （强行走 GEN_NEW_TRAJ）      │                    t_cur > replan_thresh_(1.0s)
+        └─────────────────────────────┘                                     ▼
+                                                                     REPLAN_TRAJ
+EMERGENCY_STOP ◄── 碰撞 ── EXEC_TRAJ          REPLAN_TRAJ 连败 100 次 → GEN_NEW_TRAJ
+```
+
+关键参数（`ego_on_lio.launch.py:98-110`）：`flight_type=1`（MANUAL）、`realworld_experiment=True`、
+`thresh_replan_time=1.0`、`thresh_no_replan_meter=1.0`、`planning_horizon=7.5`、`emergency_time=1.0`、`fail_safe=True`。
+
+**到达判定的三个不同阈值**（这是很多"到没到"争议的源头）：
+- ego 自己在 `EXEC_TRAJ` 里：`t_cur > duration-1e-2` **且** 车辆离目标 `< no_replan_thresh_ = 1.0 m`
+  → `have_target_=false`（`ego_replan_fsm.cpp:946-980`）
+- ego 的 `reboundReplan`：起点离局部目标 `< 0.2 m` 时**拒绝规划**（`planner_manager.cpp:55-68`）
+- shim 的到达：`--arrive-m 0.30` 且 `|v| < 0.08 m/s`，再 dwell `--hold-s`（`ego_contract_shim.py:88-107`）
+
+### 2.2 traj_server 的"采样状态机"（100 Hz wall timer）
+
+无状态，纯函数：`t_cur = (RCL_ROS_TIME.now() - start_time_)`。
+`t_cur ∈ [0, duration]` → 求值；`t_cur >= duration` → 悬停在终点；`t_cur < 0` → **发布 (0,0,0)**（详见 §6.1）。
+
+### 2.3 shim 的 TourSequencer（`ego_contract_shim.py:55-146`）
+
+`i_goal / t_dwell / done`，输入 `/ego/odom_fcu`，10 Hz tick 发 goal，
+每条 `/position_cmd` 到来时改写 `trajectory_id = i_goal+1`、`flag = 1|3` 并原样转发。
+
+### 2.4 supervisor（`src/supervisor/supervisor.py`）
+
+preflight → takeoff(0.2 m, setpoint 驱动爬升) → hold 3 s → **放行 `/plan/trigger`** → leg1..N
+（由 `trajectory_id` 变化切分）→ COMPLETED → land → done。
+门：真值地理围栏 6.60 m、导航频率下限 30 Hz、**计划静默 3 s**（`:289-296`）、爬升守卫。
+
+### 2.5 四处"隐藏握手"，全靠副作用维持
+
+1. **goal 1 Hz 重发是状态机的心跳**。`ego_contract_shim.py:113-123`、`ego_source.py:689-722`，
+   注释写得很清楚：ego 一旦判定 stalled 就回 WAIT_TARGET，只有**新 goal**能把它拉出来。
+2. **COMPLETED 之后必须继续说话**。沉默 = 故障（supervisor 会 abort）。
+3. **`trajectory_id` 只在"任务推进"时变**，绝不能跟着 replan 变（ego 的 `traj_id_` 是 1 Hz 变的，
+   `planner_manager.cpp:680`），所以 shim 必须重写它。
+4. **bridge 的放行门** `/plan/trigger`：在放行之前，一条 setpoint 都不上线
+   （MEASURED：位置设定点会取消 takeoff）。
+
+---
+
+## 3. 接口清单（方法2 特有的部分）
+
+| 接口 | 类型 / QoS | 帧 | 速率 | 生产者 → 消费者 |
+|---|---|---|---|---|
+| `/ego/cloud` | PointCloud2 / RELIABLE | L（标签 `world`，ego 不读帧） | ≤5 Hz，**单条 20 万~43 万点** | cloud_relay → ego 的 `grid_map/cloud` |
+| `/ego/odom_fcu` | Odometry / RELIABLE d50 | L | ~48 Hz（随 #32 到新样本才发） | fcu_pose_feed → ego 的 `odom_world` **和** `grid_map/odom` |
+| `/fcu/odom` | Odometry / RELIABLE d10 | W（ENU, z up） | ~48 Hz，`st.t_us` 变化时发 | bridge `--fcu-odom-topic` → fcu_pose_feed |
+| `/move_base_simple/goal` | PoseStamped / VOLATILE d10 | L | 1 Hz（重发） | shim/adapter → ego `waypoint_sub_`（depth 1） |
+| `planning/bspline` | `traj_utils/Bspline` / VOLATILE | L | ~1 Hz（每次 replan） | ego FSM → traj_server 或 ego_source |
+| `/position_cmd` | PositionCommand / RELIABLE d50 | 标签 `world` | 100 Hz | traj_server → shim |
+| `/plan/cmd` | PositionCommand / **RELIABLE+TRANSIENT_LOCAL d5** | `lio_world`/`world` | 100 Hz 发，50 Hz 消费 | shim/adapter → bridge |
+| MAVLink 84 | `type_mask` 2496 (`POS_VEL_YAW_MASK`) | LOCAL_NED | 50 Hz | bridge → FCU |
+
+**三个必须记住的契约细节**：
+- `/plan/cmd` 的 QoS **是契约的一部分**（VOLATILE 发布者配不上 TRANSIENT_LOCAL 订阅者，
+  实测过一次"bridge 什么也没收到"）。`ego_source.py:604-626`、`ego_contract_shim.py:261-268` 都写对了。
+- `traj_server` 是 `ros2 run` 直接起的（`run-mission.sh:628`），**不经过 launch 文件 → 不继承任何 remap**。
+  `planning/bspline` 和 `/position_cmd` 能连上，纯粹是因为两边都用了默认名。
+  一旦有人改 `bspline_topic` 这个 launch 参数，Route B 会**静默断链**。
+- `traj_server/time_forward:=1.0` 是唯一被覆盖的参数（其 C++ 默认 `-1.0` = yaw 看向一秒前的方向）。
+
+---
+
+## 4. 问题清单（按严重度）
+
+### P0-1  参考轨迹的采样规则：`traj_server` 用"年龄法则"，每次 replan 把参考点拽回起点
+
+**证据**
+- `traj_server.cpp:170-172`：`t_cur = (RCL_ROS_TIME.now() - start_time_).seconds()`，
+  没有任何"按车辆进度重新锚定"。
+- ego 每 ~1 s replan 一次（`fsm/thresh_replan_time=1.0`；`ego_replan_fsm.cpp:1025,1030`），
+  而每次新样条都会覆盖 `start_time_`（`traj_server.cpp:58`）。
+- `reboundReplan` 的 else 分支从 `t_cur` 重采样旧轨迹、**从不以车辆重新锚定**
+  （`planner_manager.cpp:170-208`；`PLANNERS.md` §4.2 第二条）。所以新样条的起点是
+  "**旧计划认为**车在哪"，不是车真在哪。
+- 实测：STATUS row 76（"the sawtooth turns out to be ego's own sampling rule"）、
+  row 133（命令 12 次 >0.5 m 跳变，最大 1.513 m，45.3 m 行程走 ~10 m 航线）、
+  row 138（命令隐含速度 95th **4.25 m/s**、max **14.5 m/s**）。
+
+**后果**：pva（位置+速度+加速度）上线时，两条不同样条被连续采样 → 加速度阶跃 ±22.22 m/s²，
+`DIAG33` 直接被地理围栏 abort（`run-mission.sh:291-301`）。这也是"咋飞都不太好"最直接的那一半。
+
+**修复（两条，第一条是 owner 已经拿到的那个 patch）**
+1. **把 Route A 已飞过的规则移植进 `traj_server`**（约 25 行）：
+   ① 用车辆位置在样条上投影求 `t_prog`；② `t_prog` 单调不回退；③ 采样 `t = min(dur, t_prog + 0.5)`；
+   ④ 样条过期后仍按同一规则跟飞（不要 `hold` 自己的位置——那是一条 STOP 命令，S4 实测占全程 65.9%）。
+   参考实现就在 `ego_source.py:256-302`（sample）与 `:361-386`（`_project`），
+   `--selftest` 里有对应断言。
+2. **短期**：直接 `EGO_CONTRACT=adapter` 飞。Route A 的跟踪误差实测更好
+   （95th：S4 0.943 / S6 0.975 m vs Route B 1.629 m），代价是"跟着计划的紧密度"略差
+   （plan/flown gap 0.035 vs 0.015 m）。**如果你的目标是"先能飞、能避障"，Route A 是更短的路。**
+
+### P0-2  COMPLETED 之后命令仍在扫掠
+
+**证据**：`ego_contract_shim.py:280-292`，`on_cmd` 原样转发 `position/velocity/acceleration`，
+`rewrite` 只改 `trajectory_id/flag`。`done=True` 之后 shim 停止发 goal（`:113-118`），
+但 `traj_server` 的 100 Hz 定时器继续按年龄法则发布 → 命令点继续动。
+STATUS row 138 已把这条命名为 fix (a)，**代码里尚未实现**。
+
+**修复**：`rewrite()` 里当 `self.done` 为真时，把 `position` 固定为最后一次转发的位置、
+`velocity/acceleration` 置零、`yaw` 保持。约 5 行，只影响 COMPLETED 之后。
+
+### P1-1  `fsm/realworld_experiment=True` 与 `flight_type=1` 组合 → `have_trigger_` 永远为假
+
+**证据链**
+- `ego_replan_fsm.cpp:35`：`have_trigger_ = !flag_realworld_experiment_` → **false**。
+- MANUAL 模式（`flight_type=1`）**不创建** `trigger_sub_`（`:150-159`，只在 PRESET 分支建 `/traj_start_trigger`）。
+- `have_trigger_=true` 只出现在 `armTour()`（`:269`，仅 PRESET）和 `triggerCallback`（`:361`，仅 PRESET）。
+- 于是 `WAIT_TARGET` 的出口 `if (!have_target_ || !have_trigger_) goto force_return;`（`:702`）**永远走不通**。
+- 日志佐证（`logs/missionA-DIAG34-routeb-pv/ego_planner.log`）：
+  `WAIT_TARGET → GEN_NEW_TRAJ` **22 次**，`→ SEQUENTIAL_START` **0 次**，`EXEC_TRAJ → WAIT_TARGET` **22 次**，
+  而 `EXEC_TRAJ → REPLAN_TRAJ` 只有 **9 次**。
+
+**后果**：FSM 实际上是靠我们 1 Hz 重发 goal 从 WAIT_TARGET 里硬拽出来的，
+而 `planNextWaypoint` 走的是 **`planGlobalTraj`（全局重规划）**，不是本地 replan。
+于是整架飞行是"1 Hz 全局重规划 + 22 次到达重启"，而不是 ego 设计意图里的"本地连续 replan"。
+一旦 goal 停止重发（COMPLETED 之后必然发生），ego 就永久停在 WAIT_TARGET。
+
+**另外**：`ego_on_lio.launch.py:99` 和 `PLANNERS.md` 表格里写的理由
+（"with False the FSM does not wait for a trigger and can start planning from the pad"）是**误读**——
+MANUAL 模式下"等 goal"由 `have_target_` 管，`have_trigger_` 与之无关。
+
+**修复**：`ego_on_lio.launch.py:99` 改 `'fsm/realworld_experiment': False`（upstream 的 manual 组合）。
+若确有"必须等外部放行"的意图，就自己往 `/traj_start_trigger` 发一次 PoseStamped，
+并把 1 Hz 重发保留为兜底。**建议改完重飞一次，对比 `WAIT_TARGET→GEN_NEW_TRAJ` 的计数是否下降。**
+
+### P1-2  地图把车辆自己标成障碍 → A* 起点逃逸出池 → 全局重规划成片失败
+
+**证据**（同一份 DIAG34 `ego_planner.log`）
+- `the drone is in obstacle` **10 515** 次
+- `Ran out of pool` **237** 次 / `AstarSearch: Unable to handle the initial or end point` **237** 次
+- `check_collision_and_rebound` **17 729** 次，`GEN_NEW_TRAJ → GEN_NEW_TRAJ` **718** 次
+- 起飞前连续 8 s 的 `PLANNER-STALL: NO trajectory for 8.2 s ... target [-3.99 4.00 1.88], odom [0.00 -0.00 -0.02]`
+
+**机理**
+1. LIO 的 `/lio/cloud_world` 含地面/停机坪点 → 1 voxel 膨胀（`obstacles_inflation=0.099`）把
+   z≈-0.02 的车位格也标成占用。
+2. `AStar::ConvertToIndexAndAdjustStartEndPoints`（`dyn_a_star.cpp:88-115`）发现起点被占用后，
+   沿 `(start-end)` 方向**无界**地把起点往外推，直到推出 ±5 m 的池。
+3. `Coord2Index` 报 `Ran out of pool` → `AstarSearch` force return → `a star error` → replan 失败。
+4. 车在柱林里飞行时，只要离任一被标记格 < 0.1 m 就重复上述链条；而 ego 的地图是**累积型**
+   （`grid_map.cpp` 只在 `local_update_range` 内清除，出了这个盒子就永久保留），所以格子只增不减。
+
+**放大因素**：`EGO_SELF_BLIND` 默认 **0.0（关闭）**（`run-mission.sh:224`）；
+`EGO_CLOUD_WINDOW=8.0` 时地图更密（DIAG34 relay 日志：单条 **430 603 点**）。
+
+**修复候选（按性价比）**
+1. **让车先离地再让 ego 规划**。矩形侧已有 `rectangle_source.py --vertical-first-m`
+   （`:125-135, 283-290`），**ego 侧的 argv 没有这个入口**（`run-mission.sh:225-254`，
+   banner 也承认了，`:418-425`）。给 shim/adapter 加一个"垂直优先"段：
+   第一个 goal = 当前 (x,y) + 任务高度。这样第一条计划不从地面格里出发。
+2. **`--self-blind` 开到 0.35~0.45 m**（relay 侧在点云进地图前清掉车辆周围的球）。
+   已知代价：DIAG16 实测 C2 变差（27 999/100 127 进入 footprint）——
+   但那是 "0.20 m footprint" 这把尺子的问题，见 P1-3。
+3. **在 cloud_relay 里按高度裁掉地板**（低于 `ground_height + 2 voxel` 的点丢弃）。
+   这比 self-blind 温和，不会吃掉真正的柱子，只在起飞/降落段生效。
+4. 别再指望 `grid_map/ground_height`：它只参与 `max_z = max(max_z, ground_height_)`，
+   没有"地板不标记"的语义。
+
+### P1-3  避障本身没有成立：是**计划穿柱**，不是跟踪问题
+
+**证据**（`logs/missionA-DIAG34-routeb-pv/metrics.txt`）
+- `C2 ... minimum pillar-surface distance -0.271 m; 9849 of 58546 samples inside the 0.20 m footprint [FAIL]`
+- STATUS row 133：`truth -0.271 m, plan -0.286 m`——**飞机忠实飞了计划**，误差只有 0.015 m。
+- row 73-75：穿越时 `check_collision_and_rebound` **零失败** → ego 自己的碰撞测试认为没问题 →
+  地图里根本没有那根柱子。
+
+**结构性限制**：`grid_map` 是 0.1 m 体素的**布尔占用图**，硬裕度就是膨胀半径。
+- 1 cell（0.099 m）：不足以覆盖 C2 的 0.20 m footprint。
+- 2 cell：会触发 "drone in obstacle"（DIAG13 实测 112 729 次，排序卡死）。
+- STATUS row 84/85：十一次穿越的 min clearance 在 **-0.10 ± 0.15 m** 范围抖动，
+  所有试过的杠杆（+0.05~+0.15 m）都小于**运行间方差**。C2 的 0.20 m 大约是这个分布的 +2σ。
+
+**已经试过并被否掉的旋钮（不要再试）**：`lambda_collision` 2.0（DIAG27 无变化）、
+`dist0` 0.8（DIAG28 更差）、`lambda_fitness` 4.0（DIAG15 好、DIAG17 复现失败）、
+inflation 0.2/0.3、window 3/8/15、coverage、clearance1 —— `ego_on_lio.launch.py` 的注释里都有记录。
+注意 `lambda_collision` / `dist0` 乘的是 **swarm 分离项**，单机时为空（这是为什么它们无效）。
+
+**修复方向**
+1. **改地图分辨率**：`grid_map/resolution` 0.1 → 0.05，inflation 保持 ~2 cell（=0.10 m）。
+   代价：地图内存 ×8，`dyn_a_star` 的池必须同步放大（目前 `POOL_SIZE` 硬编码
+   `Eigen::Vector3i(100,100,100)`，`planner_manager.cpp:43`；`bspline_optimizer.cpp:581`
+   硬编码 0.1 m 步长 → 单轴 ±5 m，也要跟着改）。这是唯一能同时满足"不把车标成障碍"
+   和"有 0.20 m 裕度"的路。
+2. **或者把 C2 的尺子改成这个架构能给的量**（例如 0.15 m），并在验收表里写明"换尺子"这个事实。
+   STATUS 的规矩是"不移动阈值来让一行通过"——所以要换就得把换的理由和分布一起写进去。
+
+### P2-1  Route B 的单条点云体量把地图回调压垮
+
+**证据**：DIAG34 `ego_relay.log`
+```
+32 scan(s): 622673 -> 430603 points (69.2% kept), 0 cropped away,
+0 inside the self-blind bubble (0.00 m), window 8.0 s (union is 1.69x the newest scan)
+```
+→ 5 Hz × 43 万点 = **215 万点/秒** 进 `grid_map` 的 cloud 回调；
+而该回调**内联**写 27 voxel/点，且与它赖以定位的 odom 共享一个**互斥 callback group**
+（`PLANNERS.md` §4.2 表格明确警告过）。
+
+**建议**：window 从 8 s 降到 3 s（文档自己算过：对角穿越闭合速度 ~0.4 m/s，3 s 足够覆盖接近段）；
+在 relay 侧按 `local_update_range`（±5.5/±5.5/±4.5 m）先裁再发；
+中期把 union 缓存成体素集合、只发增量。
+
+### P2-2  时钟域：`traj_server` 用 ROS_TIME，FSM 用 SYSTEM_TIME，全局没开 sim time
+
+- `traj_server.cpp:170-171`：`rclcpp::Clock clock(RCL_ROS_TIME)`
+- `ego_replan_fsm.cpp:845` / `planner_manager.cpp`：`rclcpp::Clock()` = **RCL_SYSTEM_TIME**
+
+现在能工作，**只是因为全栈 `use_sim_time=false`**（全仓库只有 `tools/pillar-fit.py:114` 设过）。
+
+**致命的失败模式**：一旦有人为了对齐 `src/sim` 发布的 `/clock`（48 Hz）给 ego 打开 `use_sim_time`，
+`start_time_`（system epoch）与 `time_now`（sim）相减 → `t_cur ≈ -1.79e9` →
+落到 `traj_server.cpp:203-206` 的 `else` 分支，打印 `[Traj server]: invalid time.`，
+然后**以 `pos = (0,0,0)` 发布命令**（`:174` 初始化为零、`:214-216` 照写）——
+飞机被命令飞向 L 原点，且日志只有一行 stdout。
+
+**修复**：`traj_server` 改用 `rclcpp::Clock(RCL_SYSTEM_TIME)` 与 FSM 对齐；
+并在 `else` 分支加早退（不发布）。顺带把 `/clock` 的"有发布者无消费者"记进文档——
+它是一个装饰性接口，容易误导后来者以为全栈在跑仿真时间。
+
+### P2-3  帧/标定的两处不一致
+
+1. `fcu_pose_feed` 固定读 `_stage/calib.json` 的**文件标定**，而 bridge 用的是
+   **preflight 实测标定**（`bridge_node.py:167-179` 的 `set_calib`）。
+   两者差约 1 cm（EGO4 `supervisor.log`：`the parked mismatch to the file the bridge uses is
+   [+0.002 +0.001 -0.011] m in W`）→ ego 认为的车位与命令帧差一个常量。
+2. 云 `/lio/cloud_world` 是 **LIO 配准**的（L），而地图的 `camera_pos_` 现在来自 **FCU 估计**
+   （A4 实测最佳延迟 +74 ms、水平 rms 42.8 mm，DIAG34 metrics）。
+   用滞后位姿去裁剪/膨胀 LIO 的点云，会把柱子在运动方向上抹开 `速度 × 74 ms`
+   （1 m/s 时 ~7 cm，接近一个体素）。这是 round 79 那个"正确但更深"的修正带来的**新代价**。
+
+**可选修复**：把实测标定回写到 `_stage/calib.json` 再喂给 feed；或让 `grid_map/odom`
+继续吃 LIO（几何更准）、只把 `odom_world` 指向 FCU（决策更保守）——
+后者又回到"规划与控制不看同一个状态"，需要 owner 定夺。
+
+### P2-4  默认旋钮与文档结论相反；且默认 Route 不是你要的那条
+
+| 旋钮 | 默认 | 文档/注释说应该是 | 出处 |
+|---|---|---|---|
+| `EGO_CONTRACT` | `adapter` | 你的意图是 `shim`（traj_server） | `run-mission.sh:206` |
+| `EGO_CLOUD_WINDOW` | `0.0`（记忆关闭） | rows 73-75 说记忆是必需的（DIAG34 用了 8.0） | `run-mission.sh:217` |
+| `EGO_SELF_BLIND` | `0.0`（自盲关闭） | launch 注释说它是两格膨胀的"使能器" | `run-mission.sh:224` + `ego_on_lio.launch.py:121-132` |
+| `BRIDGE_FIELDS` | ego 时 `posvel` | `posvelacc` 已被飞行否掉（DIAG33 geofence abort） | `run-mission.sh:302-306` |
+
+→ **建议把"当前最佳已知配置"固化成一个 `_stage/*.sh`（或 `EXTRA_PARM` 风格的一行），
+而不是让三个旋钮各自默认为"历史最保守值"。**
+
+### P3-1  可观测性缺口：traj_server 一行遥测都没有
+
+`traj_server` 只在异常时 `cout`。Route A 侧有 `--sample-csv`
+（`ego_source.py:594-597`，每样本记 `branch/t_sample/age/duration/jump`），
+Route B 侧只有 shim 的 `jump_m` 列。飞行中无法区分
+"卡住 / 钳位在样条末端 / 跟丢了 / 收到了新样条"。
+
+**建议**：给 `traj_server` 加 1 Hz 一行 `t_cur / duration / traj_id / spline_age / pos`，
+并在 `bsplineCallback` 里记一条。这是 10 行，能让下一次飞行直接读出 sawtooth。
+
+### P3-2  "任务结束"现在有三处判定，阈值互不相同
+
+ego 的到达（1.0 m）、shim 的到达（0.30 m + 5 s dwell）、supervisor 的 COMPLETED（flag=3）。
+外加 bridge 的 `stalled_reason`（静默 3 s）。`PLANNERS.md` §1 说"实现两次是故意的"，
+现在实际是三处 + 一处静默判定。
+
+**建议**：把这三处的阈值在一张表里写死并让 shim 在启动时打印它们。
+
+### P3-3  A* 池与场地尺寸的裕度不大
+
+`POOL_SIZE` 固定 `100³ @0.1 m`（`planner_manager.cpp:43`），中心 = 每次查询的中点 → 单轴 ±5 m。
+`diagonal.yaml` 的腿长 4.2 m 目前安全，但 12×12 m 的场地里任何更长的对角都会顶到边界，
+且逃逸循环（`dyn_a_star.cpp:101-113`）会主动把点推出池。
+**如果后续要换更大的场地，这是第一个会炸的地方。**
+
+---
+
+## 5. 文档一致性（会影响你和下一位读者的判断）
+
+1. `docs/ARCHITECTURE.md:13-17` 写"No planner anywhere either, since 2026-10-15 … dropped by the owner …
+   其文件已离开树"——但 `src/planner/` 里 `ego_source.py` / `ego_contract_shim.py` /
+   `ego_on_lio.launch.py` / `cloud_relay.py` / `fcu_pose_feed.py` 全套都在，而且 round 76 之后是主力。
+2. `docs/ARCHITECTURE.md` 全篇写 `fsm/mission_fsm.py`，实际文件是 `src/supervisor/supervisor.py`。
+3. `docs/PLANNERS.md:9` 与 §4.2 标题写 ego "**NOT flown** since F1/F2"，
+   但 STATUS 128-138 已经飞了十几个架次（EGO1-EGO4、S4/S5/S6、DIAG33/34）。
+4. `run-mission.sh:289` 引用的 `src/tools/diagonal-fly.sh` **不存在**。
+5. `src/planner/__pycache__/goal_sequencer.cpython-310.pyc`：`.py` 已删，`.pyc` 还在
+   （`.gitignore` 没兜住，或删得不干净）。另有三份 `ego_source.py.pre-*` 备份散在树里。
+
+---
+
+## 6. 建议的修复顺序（每一步都能单独验证）
+
+| # | 动作 | 成本 | 怎么知道它生效 |
+|---|---|---|---|
+| 0 | **先确认你在飞哪条 Route**：`EGO_CONTRACT=shim` 是否真的在命令行里 | 0 | banner 会打印 `contract shim` |
+| 1 | shim：COMPLETED 之后固定位置、v/a 归零 | ~5 行 | `shim_trace.csv` 的 `jump_m` 在 COMPLETED 之后恒为 0 |
+| 2 | launch：`fsm/realworld_experiment` 改 `False` | 1 行 | ego 日志里 `WAIT_TARGET→GEN_NEW_TRAJ` 计数下降、`SEQUENTIAL_START` 出现 |
+| 3 | 给 ego argv 加"垂直优先"段（第一个 goal = 当前 xy + 任务高度） | ~30 行 | 起飞后 8 s 的那段 `PLANNER-STALL` 消失；`the drone is in obstacle` 计数下降一个量级 |
+| 4 | `EGO_CLOUD_WINDOW=3.0`（而非 0 或 8） | 命令行 | `ego_relay.log` 的单条点数回到 ~10 万量级；`GEN_NEW_TRAJ→GEN_NEW_TRAJ` 下降 |
+| 5 | **traj_server 连续性补丁**（重锚 + 单调 + 0.5 s lookahead） | ~25 行 C++ | `shim_trace.csv` 的 p99 jump 从 1.5 m 量级降到 cm 量级；然后才可以把 `BRIDGE_FIELDS=posvelacc` 放回线上 |
+| 6 | `traj_server` 时钟改 `RCL_SYSTEM_TIME` + `else` 分支早退 | 2 行 | 防御性，无观测变化 |
+| 7 | （需要 owner 定夺）`grid_map/resolution` 0.05 + 池放大，去够 C2 的 0.20 m | 中 | C2 min clearance 转正；A* 池错误归零 |
+
+**在第 5 步之前不要打开 `posvelacc`**——DIAG33 已经用一次地理围栏 abort 证明过为什么。
+
+---
+
+## 7. 一句话总结
+
+方法1 是一个进程把"计划 + 执行 + 语义"三件事一次做完；方法2 把这三件事拆给了
+`ego_planner_node`（计划）、`traj_server`（执行）、`ego_contract_shim`（语义）、
+`supervisor`（安全）四个进程，而**ego 上游的这三件事是长在一个进程里的**。
+你现在遇到的"咋飞都不太好"，成分大致是：
+
+- **一半是采样器**：`traj_server` 的年龄法则 + ego 1 Hz replan 的锚定缺陷 → 命令 1 Hz 跳变（P0-1、P0-2）。
+  这一半在 Route A 里已经修好了，移植过来约 25 行。
+- **另一半是地图**：车辆自己被标成障碍 → A* 逃逸 → 全局重规划成片失败；
+  以及 0.1 m 布尔占用图给不出 C2 要的 0.20 m 裕度（P1-2、P1-3）。
+  这一半不是调参能解决的（`lambda_*` / `dist0` / inflation / window 全部已飞过并被否掉）。
+- **外加一个配置缺陷**：`realworld_experiment=True` + `flight_type=1` 让 FSM 的
+  WAIT_TARGET 出口永远关闭，整架飞行被"1 Hz 重发 goal"硬拽着走（P1-1）。这是最便宜的一条，先改它。
