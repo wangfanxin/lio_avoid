@@ -1,0 +1,40 @@
+FLIGHT D -- REFUTED: OPENING THE ACCELERATION MASK MAKES THE TRACKING WORSE AND THE AIRCRAFT HITS A PILLAR
+(2026-10-16, pre-registered in `docs/metrics/flightD-prereg-20261016.txt` before arming)
+
+Run `logs/missionA-FLIGHTD-posvelacc`, rc=0, no abort, landed.  ONE variable against Flight C:
+`BRIDGE_FIELDS=posvelacc`, i.e. the MAVLink `type_mask` 2496 -> **2048** (`POS_VEL_ACC_YAW_MASK =
+IGNORE_YAW_RATE`, `mavlink_impl.py:57`), so the acceleration column that has always been in the message is finally
+used by the flight controller.  Everything else identical: the cleaned tree, H1, H2, the 0.35 m reference clamp,
+the raised flight-controller limits, the plan's own heading, `EGO_MAX_VEL=0.8` / `EGO_MAX_ACC=1.0`.
+
+THE MEASUREMENT (`_stage/flightD-vs-C.py`)
+
+    run                        truth min   in body   <0.10 m   wire mask   |a| p99   |a| max   tracking p95
+    C  posvel   (a ignored)      +0.168 m    0.00 %    0.00 %        2496      1.02      1.15       0.132 m
+    D  posvelacc (a USED)        -0.226 m    0.47 %    1.40 %        2048      2.02      3.79       0.350 m
+
+  * the arm was the arm: the wire's mask is 2048 on every row, and the acceleration it carried is non-zero
+    (p99 2.02, max 3.79 m/s^2) against near-hovering values in C;
+  * **the tracking got 2.7x worse** (p95 0.132 -> 0.350 m) and the aircraft entered a pillar (0.47 % of samples
+    inside a body, -0.226 m);
+  * so the three things that were supposed to make `posvelacc` safe this time -- the reference clamp, the small
+    `max_acc`, the raised flight-controller limits -- do NOT make it safe, and the reason is measurable:
+
+THE MECHANISM, AND IT IS THE CLAMP'S OWN BLIND SPOT.  The clamp limits the forwarded **position** only
+(`ego_contract_shim.py::rewrite`), while the **acceleration field rides unclamped in the same message**.  The age
+rule produces its spike at every replan boundary, and with the mask open the flight controller acts on it:
+ArduPilot's `shape_pos_vel_accel_xy` adds the acceleration we send to the velocity target with
+`limit_total=false` (i.e. **unshaped**), so a 3.79 m/s^2 spike at a boundary goes straight into the controller --
+whereas with the mask closed the FCU's own acceleration-limited reference model had been *reconstructing* the
+acceleration from position+velocity and shaping it through `WP_ACC`/`PSCN_NE_JERK`.
+
+THIS IS THE SECOND INDEPENDENT REFUTATION OF `posvelacc`, and the cleaner one: DIAG33 aborted on the geofence with
+a 22 m/s^2 alternating reference, and the standing explanation was that the age rule's jumps were the cause.  That
+explanation is now confirmed from the other side -- with the jumps clamped to 0.36 m the failure did not go away,
+it merely became a penetration instead of an abort, because the spike lives in the acceleration channel and not in
+the position channel.
+
+WHAT FOLLOWS (and it is a small change, not a new direction): the same clamp belongs on the acceleration and the
+velocity that are forwarded, not only on the position -- a rate/limit filter on all three fields.  Until that
+exists, `BRIDGE_FIELDS=posvel` is the arm to fly, and **Flight C remains the best configuration measured**:
+min +0.168 m, 0 samples inside a body, C2-ego MET.
