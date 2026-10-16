@@ -1272,3 +1272,43 @@ we last published, then advance monotonically, plus the same 0.5 s lookahead), r
 other patch.  The alternative is to fly Route B as-is and MEASURE what pva alone does.
 
 Figure `docs/figures/round76/traj-server-sawtooth.png`, sha256 7816de183aa5d3fa7b132d9dd90b10cb64507e2c354e0b98cbdc1ee4a8373f04 -- ego's own sampler, parked, with the resets marked.
+
+=== ROUND 77: ROUTE B FLIES AS-IS -- THE PREDICTIONS, WRITTEN BEFORE THE SORTIE ==========================
+The configuration: `EGO_CONTRACT=shim` (ego's OWN `traj_server` samples the plan), `--fields posvelacc` (the first
+sortie in this project whose wire carries velocity and acceleration), ego fed the FCU's own pose
+(`/ego/odom_fcu`), the contract shell owning the tour and `trajectory_id`/`trajectory_flag`.  Same mission, same
+window-8 arm, ONE variable against S6: WHOSE SAMPLER produces `/plan/cmd`.
+
+WHAT IS ALREADY KNOWN, so the predictions are not guesses (all from the parked bench, round 76):
+  * ego's sampler is 100.0 Hz, frame `world`, velocity and acceleration non-zero on every sample;
+  * the shell forwards it verbatim (max |dp| = |dv| = |da| = 0.000000) and changes only id/flag;
+  * **and it carries ego's age rule**, so on the bench the reference swept |p| from 0.24 m to 1.30 m and then
+    snapped back to the vehicle in one message, 7 times in 77.6 s.
+
+THE PREDICTIONS:
+
+  1. THE WIRE REALLY CARRIES pva.  `setpoints.csv` will show non-zero `vel_*` and `acc_*` columns for the first
+     time in this project (the bench proved the bridge's mask; this proves the whole chain in flight).
+     REFUTATION: zeros, which would mean the bridge is still in `pos` for the ego arm.
+
+  2. pva SHRINKS THE TAIL.  Inside-tour same-instant command-vs-FCU error: 95th percentile from **0.975 m** (S6)
+     to **below 0.6 m**, and the share above 1.00 m from **4.23%** to below **1.5%**.  This is the hypothesis pva
+     exists for: the aircraft has been chasing a 100 Hz position with no feed-forward.
+     REFUTATION: no change, which would put the ~1 m tail on the estimator/lag rather than on the missing
+     feed-forward and would move the next step to the EKF line.
+
+  3. THE GROUND-SWEEPING COMES BACK, AND THAT IS THE POINT OF THE ARM.  Round 69's adapter used the SAME age rule
+     (`t = now - start_wall`) and the aircraft spent 36.0% of the tour below 0.30 m; round 73 replaced that rule
+     with progress + lookahead and S4/S6 spent 0.0% there.  Ego's own sampler carries the age rule again, so:
+     predict **10-40%** of the tour below 0.30 m, i.e. the porpoising returns.
+     REFUTATION: below 5%, which would say the sweep-to-ground was MY code's fault after all (it would then have
+     to be explained, because the rule is the same).
+
+  4. THE REFERENCE STILL JUMPS.  `/plan/cmd` will show at least one single-message step above **0.5 m** every
+     ~10 s, and the stream's total travel will be several times the route length (round 69: 59 m for a 10 m
+     route).  Measured on the wire from `traj.csv.cmd.csv`, not from the shim's trace.
+     REFUTATION: a smooth stream, which would contradict the parked measurement.
+
+  5. THE CROSSING IS STILL BOUNDED BY THE PLAN.  The aircraft's minimum pillar clearance should track the plan's
+     own minimum within 0.05 m (S4: 0.056 m, S6: 0.035 m) -- nothing in Route B changes what ego PLANS, and
+     25 of 29 crossings have a plan that touches a pillar body.
