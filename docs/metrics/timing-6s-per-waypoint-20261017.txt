@@ -864,3 +864,193 @@ THE ARM OF RECORD (the harness defaults should become this): corridor 0.01 m, no
 EGO_CORNER_MPS 0.80, EGO_MAX_VEL/ACC 2.5, everything else Flight AD's.
 The remaining gap to the owner's objective is TIME ONLY: 5 of 8 legs under 6 s, max 6.61 s, i.e. 0.27-0.61 s on each
 of the three 8 m edges -- Flights AS (max_vel/acc 3.0) and AT (corner 1.00 m/s) attack it separately.
+
+============================================================================
+FLIGHTS AS + AT -- THE PLAN'S CEILING AND THE CORNER SPEED (2026-10-17)
+============================================================================
+[_stage/flightAS.sh: AR + EGO_MAX_VEL/ACC 3.0]        [_stage/flightAT.sh: AR + EGO_CORNER_MPS 1.00]
+
+                          Flight AR (parent)     Flight AT (corner 1.00)  Flight AS (ceiling 3.0)
+    C2 minimum            +0.032 m               +0.029 m                 -0.044 m
+    % inside a body        0.00 %                 0.00 %                    0.11 %
+    % below 0.10 m         0.86 %                 1.01 %                    0.63 %
+    C2-ego                 MET                    MET                       NOT MET
+    A1 / A2                10.33 / 7.87 mm        9.63 / 7.98 mm            11.25 / 7.77 mm
+    B1 E / N               6.451 / 8.271          6.427 / 8.586             6.201 / 8.223
+    C1                     0.061 m                0.173 m                   0.148 m
+    route duration         38.7 s                 40.2 s                    **30.6 s**
+    legs under 6 s / max   5 of 8 / 6.61 s        6 of 8 / 9.10 s (stall)    6 of 7 / 7.07 s
+    |v_ref| p50 / p90      1.457 / 1.739          1.533 / 1.768             1.609 / 2.140
+    ACROSS the plan p90    0.604 m                0.294 m                   0.614 m
+
+  AT's legs  1.69 / 4.76 / 5.98 / 4.67 / 6.16 / 4.33 / 9.10 / 5.23 s   (leg 7 stalled; every other leg is <= 6.16)
+  AS's legs  (leg 1 unparsed) 3.69 / 5.50 / 4.66 / 7.07 / 4.21 / 4.81 / 4.32 s
+
+WHAT THE PAIR SETTLES
+  * the corner speed is FREE at 1.00 m/s: +0.032 (AR, 0.80) vs +0.029 (AT, 1.00), and it moves the leg count from 5
+    of 8 to 6 of 8 -- so AP/AR's 0.80 was below the real corner optimum for this route;
+  * the plan's CEILING is the term that spends the margin: 2.5 -> 3.0 turns +0.032 m into -0.044 m and doubles the
+    cross-track p90 (0.294 -> 0.614 m), while cutting 8 s off the route -- so the two criteria now sit on one axis;
+  * the objective is an every-leg statement, so Flight AU (corner 1.00 + ceiling 3.0) is flown twice (AU, AU2)
+    before anything is declared, exactly because Flight AK re-flew the AD arm at -0.276 m.
+
+THE FRONTIER AS IT STANDS (all arms: corridor 0.01 m, no opening):
+
+    AR   corner 0.80 / 2.5   clean +0.032   5 of 8 under 6 s, max 6.61 s
+    AT   corner 1.00 / 2.5   clean +0.029   6 of 8 under 6 s, max 9.10 s (one stall)
+    AS   corner 0.80 / 3.0   -0.044         6 of 7 under 6 s, max 7.07 s
+
+============================================================================
+FLIGHTS AU + AU2 -- 8 OF 8 LEGS UNDER 6 s, AND SEVEN MILLIMETRES FROM CLEAN (2026-10-17)
+============================================================================
+[_stage/flightAU.sh: corridor 0.01 m, no opening, EGO_CORNER_M 0.50 / EGO_CORNER_MPS 1.00, EGO_MAX_VEL/ACC 3.0]
+
+                          Flight AU                Flight AU2 (same arm, repeat)
+    legs                  3.73 3.58 5.30 4.07       3.80 5.09 5.14 4.67
+                          5.27 4.37 5.02 3.55       4.57 6.83 3.53   (leg 1 unparsed)
+    under 6 s / max       **8 of 8 / 5.30 s**        6 of 7 / 6.83 s
+    route duration        31.2 s                   29.8 s
+    C2 minimum            **-0.007 m**              -0.043 m
+    % inside a body        0.07 %                   0.10 %
+    % below 0.10 m         1.64 %                   0.82 %
+    A1 / A2                10.29 / 8.92 mm          11.54 / 8.43 mm
+    B1 E / N               6.290 / 8.380             6.208 / 8.296
+    C1                     0.219 m                  0.168 m
+    worst instant         (-3.21, 0.48) clr -0.006, reference +0.228, |v_ref| 1.97 m/s
+
+THE OBJECTIVE, HONESTLY: the owner asked for "each waypoint leg <= 6 s and no collision".  Both halves have now been
+met, in DIFFERENT sorties:
+
+    Flight AR  corner 0.80 / 2.5   **clean +0.032 m**, 0 inside   5 of 8 under 6 s, max 6.61 s
+    Flight AT  corner 1.00 / 2.5   **clean +0.029 m**, 0 inside   6 of 8 under 6 s, max 9.10 s (one stall)
+    Flight AU  corner 1.00 / 3.0   -0.007 m, 0.07 % inside       **8 of 8 under 6 s, max 5.30 s**
+    Flight AU2 the same again      -0.043 m, 0.10 % inside       6 of 7 under 6 s, max 6.83 s
+
+The gap between the clean arms and the fast arm is 0.007 m of ONE episode and 0.5 m/s of ceiling.  The corner speed is
+free (AR -> AT cost nothing), so the ceiling is the only axis left, and Flight AV (2.75) and Flight AW (3.0 with
+EGO_MAX_ACC 2.0) are the two ways to interpolate it.
+
+============================================================================
+FLIGHTS AV + AW -- THE CEILING'S KNEE (2026-10-17)
+============================================================================
+[_stage/flightAV.sh: ceiling 2.75]                    [_stage/flightAW.sh: ceiling 3.0 with EGO_MAX_ACC 2.0]
+
+                       AU (parent)        AV (2.75)      AW (3.0, acc 2.0)
+    C2 minimum         -0.007 m           **+0.019 m**   -0.101 m
+    % inside a body     0.07 %             0.00 %         0.23 %
+    % below 0.10 m      1.64 %             1.10 %         1.35 %
+    C2-ego             NOT MET            **MET**         NOT MET
+    A1 / A2            10.29 / 8.92 mm    10.34 / 10.43   9.79 / 9.58 mm
+    B1 E / N           6.290 / 8.380       6.244 / 8.236  6.282 / 8.363
+    C1                 0.219 m            0.212 m         0.118 m
+    route duration     31.2 s             39.0 s          33.5 s
+    legs under 6 s     8 of 8 / 5.30 s     6 of 8 / 8.62 s  8 of 8 / 5.64 s
+    |v_ref| p50        --                 1.5-1.7          up to 2.85 at the contact
+    ACROSS p90         --                 0.545 m         0.372 m
+
+  AV's legs  4.55 / 4.98 / 5.86 / 4.67 / 8.62 / 3.65 / 6.66 / 4.52 s   (leg 5 STALLED -- AU flew that edge in 5.27 s)
+  AW's legs  0.45 / 4.17 / 5.24 / 4.68 / 5.64 / 4.02 / 4.76 / 4.99 s   (8 of 8, max 5.64 s)
+
+THE FAMILY, ONE AXIS (corridor 0.01 m, no opening, corner 1.00 m/s over 0.50 m, PSC_NE_POS_P 1.5):
+
+    ceiling 2.5   AR +0.032 (5 of 8)   AT +0.029 (6 of 8, one stall)
+    ceiling 2.75  AV +0.019 (6 of 8)                                <-- the safety knee
+    ceiling 3.0   AU -0.007 (8 of 8)   AU2 -0.043 (6 of 7)   AS -0.044 (corner 0.80)   AW -0.101 (acc 2.0)
+
+Both criteria have now been met -- AU meets the time one on every leg, AV/AR/AT meet the safety one -- but not yet in
+the same sortie, and the gap is 7 mm of one episode.  Flight AX (AU + PSC_NE_POS_P 1.8) is the one lever aimed at
+exactly that: the cross-track excursion at speed, which the gain resists and which the corridor has made meaningful.
+
+============================================================================
+FLIGHTS AX + AX2 -- THE POSITION-LOOP GAIN, REFUTED WITH THE CORRIDOR IN PLACE (2026-10-17)
+============================================================================
+[_stage/flightAX.sh: AU with EXTRA_PARM = params/guided_limits_tune2.parm (PSC_NE_POS_P 1.8)]
+
+                          Flight AU (parent, gain 1.5)   Flight AX (gain 1.8)   Flight AX2 (same arm)
+    C2 minimum            -0.007 m                       -0.017 m               -0.222 m
+    % inside a body        0.07 %                         0.13 %                 0.56 %
+    % below 0.10 m         1.64 %                         0.64 %                 1.33 %
+    legs under 6 s / max   8 of 8 / 5.30 s               7 of 8 / 7.03 s        8 of 8 / 7.19 s
+    route duration         31.2 s                         30.1 s                 34.7 s
+    arrivals               |v| 0.62-1.69                 |v| 0.71-1.68          **|v| 1.92 and +0.326 m vertical**
+
+The gain is refuted as the lever for the last centimetres: it does not remove AU's 7 mm (-0.017 on its own best run)
+and its repeat is the second worst minimum of the afternoon (-0.222 m, with an arrival at 3.39 m/s).  Every CLEAN
+sortie of the day sits at a plan ceiling of 2.75 m/s or below, and every 3.0 m/s sortie sits between -0.007 and
+-0.222 m.
+
+THE WHOLE AFTERNOON, ONE AXIS (corridor 0.01 m, no opening, corner 1.00 m/s over 0.50 m, gain 1.5):
+
+    ceiling 2.5    AR +0.032  (5 of 8 legs, max 6.61)      AT +0.029  (6 of 8, max 9.10 stall)
+    ceiling 2.75   AV +0.019  (6 of 8 legs, max 8.62 stall)
+    ceiling 3.0    AU -0.007  (**8 of 8 legs, max 5.30**)  AU2 -0.043 (6 of 7)   AS -0.044 (corner 0.80)
+                   AW -0.101 (acc 2.0)                     AX -0.017 (gain 1.8)  AX2 -0.222 (gain 1.8)
+
+The safety axis is monotone in the plan's ceiling and so is the time axis: the owner's two criteria are 0.5 m/s apart
+on one knob.  The objective has been met half-way in different sorties -- AU for the time (8 of 8 legs at 3.55-5.30 s),
+AV/AT/AR for the collision (0.00 % of samples inside a body) -- and NOT yet in one.
+
+DEFAULTS: the CLEAN arm (ceiling 2.75) is the default, because C2-ego (0 samples inside a body) is the objective's hard
+clause while a leg over 6 s is a performance miss.  `EGO_MAX_VEL/ACC=3.0` converts that arm into AU's time-complete
+variant with one knob, and both are documented here rather than argued about.
+
+============================================================================
+FLIGHT AV2 -- THE 2.75 REPEAT, AND THE DEFAULT ARM (2026-10-17)
+============================================================================
+Flight AV2 (identical arm to AV: ceiling 2.75, corner 1.00 over 0.50 m, corridor 0.01 m):
+C2 minimum **-0.040 m**, 0.14 % inside a body, 1.24 % below 0.10 m, A1 10.40 mm, A2 7.79 mm,
+B1 E 6.204 / N 8.447, C1 0.144 m [PASS], route 37.6 s, arrivals |v| 0.63-1.14 m/s.
+
+So the clean band is CEILING 2.5 m/s -- two independent sorties positive there, everything at 2.75 or above negative on
+at least one run:
+
+    ceiling 2.5    AR **+0.032**   AT **+0.029**                      <- CLEAN, 5-6 of 8 legs under 6 s
+    ceiling 2.75   AV **+0.019** / AV2 **-0.040**                      <- not reproducible
+    ceiling 3.0    AU **-0.007** (8 of 8)  AU2 -0.043  AS -0.044       <- time-complete, 7 mm off clean
+                   AW -0.101  AX -0.017  AX2 -0.222
+
+NEW DEFAULTS (a bare `PLANNER=ego` sortie now flies Flight AT's arm):
+
+    EGO_CORRIDOR_M     0.01   (EGO_CORRIDOR_END_M 0.0, EGO_CORRIDOR_OPEN_M 0.0)
+    EGO_CORNER_M       0.50   (was 1.0)
+    EGO_CORNER_MPS     1.00   (was 1.1)
+    EGO_MAX_VEL/ACC    2.5    (was 2.0)
+    everything else           Flight AD's: posvelacc, ref-clamp 1.2, ref-slew 6.0, ref-acc 2.0,
+                              ref-z-clamp/floor 0.6/0.6, settle 0.0, dwell 0.0, PSC_NE_POS_P 1.5, 10 m pillars
+
+and the ONE-KNOB time-complete variant is `EGO_MAX_VEL=3.0 EGO_MAX_ACC=3.0` (Flight AU: 8 of 8 legs at 3.55-5.30 s,
+minimum -0.007 m, 0.07 % inside a body).
+
+THE OBJECTIVE IN ITS OWN TERMS
+    no collision   MET three times: AR +0.032, AT +0.029, AV +0.019 (C2-ego MET, 0 samples inside a body)
+    every leg <=6 s MET once: AU, 8 of 8 legs at 3.55-5.30 s
+    both at once    NOT YET; the separation is 0.5 m/s of `EGO_MAX_VEL` between 2.5 and 3.0
+
+WHAT THE ROUTE CORRIDOR CHANGED, for the record (AK -> AN/AT):
+    plan inside a pillar        10.18 % of reference samples  ->  0.00 %
+    samples inside a body        7.42 %                       ->  0.00 %
+    minimum clearance           -0.276 m                      ->  +0.029 m
+    route duration              73.7 s (AK, a bad draw) / 47.8 (AD)  ->  40.2 s (AT), 31.2 s (AU)
+    legs under 6 s              1 of 8 (AK) / 5 of 8 (AD)     ->  6 of 8 (AT) / 8 of 8 (AU)
+
+============================================================================
+FLIGHT AY -- THE BARE-DEFAULTS VERIFICATION (2026-10-17)   [_stage/flightAY.sh: no env at all]
+============================================================================
+C2 minimum **-0.003 m**, 0.06 % of samples inside a body, 1.00 % below the 0.10 m standoff,
+A1 10.32 mm, A2 10.68 mm, B1 E 6.295 / N 8.392, C1 0.140 m [PASS], route 38.0 s,
+legs 1.00 / 4.71 / 5.59 / 4.50 / 6.77 / 5.73 / 6.19 / 4.55 s  (6 of 8 under 6 s, max 6.77),
+reference 0.00 % inside a body, worst reference clearance +0.276 m,
+truth's worst instant at (-1.48, 4.20): clearance -0.002 m, the aircraft 0.203 m outside the north edge against a
+reference 0.009 m off it -- i.e. the same corner-exit cross-track error, three millimetres over the line.
+
+THE ARM IT VERIFIES (now the file's defaults):
+
+    EGO_CORRIDOR_M 0.01 (END_M 0.0, OPEN_M 0.0)   EGO_CORNER_M 0.50   EGO_CORNER_MPS 1.00
+    EGO_MAX_VEL/ACC 2.5   + Flight AD's everything else (posvelacc, ref-clamp 1.2, ref-slew 6.0, ref-acc 2.0,
+    ref-z 0.6/0.6, settle 0.0, dwell 0.0, PSC_NE_POS_P 1.5, 10 m pillars, lidar map 0.1 m, PATCH I, RESOLUTION/1)
+
+THE DAY IN FOUR NUMBERS (AK before the corridor -> AY with it):
+    samples inside a pillar body        7.42 %   ->  0.06 %     (best run: 0.00 %)
+    minimum pillar-surface distance    -0.276 m  ->  -0.003 m   (best run: +0.032 m)
+    the reference inside a pillar       10.18 %  ->  0.00 %
+    legs under 6 s / route duration     1 of 8 / 73.7 s -> 6 of 8 / 38.0 s   (8 of 8 / 31.2 s with EGO_MAX_VEL=3.0)

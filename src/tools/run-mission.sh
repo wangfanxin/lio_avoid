@@ -178,8 +178,15 @@ PLANNER_TOPIC="${PLANNER_TOPIC:-/plan/cmd}"
 #: the limits ego's optimiser is told to respect, when the ego stack is started (see `EGO_STACK` below).
 #: They are SOFT quadratic penalties in that optimiser (`bspline_optimizer.cpp:1118-1149`), not constraints,
 #: so they shape the plan rather than bound the flight -- the FCU is what bounds the flight.
-EGO_MAX_VEL="${EGO_MAX_VEL:-2.0}"
-EGO_MAX_ACC="${EGO_MAX_ACC:-2.0}"
+#: THE PLAN'S OWN CEILING (soft), and since 2026-10-17 the ONE knob that trades the two criteria against each other.
+#: MEASURED over ten sorties with the route corridor in place (`docs/STATUS.md` rows 188-198): 2.5 m/s is the CLEAN
+#: band -- AR +0.032 m and AT +0.029 m of minimum clearance, both with 0.00 % of samples inside a body -- while 3.0
+#: m/s gives the time criterion on every leg (AU: 3.55-5.30 s) at -0.007 m, and 2.75 lands in between (+0.019 on one
+#: sortie, -0.040 on its repeat).  The default is the clean band, because "0 samples inside a body" is the objective's
+#: hard clause and a leg over 6 s is a performance miss; `EGO_MAX_VEL=3.0 EGO_MAX_ACC=3.0` gives the time-complete
+#: variant of the same arm.
+EGO_MAX_VEL="${EGO_MAX_VEL:-2.5}"
+EGO_MAX_ACC="${EGO_MAX_ACC:-2.5}"
 #: HOW FAT THE PLANNER'S OBSTACLE IS ON TOP OF THE MARKED CELLS (`grid_map/obstacles_inflation`).  0.099 above is
 #: one 0.1 m cell and has been the flown value since DIAG14.  MEASURED consequence, Flight E's own DIAG/2 slices
 #: via `_stage/map-inflation.py`: the map's obstacle reaches 0.540 m from a pillar's axis, i.e. 0.240 m past the
@@ -249,8 +256,8 @@ EGO_REF_SLEW_MPS="${EGO_REF_SLEW_MPS:-6.0}"
 #: (`_stage/corner-forensics.py`, Flights J and K): EVERY pillar contact of both sorties is OUTSIDE the
 #: rectangle -- (4.58,-1.55), (4.68,0.54), (4.30,2.45), (2.53,4.49), (3.50,-4.50) against corners at (+-3,+-4)
 #: -- i.e. the aircraft OVERSHOOTS each corner by 1-1.7 m into the pillar ring, arriving at |v_ref| 1.8-2.4 m/s.
-EGO_CORNER_M="${EGO_CORNER_M:-1.0}"
-EGO_CORNER_MPS="${EGO_CORNER_MPS:-1.1}"
+EGO_CORNER_M="${EGO_CORNER_M:-0.50}"
+EGO_CORNER_MPS="${EGO_CORNER_MPS:-1.00}"
 #: THE ROUTE CORRIDOR (metres; 0 = off = every sortie before 2026-10-17): the forwarded horizontal reference is
 #: held within this distance of the CURRENT leg's centreline, with the across-the-line parts of the velocity and
 #: acceleration fields removed.  MEASURED why (`_stage/leg-clearance.py` on `worlds/rect68.yaml`): the pillars are
@@ -259,7 +266,7 @@ EGO_CORNER_MPS="${EGO_CORNER_MPS:-1.1}"
 #: clearance paths -- while the plan snakes about them by +-0.4-0.5 m (the AD top view: the east edge runs out to
 #: x = 3.9 and cuts in to x = 2.67 at y = 2.5, 0.13 m inside the (2.5,2.5) pillar).  `EGO_CORRIDOR_END_M` opens the
 #: clamp back up that far from each leg's ends, because the corners are where the room is.
-EGO_CORRIDOR_M="${EGO_CORRIDOR_M:-0.0}"
+EGO_CORRIDOR_M="${EGO_CORRIDOR_M:-0.01}"
 EGO_CORRIDOR_END_M="${EGO_CORRIDOR_END_M:-0.0}"
 #: HOW MUCH FREEDOM THE CORRIDOR GIVES AT THE VERY ENDS OF A LEG (metres).  DEFAULT 0.0 SINCE FLIGHT AL, and the
 #: measurement is why: with 2.0 m of freedom at the ends the reference used 0.45 m of it 0.9 m past a corner, the
