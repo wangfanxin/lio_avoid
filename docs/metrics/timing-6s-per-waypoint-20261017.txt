@@ -2135,3 +2135,23 @@ that layer.
 NEXT: fly Mission C with ALT_MODE=baro -- the FCU's own barometric altitude (the launcher's DEFAULT, which this mission
 has been overriding with lio) -- so the vertical loop no longer depends on the LiDAR map.  The geofence, the climb guard
 and the 2.0 m mission altitude all stay truth-checked.
+
+============================================================================
+MISSION C, ROUND 11 -- ALT_MODE=baro FIXES THE VERTICAL; THE PLAN THEN RUNS AWAY HORIZONTALLY (2026-10-17)
+============================================================================
+Change (ONE): ALT_MODE=lio -> baro  (the launcher's default; horizontal navigation stays external)
+
+  r14   takeoff sim 33.4  cmd 1.13  lio 0.00  truth 0.10
+        hold    sim 35.4  cmd 1.27  lio 0.00  truth 0.20
+        leg1    sim 38.4  cmd 2.02  lio 1.59  truth 2.17    <- the aircraft holds 2.0 m; the LIO still says 1.59
+        leg2    sim 40.1  cmd 2.02  lio 2.09  truth 2.04    <- 4 cm from the mission altitude
+        abort   sim 44.7  cmd 1.64  lio 2.06  truth 1.17    <- geofence: truth at [-7.07 +14.04]
+        done    sim 89.8  cmd 2.60  lio -89.65 truth 278.18
+
+  the shell:  "ARRIVED at waypoint 1 of 4 (0.071 m horizontal, 0.189 m vertical, |v| 0.09 m/s), dwelling 2.0 s"
+  the plan:   last commanded point (98.3, 9.7) m -- a hundred-metre target, the ego-map defect of rounds 1-3
+
+READ: the vertical loop is FIXED (baro, 4 cm at the mission altitude, and the LIO's z no longer drives the flight).
+What remains is horizontal only: the planner produces degenerate targets in a 0.30 m-channel forest and the aircraft
+follows them out of the arena.  NEXT: put a floor under the planner -- refuse a /plan/cmd whose position is further from
+the vehicle than the contract's own clamp, so a 100 m excursion stops at the shell instead of at the geofence.
