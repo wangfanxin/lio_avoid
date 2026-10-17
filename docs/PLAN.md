@@ -87,16 +87,21 @@ pillar body, minimum surface distance >= 0).  As of 2026-10-17 the arm and the n
 | `EGO_MAX_VEL` / `ACC` | **2.5 m/s** | the clean band.  2.75 and 3.0 each bought seconds at the cost of a negative minimum (STATUS 192-198) |
 | the rest | Flight AD's | posvelacc, ref-clamp 1.2, ref-slew 6.0, ref-acc 2.0, ref-z 0.6/0.6, settle 0.0, dwell 0.0, `PSC_NE_POS_P` 1.5, 10 m pillars, lidar map 0.1 m, PATCH I + RESOLUTION/1 + the crash fix |
 
-A **bare `PLANNER=ego` sortie** flies it, and the last verification (Flight AY, no environment at all) read:
-C2 minimum **-0.003 m**, **0.06 %** of samples inside a body, 1.00 % below the 0.10 m standoff, A1 10.32 / A2 10.68 mm,
-B1 E 6.295 / N 8.392, C1 0.140 m, route 38.0 s, **6 of 8 legs under 6 s (max 6.77 s)**.
+A **bare `PLANNER=ego` sortie** flies it.  The last five sorties of this arm (AR, AT, AY, AY2, AZ) read C2 minimum
+**+0.032 / +0.029 / -0.003 / -0.033 / -0.238 m**, **0.00 / 0.00 / 0.06 / 0.17 / 0.31 %** of samples inside a body,
+6 of 8 legs under 6 s in three of them, B1 E 6.30-6.48 / N 8.27-8.86, A1 10.3-11.5 mm.  **The reference was on the
+centreline in all five** (0.00 % of reference samples inside a body, worst-instant clearance +0.269 m), so the
+plan-side defect is structurally gone; what varies is the aircraft.  A bare run's own console line now reads
+`shim: ROUTE CORRIDOR 0.010 m ... does NOT open at the ends`, `CORNER GOVERNOR 1.000 m/s within 0.500 m`, and
+`ACCELERATION FIELD clamped to 2.000 m/s2`.
 
-**Both criteria have been met, in different sorties, and the gap between them is one knob**: Flight AT (+0.029 m,
-0 of 1898 samples inside, 6 of 8 legs) and AU (**8 of 8 legs at 3.55-5.30 s**, minimum -0.007 m) differ only in
-`EGO_MAX_VEL`/`ACC` (2.5 vs 3.0).  The default is the clean side, because "0 samples inside a body" is this table's
-hard gate and a leg over 6 s is a performance miss; `EGO_MAX_VEL=3.0 EGO_MAX_ACC=3.0` converts one into the other.
-The run-to-run spread on the minimum clearance, measured across the day's 19 sorties, is ~0.04 m at a fixed arm, so
-"clean" here means "inside one spread of zero", and that is stated rather than claimed away.
+**Both criteria have been met, in different sorties, and the gap between them is one knob**: Flight AR/AT
+(+0.032 / +0.029 m, 0 of ~1900 samples inside) and Flight AU (**8 of 8 legs at 3.55-5.30 s**, minimum -0.007 m) differ
+only in `EGO_MAX_VEL`/`ACC` (2.5 vs 3.0).  The default is the 2.5 side, because "0 samples inside a body" is this
+table's hard gate.  **What is NOT claimed**: that 0.00 % is reproducible at the default -- it is 0 ± 0.03 m over five
+sorties, i.e. ON the surface, and one slow/jerky plan (AZ: |v_ref| p50 0.92 m/s, route 53.1 s) still produced -0.238 m
+with the reference on the line the whole time.  The two remaining terms are the aircraft's 0.15-0.35 m cross-track
+excursions against the 0.200 m this field leaves, and the planner's occasional slow run, which doubles them.
 
 ## 4. The pipeline
 

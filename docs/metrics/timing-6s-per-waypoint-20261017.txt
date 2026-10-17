@@ -1054,3 +1054,37 @@ THE DAY IN FOUR NUMBERS (AK before the corridor -> AY with it):
     minimum pillar-surface distance    -0.276 m  ->  -0.003 m   (best run: +0.032 m)
     the reference inside a pillar       10.18 %  ->  0.00 %
     legs under 6 s / route duration     1 of 8 / 73.7 s -> 6 of 8 / 38.0 s   (8 of 8 / 31.2 s with EGO_MAX_VEL=3.0)
+
+============================================================================
+THE DEFAULT ARM OVER FIVE SORTIES -- THE DISTRIBUTION, AND A CORRECTION (2026-10-17)
+============================================================================
+arm: EGO_CORRIDOR_M 0.01 (no opening) + EGO_CORNER_M 0.50 / EGO_CORNER_MPS 1.00 + EGO_MAX_VEL/ACC 2.5
+     + Flight AD's everything else.
+
+    sortie   C2 minimum   % inside   % <0.10 m   B1 E / N       route   legs under 6 s / max
+    AR       +0.032 m     0.00 %      0.86 %     6.451 / 8.271  38.7 s   5 of 8 / 6.61 s
+    AT       +0.029 m     0.00 %      1.01 %     6.427 / 8.586  40.2 s   6 of 8 / 9.10 s (stall)
+    AY       -0.003 m     0.06 %      1.00 %     6.295 / 8.392  38.0 s   6 of 8 / 6.77 s
+    AY2      -0.033 m     0.17 %      1.23 %     6.479 / 8.529  43.4 s   3 of 8 / 12.46 s
+    AZ       -0.238 m     0.31 %      2.18 %     6.474 / 8.859  53.1 s   3 of 8 / 12.46 s
+
+The REFERENCE was on the centreline in all five: 0.00 % of reference samples inside a body, its worst-instant
+clearance +0.269 to +0.276 m, and its distance to the route 0.010 m.  So "the plan no longer enters pillars" is
+structural, and what varies is the AIRCRAFT.
+
+WHAT THE BAD RUN IS (AZ): `|v_ref|` p50 0.922 m/s, route 53.1 s, and the truth's worst sample 0.548 m OUTSIDE the south
+edge at (-2.46,-4.55) -- 0.04 m from the (-2.5,-4.5) pillar's axis -- with the reference 0.010 m off the line.  The two
+worst sorties of the day are the two slowest (AK 73.7 s -> -0.276 m, AZ 53.1 s -> -0.238 m) and the cleanest are among
+the fastest (AU/AY 31-38 s).  A slow plan is not a gentle one: ego replanning through a map it is unhappy with produces
+a jerky reference that the aircraft follows badly.
+
+PROCESS CORRECTION: Flight AY's directory was overwritten by its own re-run (AY2) because `_stage/flightAY.sh`
+hard-codes its tag; AY's numbers are from its console output and its figure (already promoted to `docs/figures/`), and
+the directory now holds AY2's.  `_stage/flightAZ.sh` takes the tag as an argument, and the shim now prints its
+reference conditioning at start-up, so a sortie's own log records what it flew.
+
+STATE OF THE OBJECTIVE ("each leg <= 6 s AND no collision"):
+    no collision    best +0.032 m (AR), typical 0 +- 0.03 m, worst -0.238 m on a slow plan; 0.00-0.31 % of samples
+    every leg <=6 s met at ceiling 3.0 (AU: 8 of 8, 3.55-5.30 s); 5-6 of 8 at 2.5
+    both at once    not yet.  The remaining terms are the aircraft's 0.15-0.35 m cross-track excursions against the
+                    0.200 m the field leaves, and the planner's occasional slow/jerky run, which doubles them.
