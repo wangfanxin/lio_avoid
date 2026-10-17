@@ -707,3 +707,99 @@ number -- the centrelines are the maximum-clearance paths of this field, and the
 That is the reason the corridor clamp is safe by construction: what it removes is the plan's +-0.4-0.5 m snake
 (the AD top view shows the east edge running out to x ~ 3.9 at y = 1.5-2.5 and in to x = 2.67 at y = 2.5, 0.13 m
 inside the (2.5,2.5) pillar, which is where the worst sample -0.134 m was recorded).
+
+============================================================================
+FLIGHTS AK + AL -- THE BASELINE RE-FLY AND THE ROUTE CORRIDOR (2026-10-17)
+============================================================================
+[_stage/flightAK.sh: the bare harness defaults = the Flight AD arm, on params/ restored to HEAD]
+[_stage/flightAL.sh: the same arm plus EGO_CORRIDOR_M 0.10, EGO_CORRIDOR_END_M 1.2, opening 2.0 at the ends]
+
+    row                      Flight AK (no corridor)      Flight AL (corridor 0.10 m)
+    A1 route rms             27.28 mm  [FAIL]             10.17 mm  [PASS]
+    A2 vertical rms           8.85 mm                     8.78 mm
+    B1 truth box extents     E 9.084 / N 8.517 [FAIL]    E 6.327 / N 8.287 [FAIL]
+    C1 final point            0.072 m [PASS]              0.080 m [PASS]
+    C2 minimum clearance     -0.276 m                    -0.271 m
+    C2 % inside a body        7.42 %                      1.16 %      (whole flight, top view)
+    C2 % below 0.10 m        13.97 %                      2.87 %
+    legs (8)                 1.43 6.11 15.13 6.52        2.22 6.03 7.81 6.02
+                             15.34 10.69 13.69 6.21      7.27 6.54 8.46 7.13
+    under 6 s / max           1 of 8 / 15.34 s            1 of 8 / 8.46 s
+
+The same two sorties through `_stage/corridor-stats.py` (the reference at 50 Hz, the truth interpolated onto it):
+
+    reference distance to the route    >0.20 m: 57.2 %  ->   7.5 %
+    truth     distance to the route    >0.20 m: 59.8 %  ->  11.7 %
+    reference clearance                min -0.163 m   ->  +0.100 m   (inside a body: 10.18 % -> 0.00 %)
+    truth     clearance                min -0.275 m   ->  -0.271 m   (inside a body: 11.48 % ->  0.79 %)
+    |v_ref|                            p50  0.684     ->   1.100 m/s
+    tracking, ACROSS the plan          p90  0.254     ->   0.277 m
+
+WHAT THE PAIR SETTLES
+  * the corridor does exactly what it claims: the reference stops leaving the route (0.00 % inside a body, minimum
+    clearance +0.100 m -- the corridor wall is 0.100 m off the line and the line is 0.200 m off the surfaces);
+  * Flight AK shows the SAME ARM as Flight AD reading -0.276 m / 7.42 % instead of -0.134 m / 0.34 %, i.e. the
+    run-to-run spread already measured at sigma = 0.143 m, and it shows the mechanism: in AK the PLAN itself goes
+    through pillars 10.18 % of the time and at ||v_ref|| p50 0.684 m/s.  Flight AD was a favourable draw;
+  * what is left after the clamp is the aircraft: 0.79 % inside with a worst gap of 0.471 m.
+
+`_stage/window-trace.py FLIGHTAL 71.46 --half 1.6` (the leg's own frame, 50 Hz): the reference is pulled from
+`across` 0.454 m to 0.100 m in 0.2 s by the clamp while the truth moves from 0.334 m to 0.496 m -- it followed the
+reference's 0.45 m lead inward, and when that lead was withdrawn its momentum carried it 0.16 m further in, to within
+0.03 m of the (-1.5,-3.5) pillar's axis.  It took 1.6 s to come back, which is the 1.5 s^-1 position loop.
+
+Hence EGO_CORRIDOR_OPEN_M's default is 0.0 and Flight AM flies the corridor with no opening at the ends: the pillar
+rows are 0.5 m from every edge of this route, corners included, so there is nowhere on it a lateral lead is affordable.
+
+============================================================================
+FLIGHT AM -- THE CORRIDOR WITH NO OPENING AT THE ENDS (2026-10-17)   [_stage/flightAM.sh]
+============================================================================
+C2 minimum **-0.050 m** (best of the investigation: AD -0.134, AL -0.271, AK -0.276, AF -0.039*),
+0.66 % of samples inside a body (AL 1.16 %, AK 7.42 %, AD 0.34 %), 3.63 % below the 0.10 m standoff,
+A1 9.71 mm, A2 7.59 mm, C1 0.078 m [PASS], B1 E 6.525 / N 8.610 [FAIL, bound 6.10 / 8.10],
+legs 2.04 7.08 7.35 6.85 7.94 6.19 10.36 6.05 s  (1 of 8 under 6 s, max 10.36),
+|v_ref| p50 1.087 / p90 1.417 / max 1.939 m/s.
+
+    reference: clearance min +0.125 m, 0.00 % inside a body, 5.2 % of samples > 0.20 m off the route
+    truth    : clearance min -0.050 m, 0.79 % inside a body (window), 12.9 % > 0.20 m off the route
+    tracking : ALONG the plan  p50 0.022 / p90 0.094 m        ACROSS the plan  p50 0.115 / p90 0.243 m
+               gap / speed    p50 0.138 / p90 0.413 s         0 truth samples inside a pillar at 1 Hz forensics
+
+(*AF's -0.039 m was flown with `PSC_NE_POS_P` 1.8 -- the leak of row 186 -- so it is not this configuration.)
+
+THE ARM COMPARISON, one knob between each of the three:
+
+    Flight AK   no corridor                        7.42 % inside    min -0.276    reference inside 10.18 %
+    Flight AL   corridor 0.10, 2.1 m opening       1.16 %           min -0.271    reference inside  0.00 %
+    Flight AM   corridor 0.10, NO opening          0.66 %           min -0.050    reference inside  0.00 %
+
+The opening at the ends was the defect of AL (`_stage/window-trace.py`: the reference used 0.454 m of it 0.9 m past a
+corner and the aircraft followed it in), and the corridor width is what is left in AM: at t = 60.37 s the truth is
+0.250 m outside the north edge = 0.100 m of corridor wall + 0.150 m of aircraft, and the (-1.5,4.5) pillar stands
+0.5 m outside that line, so -0.050 m.  The centreline is the maximum-clearance path of the field (+0.200 m both
+sides), so the corridor width is spent directly out of the aircraft's budget -- which is why Flight AN flies 0.01 m.
+
+============================================================================
+FLIGHT AN -- CORRIDOR 0.01 m: THE REFERENCE IS THE CENTRELINE (2026-10-17)   [_stage/flightAN.sh]
+============================================================================
+0.21 % of samples inside a body (AM 0.66 %, AL 1.16 %, AK 7.42 %, AD 0.34 %), 0.99 % below the 0.10 m standoff
+(AM 3.63 %, AK 13.97 %), A1 8.99 mm, A2 8.11 mm, B1 E 6.393 / N 8.208, C1 0.129 m [PASS],
+1200 Hz C2 minimum -0.052 m (AM -0.050, AL -0.271, AK -0.276, AD -0.134),
+legs 1.83 6.79 7.01 7.78 8.54 5.39 6.37 6.06 s  (2 of 8 under 6 s, max 8.54), |v_ref| p50 1.099 / max 1.848 m/s.
+
+    reference: `across` a constant -0.010 m (the corridor width) through the traced second; 0.00 % inside a body
+    truth    : clearance min +0.059 m in the instrument window, 0 of 2435 samples inside a body;
+               ALONG the plan p50 0.041 / p90 0.080 m, ACROSS p50 0.124 / p90 0.276 m
+
+THE CORRIDOR'S OWN LEDGER, four sorties, one knob at a time:
+
+    AK  no corridor                     7.42 % inside   min -0.276   reference inside 10.18 %
+    AL  0.10 m, 2.1 m opening           1.16 %          min -0.271   reference inside  0.00 %
+    AM  0.10 m, no opening              0.66 %          min -0.050   reference inside  0.00 %
+    AN  0.01 m, no opening              0.21 %          min -0.052   reference inside  0.00 %   <-- best distribution
+
+WHAT IS LEFT, exactly: the last episode is a CORNER EXIT.  `_stage/window-trace.py FLIGHTAN 64.30`: 0.3-1.2 m past
+the NW corner the truth is 0.219 m outside the west edge while the reference is 0.010 m off it, so the offset is the
+aircraft's own momentum from the north edge, decaying over ~1 s, and the (-3.5,2.5) pillar 0.5 m outside the line is
+grazed at -0.052 m.  The two knobs that act on that are the corner speed it is carried at and the plan's speed once
+the corner releases -- Flights AO (max_vel 2.5) and AP (corner 0.80 m/s).

@@ -69,7 +69,8 @@ class TourSequencer:
     def __init__(self, targets_l, arrive_m=0.30, hold_s=5.0, settle_mps=0.08, goal_resend_s=1.0,
                  log=None, ego_driven=False, ref_clamp_m=0.0, leg_timeout_s=0.0, leg_abort_s=0.0,
                  arrive_z_m=1.00, start_alt_m=0.0, ref_z_clamp_m=0.0, ref_slew_mps=0.0,
-                 corner_m=0.0, corner_mps=1.0, ref_z_floor_m=0.0, ref_acc_max=0.0):
+                 corner_m=0.0, corner_mps=1.0, ref_z_floor_m=0.0, ref_acc_max=0.0,
+                 corridor_m=0.0, corridor_end_m=0.0, corridor_open_m=2.0):
         self.targets = np.asarray(targets_l, dtype=float).reshape(-1, 3)
         self.arrive_m = float(arrive_m)
         self.hold_s = float(hold_s)
@@ -167,6 +168,23 @@ class TourSequencer:
         self.n_corner_capped = 0
         #: the corner the tour has just LEFT: the governor holds through the turn (see `rewrite`)
         self.prev_target = None
+        #: THE ROUTE CORRIDOR (metres; 0 = off = every sortie before 2026-10-17).  MEASURED why it exists
+        #: (`_stage/leg-clearance.py` on `worlds/rect68.yaml`): the pillars are r = 0.30 on a 1.0 m staggered
+        #: checkerboard, so all FOUR route edges are exactly +0.200 m from the nearest pillar surface over their
+        #: whole interior (the corners have +0.407 m) -- the centrelines are the MAXIMUM-clearance paths of the
+        #: field, and no offset from them leaves more.  The plan does not fly them: the AD top view shows plan and
+        #: truth snaking about the line with +-0.4-0.5 m amplitude, and the east edge's cut-in to x = 2.67 at
+        #: y = 2.5 is 0.13 m inside the (2.5,2.5) pillar.  So the reference is held inside this half-width of the
+        #: CURRENT leg's centreline, which converts the error budget from "lateral snake" (which spends clearance)
+        #: into "along-track lag" (which spends none).
+        self.corridor_m = float(corridor_m)
+        #: how far from the leg's ENDS the corridor opens back up (metres).  The corners are the safe places --
+        #: +0.407 m against the edges' +0.200 -- so the turn is left free rather than clamped into a 90 degree
+        #: kink; the clamp is full strength in the interior and ramps to `corridor_m + corridor_open_m` at the ends.
+        self.corridor_end_m = float(corridor_end_m)
+        self.corridor_open_m = float(corridor_open_m)
+        self.n_corridor = 0
+        self.n_corridor_v = 0
     # ---- inputs ---------------------------------------------------------------------------------------
     def on_odom(self, p_l, v_l=None, now=0.0):
         self.p = np.asarray(p_l, dtype=float).reshape(3)
@@ -429,6 +447,46 @@ class TourSequencer:
                 a = a * (self.ref_acc_max / an)
                 msg.acceleration.x, msg.acceleration.y, msg.acceleration.z = float(a[0]), float(a[1]), float(a[2])
                 self.n_acc_clamped += 1
+        # ---- THE ROUTE CORRIDOR, added 2026-10-17: hold the reference on the leg's centreline ----
+        # WHY HERE, between the acceleration clamp and the speed limiter: it is a POSITION correction, so the slew
+        # limiter below must see the corrected point (it would otherwise ramp back out of the corridor), and the
+        # velocity field must be corrected with the position -- a reference that is told "stay on the line" while
+        # carrying the plan's ACROSS-the-line velocity is the very definition of the cross-track error this fixes.
+        if self.corridor_m > 0.0 and self.p is not None and self.prev_target is not None:
+            a_xy = np.asarray(self.prev_target[:2], dtype=float)
+            b_xy = np.asarray(self.target[:2], dtype=float)
+            seg = b_xy - a_xy
+            seg_len = float(np.linalg.norm(seg))
+            if seg_len > 1e-6:
+                u = seg / seg_len
+                n = np.array([-u[1], u[0]])                  # the leg's normal, i.e. the ACROSS direction
+                q = np.array([float(msg.position.x), float(msg.position.y)]) - a_xy
+                along = float(np.dot(q, u))
+                across = float(np.dot(q, n))
+                allow = self.corridor_m
+                if self.corridor_end_m > 1e-6:
+                    # ramp open at BOTH ends: full strength in the interior, `corridor_open_m` of freedom at the
+                    # corner, so the 90 degree turn is not clamped into a kink (the corners are where the field
+                    # leaves +0.407 m instead of the edges' +0.200, so this is also where the room is).
+                    w = min(1.0, max(0.0, min(along / self.corridor_end_m,
+                                                (seg_len - along) / self.corridor_end_m)))
+                    allow += (1.0 - w) * self.corridor_open_m
+                if 0.0 <= along <= seg_len and abs(across) > allow:
+                    sign = 1.0 if across >= 0.0 else -1.0
+                    q = u * along + n * (sign * allow)
+                    msg.position.x, msg.position.y = float(a_xy[0] + q[0]), float(a_xy[1] + q[1])
+                    self.n_corridor += 1
+                    v_xy = np.array([float(msg.velocity.x), float(msg.velocity.y)])
+                    v_across = float(np.dot(v_xy, n))
+                    if abs(v_across) > 1e-9:
+                        v_xy = v_xy - v_across * n        # the wall of the corridor carries no lateral velocity
+                        msg.velocity.x, msg.velocity.y = float(v_xy[0]), float(v_xy[1])
+                        self.n_corridor_v += 1
+                    a_xy_acc = np.array([float(msg.acceleration.x), float(msg.acceleration.y)])
+                    a_across = float(np.dot(a_xy_acc, n))
+                    if abs(a_across) > 1e-9:
+                        a_xy_acc = a_xy_acc - a_across * n
+                        msg.acceleration.x, msg.acceleration.y = float(a_xy_acc[0]), float(a_xy_acc[1])
         # ---- THE REFERENCE'S OWN SPEED LIMIT, last, so it sees exactly what would have gone out ----
         if self.ref_slew_mps > 0.0:
             p = np.array([float(msg.position.x), float(msg.position.y), float(msg.position.z)])
@@ -480,12 +538,18 @@ class TourSequencer:
         return msg
 
     def summary(self):
-        return ("shim: %d waypoint(s), %d goal(s) sent, %d READY and %d COMPLETED messages forwarded "
-                "(%d of them held at the last waypoint), %s, tour source %s%s"
-                % (len(self.targets), self.goals_sent, self.n_ready, self.n_completed, self.n_held_after,
-                   "TOUR COMPLETE" if self.done else "waypoint %d" % (self.i_goal + 1),
-                   "EGO (wp_index)" if self.ego_driven else "this shell",
-                   " (%d wp_index message(s))" % self.wp_index_msgs if self.ego_driven else ""))
+        s = ("shim: %d waypoint(s), %d goal(s) sent, %d READY and %d COMPLETED messages forwarded "
+             "(%d of them held at the last waypoint), %s, tour source %s%s"
+             % (len(self.targets), self.goals_sent, self.n_ready, self.n_completed, self.n_held_after,
+                "TOUR COMPLETE" if self.done else "waypoint %d" % (self.i_goal + 1),
+                "EGO (wp_index)" if self.ego_driven else "this shell",
+                " (%d wp_index message(s))" % self.wp_index_msgs if self.ego_driven else ""))
+        # THE CORRIDOR'S OWN COUNT, because it is invisible in the flight's other logs: a clamp that never fired
+        # and a clamp that fired on every message are the same bytes on the wire otherwise.
+        if self.corridor_m > 0.0:
+            s += (" | route corridor %.3f m: %d point(s) and %d velocity/acceleration field(s) clamped"
+                  % (self.corridor_m, self.n_corridor, self.n_corridor_v))
+        return s
 
 
 # -----------------------------------------------------------------------------------------------------------
@@ -888,6 +952,68 @@ def _selftest() -> int:
         bad.append("the altitude floor did not hold a 1.100 m reference at 2.000 - 0.600 = 1.400 m (got %.3f m, "
                    "%d floor(s))" % (float(mf.position.z), fl.n_z_floored))
 
+    # ---- THE ROUTE CORRIDOR: the reference must be held on the leg's centreline, and opened at the corners ----
+    # The world's own numbers, from `_stage/leg-clearance.py`: every route edge is +0.200 m from the nearest pillar
+    # surface, the corners are +0.407 m, and the plan snakes about the line by +-0.4-0.5 m.  The clamp is the thing
+    # that spends the 0.200 m on along-track lag instead of on the snake.
+    rc = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None, arrive_m=0.35, hold_s=0.0,
+                       settle_mps=0.0, corridor_m=0.15, corridor_end_m=1.20, corridor_open_m=2.0)
+    rc.on_odom([0.05, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0)             # arrive at waypoint 1 (0,0,2)
+    rc.on_odom([0.05, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0 + 0.1)       # hold 0 -> advance: the leg is now y = 0
+    advanced = (rc.i_goal == 1 and rc.prev_target is not None)
+    mr = M()
+    mr.position.x, mr.position.y, mr.position.z = 2.50, 0.50, 2.0     # MID-LEG, 0.50 m off the line
+    mr.velocity.x, mr.velocity.y = 1.00, 0.80
+    mr.acceleration.y = 0.50
+    rc.rewrite(mr, now=t0 + 0.2)
+    print("   route corridor 0.15 m: advanced=%s; mid-leg the reference (y = 0.500, vy = 0.800) was forwarded at "
+          "y = %.3f, vy = %.3f, ay = %.3f (%d point(s), %d velocity field(s) clamped)"
+          % (advanced, float(mr.position.y), float(mr.velocity.y), float(mr.acceleration.y),
+             rc.n_corridor, rc.n_corridor_v))
+    if not advanced:
+        bad.append("the corridor test did not advance the tour, so it proves nothing")
+    if abs(float(mr.position.y) - 0.150) > 1e-9 or rc.n_corridor != 1:
+        bad.append("the route corridor did not hold a 0.500 m-across reference at 0.150 m (got %.3f m, %d clamp(s))"
+                   % (float(mr.position.y), rc.n_corridor))
+    if abs(float(mr.velocity.x) - 1.00) > 1e-9 or abs(float(mr.velocity.y)) > 1e-9:
+        bad.append("the route corridor left the ACROSS-the-line velocity on the wire (vx %.3f, vy %.3f) -- that is "
+                   "the cross-track demand it exists to remove" % (float(mr.velocity.x), float(mr.velocity.y)))
+    if abs(float(mr.acceleration.y)) > 1e-9:
+        bad.append("the route corridor left the across-the-line ACCELERATION on the wire (ay %.3f)"
+                   % float(mr.acceleration.y))
+    mr2 = M()
+    mr2.position.x, mr2.position.y, mr2.position.z = 2.50, -0.50, 2.0    # the OTHER side of the same line
+    mr2.velocity.x = 1.00
+    rc.rewrite(mr2, now=t0 + 0.3)
+    print("   route corridor: the other side (y = -0.500) was forwarded at y = %.3f" % float(mr2.position.y))
+    if abs(float(mr2.position.y) + 0.150) > 1e-9:
+        bad.append("the route corridor is one-sided (y = -0.500 went out at %.3f) -- the centrelines are the "
+                   "maximum-clearance paths, so both sides are equally expensive" % float(mr2.position.y))
+    # ... AND IT MUST OPEN AT THE CORNERS, which is where the field leaves twice the room (0.407 m against 0.200):
+    mr3 = M()
+    mr3.position.x, mr3.position.y, mr3.position.z = 4.60, 0.50, 2.0    # 0.40 m from the leg's END
+    mr3.velocity.x = 1.00
+    rc.rewrite(mr3, now=t0 + 0.4)
+    print("   route corridor: 0.40 m from the corner the same 0.500 m offset was forwarded at y = %.3f "
+          "(%d clamp(s) total)" % (float(mr3.position.y), rc.n_corridor))
+    if abs(float(mr3.position.y) - 0.50) > 1e-9:
+        bad.append("the route corridor stayed at full strength at the leg's END (y = 0.500 -> %.3f) -- the turn "
+                   "would be clamped into a 90 degree kink at the one place with room to take it"
+                   % float(mr3.position.y))
+    rc0 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None, arrive_m=0.35, hold_s=0.0,
+                        settle_mps=0.0)                                  # the knob at 0 = the flown behaviour
+    rc0.on_odom([0.05, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0)
+    rc0.on_odom([0.05, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0 + 0.1)
+    mr4 = M()
+    mr4.position.x, mr4.position.y, mr4.position.z = 2.50, 0.50, 2.0
+    mr4.velocity.y = 0.80
+    rc0.rewrite(mr4, now=t0 + 0.2)
+    print("   route corridor OFF: the same reference went out at y = %.3f, vy = %.3f (%d clamp(s))"
+          % (float(mr4.position.y), float(mr4.velocity.y), rc0.n_corridor))
+    if abs(float(mr4.position.y) - 0.50) > 1e-12 or abs(float(mr4.velocity.y) - 0.80) > 1e-12 or rc0.n_corridor:
+        bad.append("with the corridor at 0 the reference was changed -- the flown behaviour must stay "
+                   "byte-identical when the knob is 0")
+
     if bad:
         print("\nCONTRACT SHIM SELFTEST FAILED (%d problem(s)):" % len(bad))
         for b in bad:
@@ -970,6 +1096,20 @@ def _parser() -> "argparse.ArgumentParser":
                          "`--wp-index-topic` drives the id and the COMPLETED transition, and no goal is sent.")
     ap.add_argument("--wp-index-topic", default="/wp_index",
                     help="`std_msgs/Int32`, published by PATCH 0011: the current waypoint, -1 when finished")
+    ap.add_argument("--corridor-m", type=float, default=0.0,
+                    help="THE ROUTE CORRIDOR (0 = off): the forwarded horizontal reference is held within this "
+                         "distance of the CURRENT leg's centreline, and the across-the-line component of the "
+                         "velocity and acceleration fields is removed with it.  MEASURED justification "
+                         "(`_stage/leg-clearance.py`): all four route edges are exactly +0.200 m from the nearest "
+                         "pillar surface -- they are the field's maximum-clearance paths -- while the plan snakes "
+                         "about them by +-0.4-0.5 m, which is the entire collision deficit")
+    ap.add_argument("--corridor-end-m", type=float, default=0.0,
+                    help="how far from each leg's ends the corridor opens back up (metres; needs --corridor-m).  "
+                         "The corners are the safe places -- +0.407 m of clearance against the edges' +0.200 -- so "
+                         "the turn is left free instead of being clamped into a 90 degree kink")
+    ap.add_argument("--corridor-open-m", type=float, default=2.0,
+                    help="how much freedom (metres) the corridor gives at the very ends of a leg; the allowance "
+                         "ramps from --corridor-m in the interior to corridor-m + this at the ends")
     ap.add_argument("--ref-clamp-m", type=float, default=0.0,
                     help="CONTINUITY AT THE SOURCE: never forward a reference point more than this far from the "
                          "vehicle (0 = off, the behaviour every sortie before 2026-10-16 flew).  A position "
@@ -1044,7 +1184,9 @@ def main() -> int:
                         arrive_z_m=args.arrive_z_m, start_alt_m=args.start_alt_m,
                         ref_z_clamp_m=args.ref_z_clamp_m, ref_slew_mps=args.ref_slew_mps,
                         corner_m=args.corner_m, corner_mps=args.corner_mps,
-                        ref_z_floor_m=args.ref_z_floor_m, ref_acc_max=args.ref_acc_max)
+                        ref_z_floor_m=args.ref_z_floor_m, ref_acc_max=args.ref_acc_max,
+                        corridor_m=args.corridor_m, corridor_end_m=args.corridor_end_m,
+                        corridor_open_m=args.corridor_open_m)
     print("shim: %d waypoint(s) in L from %s" % (len(targets_l), args.world))
     for i, t in enumerate(targets_l):
         print("shim: waypoint %d -> %s (L)" % (i + 1, np.round(t, 3)))

@@ -251,6 +251,23 @@ EGO_REF_SLEW_MPS="${EGO_REF_SLEW_MPS:-6.0}"
 #: -- i.e. the aircraft OVERSHOOTS each corner by 1-1.7 m into the pillar ring, arriving at |v_ref| 1.8-2.4 m/s.
 EGO_CORNER_M="${EGO_CORNER_M:-1.0}"
 EGO_CORNER_MPS="${EGO_CORNER_MPS:-1.1}"
+#: THE ROUTE CORRIDOR (metres; 0 = off = every sortie before 2026-10-17): the forwarded horizontal reference is
+#: held within this distance of the CURRENT leg's centreline, with the across-the-line parts of the velocity and
+#: acceleration fields removed.  MEASURED why (`_stage/leg-clearance.py` on `worlds/rect68.yaml`): the pillars are
+#: r = 0.30 on a 1.0 m staggered checkerboard, so all four route edges are exactly +0.200 m from the nearest pillar
+#: surface over their whole interior and the corners are +0.407 m -- the centrelines ARE the field's maximum
+#: clearance paths -- while the plan snakes about them by +-0.4-0.5 m (the AD top view: the east edge runs out to
+#: x = 3.9 and cuts in to x = 2.67 at y = 2.5, 0.13 m inside the (2.5,2.5) pillar).  `EGO_CORRIDOR_END_M` opens the
+#: clamp back up that far from each leg's ends, because the corners are where the room is.
+EGO_CORRIDOR_M="${EGO_CORRIDOR_M:-0.0}"
+EGO_CORRIDOR_END_M="${EGO_CORRIDOR_END_M:-0.0}"
+#: HOW MUCH FREEDOM THE CORRIDOR GIVES AT THE VERY ENDS OF A LEG (metres).  DEFAULT 0.0 SINCE FLIGHT AL, and the
+#: measurement is why: with 2.0 m of freedom at the ends the reference used 0.45 m of it 0.9 m past a corner, the
+#: aircraft followed it inward, and when the clamp pulled the reference back to the line the aircraft was still
+#: 0.47 m inside it -- on the south edge at (-1.51,-3.53), where the (-1.5,-3.5) pillar stands 0.5 m inside the
+#: line (clearance -0.271 m).  The pillar rows are 0.5 m from EVERY edge, corners included, so there is no place
+#: on this route where the reference may leave the line: the opening was the wrong idea and its size was the defect.
+EGO_CORRIDOR_OPEN_M="${EGO_CORRIDOR_OPEN_M:-0.0}"
 #: NO GOAL IS PUBLISHED UNTIL THE VEHICLE IS THIS HIGH (metres; 0 = off).  Route B's twin of PATCH 0008's
 #: `fsm/waypoint_start_alt`; without it ego plans a climb for the whole take-off that nothing is following
 #: (Flight F: goals from t=1.9 s, 87 "First 3 control points in obstacles" before the trigger at t=20.4 s).
@@ -342,6 +359,7 @@ case "$PLANNER" in
 --settle-mps $EGO_SETTLE_MPS --leg-timeout-s $EGO_LEG_TIMEOUT_S --leg-abort-s $EGO_LEG_ABORT_S \
 --arrive-z-m $EGO_ARRIVE_Z_M --start-alt-m $EGO_START_ALT_M --ref-z-clamp-m $EGO_REF_Z_CLAMP_M --ref-z-floor-m $EGO_REF_Z_FLOOR_M \
 --ref-slew-mps $EGO_REF_SLEW_MPS --ref-acc-max $EGO_REF_ACC_MAX --corner-m $EGO_CORNER_M --corner-mps $EGO_CORNER_MPS \
+--corridor-m $EGO_CORRIDOR_M --corridor-end-m $EGO_CORRIDOR_END_M --corridor-open-m $EGO_CORRIDOR_OPEN_M \
 --odom-topic /ego/odom_fcu --ref-clamp-m $EGO_REF_CLAMP_M --trace-csv $OUT/shim_trace.csv ${CMD_ARGS:-}"
             PLANNER_WHAT="ego's OWN traj_server samples the plan (p+v+a) + the contract shell (tour, ids, COMPLETED)"
             PLANNER_TOPIC="/plan/cmd"
@@ -517,6 +535,17 @@ if [ "${EGO_CONTRACT:-shim}" = "shim" ]; then
     echo "   altitude  : the forwarded z is capped at tour_z + ${EGO_REF_Z_CLAMP_M} m (0 = off); goals withheld below ${EGO_START_ALT_M} m"
     echo "   watchdog  : a leg that has not advanced in ${EGO_LEG_TIMEOUT_S} s is announced; at ${EGO_LEG_ABORT_S} s the stream"
     echo "               STOPS so the supervisor's plan-silence rule ends the sortie (0 = off)"
+    if [ "${EGO_CORRIDOR_M:-0.0}" != "0.0" ]; then
+        echo "   corridor  : the reference is held within ${EGO_CORRIDOR_M} m of the current leg's centreline; the"
+        echo "               across-the-line velocity and acceleration are removed with it"
+        if [ "${EGO_CORRIDOR_OPEN_M:-0.0}" != "0.0" ]; then
+            echo "               it opens by ${EGO_CORRIDOR_OPEN_M} m over the last ${EGO_CORRIDOR_END_M} m of each leg"
+        else
+            echo "               it does NOT open at the ends -- the corners are as tight as the straights"
+        fi
+    else
+        echo "   corridor  : OFF -- the reference follows the plan's own snake about the centreline"
+    fi
 fi
 echo "   take-off  : ${TAKEOFF_PROFILE}"
 # THE CLIMB-LEG LINES DESCRIBE THE PLANNER THAT IS ACTUALLY RUNNING, not the one the take-off profile was
