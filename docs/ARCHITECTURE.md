@@ -552,6 +552,43 @@ and the controller cannot hold it to 0.2 m at the speed the criterion needs (2).
 contract shell is the only place left that CAN express it, and its risk -- it fights a plan that legitimately
 leaves the line for a real obstacle -- has to be handled rather than ignored.
 
+### IMPLEMENTED 2026-10-17: THE CORRIDOR CLAMP, AND WHAT IT MEASURED
+
+`ego_contract_shim.py --corridor-m R` (with `--corridor-end-m`, `--corridor-open-m`, and
+`EGO_CORRIDOR_M/_END_M/_OPEN_M` in `run-mission.sh`, default 0.0 = OFF = byte-identical to every earlier
+sortie) holds the forwarded horizontal reference inside `R` of the CURRENT leg's centreline and removes the
+across-the-line components of the velocity and acceleration fields with it.  The geometry that justifies it is
+measured, not assumed (`_stage/leg-clearance.py`): the 46 pillars are r = 0.30 on a 1.0 m staggered
+checkerboard, so **all four route edges are exactly +0.200 m from the nearest pillar surface over their whole
+interior** -- the centrelines ARE the maximum-clearance paths of this field, and no offset from them leaves
+more -- while the corner POINTS have +0.407 m.  The aircraft is held to 0.200 m, so every centimetre the
+REFERENCE spends off the line is a centimetre taken from the aircraft's own error.
+
+Four sorties, one knob at a time, all on the Flight AD arm:
+
+    Flight AK  no corridor                    7.42 % of samples inside a body   min -0.276 m
+    Flight AL  0.10 m, 2.1 m opening at ends  1.16 %                            min -0.271 m
+    Flight AM  0.10 m, no opening             0.66 %                            min -0.050 m
+    Flight AN  0.01 m, no opening             0.21 %                            min -0.052 m
+
+and the reference's own line tells the same story in the reference itself: in AK it goes inside a pillar
+**10.18 %** of the time (the plan does not avoid them reliably at this scale), in AL/AM/AN **0.00 %**, with its
+minimum clearance at +0.100 / +0.125 / +0.191 m.  So the clamp does not merely shift the odds, it makes the
+reference's clearance a property of the world rather than of the run: the 0.200 m stops being spent by the plan
+at all.  The two halves are both load-bearing -- the opening at the ends was Flight AL's defect, because the
+pillar rows are 0.5 m from EVERY edge of this route (including past a corner, where the nearest pillar is
+0.707 m away on the diagonal), so a reference invited to take a 0.45 m lead near a corner takes it into a row
+and the aircraft follows it in before the clamp withdraws it (`_stage/window-trace.py`, Flight AL t = 71.46 s).
+
+WHAT IT COSTS, honestly: the corridor makes the shell a path-follower, so a plan that leaves the line for a
+real obstacle would be overruled.  Here that is safe only because the map was measured free on all four lines
+(`_stage/edge-map.py`: 0 occupied cells of 1413 / 1679 / 915 / 914) and because the centrelines are the
+maximum-clearance paths; on another route the same knob would need that check repeated.  And what it does NOT
+fix is the aircraft: Flight AN's remaining episode is a corner EXIT -- 0.219 m outside the west edge 0.3-1.2 m
+past the NW corner, decaying over about a second, grazing the (-3.5,2.5) pillar at -0.052 m -- which is
+momentum and a 1.5 s^-1 position loop, not the path.  `_stage/corridor-stats.py` and `_stage/window-trace.py`
+are the instruments for both halves.
+
 ## CORRECTION (2026-10-17): THE "NO MEMORY" IS UPSTREAM'S OWN CLOUD PATH, NOT OUR MODIFICATION
 
 The owner challenged the claim above -- "为什么没有记忆??你魔改了吗,原版的ego有记忆的!" -- and the challenge is

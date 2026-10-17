@@ -803,3 +803,31 @@ the NW corner the truth is 0.219 m outside the west edge while the reference is 
 aircraft's own momentum from the north edge, decaying over ~1 s, and the (-3.5,2.5) pillar 0.5 m outside the line is
 grazed at -0.052 m.  The two knobs that act on that are the corner speed it is carried at and the plan's speed once
 the corner releases -- Flights AO (max_vel 2.5) and AP (corner 0.80 m/s).
+
+============================================================================
+FLIGHTS AO + AP -- THE PLAN'S SPEED (AO) AND THE CORNER SPEED (AP) (2026-10-17)
+============================================================================
+[_stage/flightAO.sh: corridor 0.01 + EGO_MAX_VEL/ACC 2.5]     [_stage/flightAP.sh: corridor 0.01 + EGO_CORNER_MPS 0.80]
+
+                            Flight AN (parent)      Flight AO (2.5 m/s)     Flight AP (corner 0.80)
+    C2 minimum              -0.052 m                -0.054 m                **-0.031 m**  <-- best ever
+    % inside a body          0.21 %                  0.74 %                   **0.17 %**    <-- best ever
+    % below 0.10 m           0.99 %                  3.34 %                   0.37 %
+    A1 / A2                  8.99 / 8.11 mm          10.77 / 9.63 mm          9.35 / 7.29 mm
+    B1 E / N                 6.393 / 8.208           6.701 / 8.458            **6.378 / 8.210**
+    C1                       0.129 m                 0.218 m                  0.069 m
+    legs under 6 s / max     2 of 8 / 8.54 s         3 of 8 / 10.66 s         3 of 8 / 9.89 s
+    |v_ref| p50 / p90        1.099 / 1.411           1.100 / 1.720            0.800 / 1.425
+    ACROSS the plan p50/p90  0.124 / 0.276           0.204 / 0.335            0.161 / 0.331
+    truth clearance min      +0.059 m                -0.039 m (worst inst.)   **+0.078 m, 0 of 2581 inside**
+
+WHY ASKING THE PLAN FOR SPEED CANNOT REACH 6 s: `|v_ref|` p50 is the corner governor's cap in EVERY arm that has flown
+it -- 1.100 m/s in AN, 1.100 in AO (despite a 2.5 m/s ceiling; only p90 moved, 1.411 -> 1.720), 0.800 in AP.  The
+governor holds the VELOCITY feed-forward hard at `corner_mps` anywhere within `corner_m` of a corner, 8 corners at
+1.0 m on a 6 x 8 m rectangle is ~16 m of a 44 m route, and the position slew limiter is already tapered across that
+radius -- so only the hard velocity cap makes the whole radius slow.  Flight AQ shrinks the radius to 0.5 m at AP's
+0.80 m/s; Flight AR adds `EGO_MAX_VEL` 2.5 on top of AQ if AQ holds AP's safety.
+
+*** THE BEST MEASURED ARM IS NOW AP ***: corridor 0.01 m with no opening, `EGO_CORNER_MPS` 0.80, everything else the
+harness defaults -- C2 -0.031 m, 0.17 % inside a body, 0.37 % below 0.10 m, B1 6.378 / 8.210, and 0 of 2581 samples
+inside a pillar in the instrument window.  Its remaining failure is TIME: 3 of 8 legs under 6 s, max 9.89 s.
