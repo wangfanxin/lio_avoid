@@ -653,3 +653,57 @@ is a symptom of a second thing to look at (why the safety check fired so early o
 known, minimal and already written.  The next sortie therefore needs, in this order: re-apply the crash fix (the
 `spin_some` loops) to the lidar tree; then the map parameters that suit OUR sensor (`p_hit`/`p_miss` were tuned
 for a MID-360 at a different range and rate); then re-fly and read the same instruments.
+
+============================================================================
+FLIGHT AJ -- `EGO_REF_ACC_MAX` 2.0 -> 1.5 (2026-10-17)        [_stage/flightAJ.sh]
+============================================================================
+C2 minimum -0.165 m, 0.49 % of samples inside a body, 2.97 % below the 0.10 m standoff;
+A1 8.72 mm, A2 10.64 mm, C1 0.049 m [PASS], B1 E 6.563 / N 8.338;
+legs 2.21 / 5.21 / 6.70 / 5.25 / 9.80 / 5.50 / 8.65 / 6.67 s -> 4 of 8 under 6.0 s, max 9.80 s;
+tracking gap p50 0.097 / p90 0.265 / max 0.347 m (|v_ref| p50 1.145, max 1.484);
+gap/speed p50 0.133 / p90 0.247 s;  ALONG the plan p50 0.017 / p90 0.064,  ACROSS p50 0.102 / p90 0.263 m;
+reference clear at the worst instant of every contact episode;  0 truth samples inside a pillar surface in the
+1 Hz forensic sample (the 1200 Hz C2 line above is the authoritative one).
+
+  THE BRACKET ON THE ACCELERATION CLAMP IS NOW CLOSED:
+     1.5  (AJ)  C2 -0.165 / 0.49 % inside,  4 of 8 legs,  max 9.80 s,  p90 0.265
+     2.0  (AD)  C2 -0.134 / 0.34 % inside,  5 of 8 legs,  max 6.93 s,  p90 0.274   <-- the default
+     2.5 + gain 1.8 (AE)  A1 58.90 mm, C2 -0.235 / 4.01 % inside
+  The lower side loses on TIME (max leg 9.80 s against 6.93), not on safety, so 2.0 stands on both axes.
+
+============================================================================
+THE PARAMETER LEAK THAT RE-OPENS FIVE CLAIMS (same round)
+============================================================================
+`params/guided_limits_fast.parm` had `PSC_NE_POS_P 1.8` appended TWICE after Flight AD, and
+`params/guided_limits_tune2.parm` lost the line that was AE's arm.  `EXTRA_PARM` is appended LAST to
+`--defaults` ("the last value wins"), so Flights AF, AG, AH, AI and AJ all flew the loop at 1.8:
+
+    flight   arm asked for              loop actually flown
+    AF       EGO_MAX_VEL/ACC 2.2        1.8
+    AG       EGO_CORNER_MPS 1.30        1.8
+    AH       nothing (bare defaults)    1.8
+    AI       EGO_MAX_VEL/ACC 2.1        1.8
+    AJ       EGO_REF_ACC_MAX 1.5        1.8
+
+Both files are restored to HEAD (`git checkout -- params/`), so fast.parm is `PSC_NE_POS_P 1.5` and tune2.parm is
+1.8 again, and no tracked file is modified.  The numbers in the ledger for AF/AH/AI/AJ remain what those arms
+produced, but they are *gain-1.8 + knob* arms, not single-variable ones, and the next sortie re-flies the AD
+default arm to re-establish the baseline.
+
+============================================================================
+WHAT THE ROUTE ITSELF LEAVES (`_stage/leg-clearance.py`, worlds/rect68.yaml)
+============================================================================
+46 pillars, r = 0.30, on a 1.0 m staggered checkerboard over x,y = -4.5 .. 4.5; a straight, perfectly tracked
+edge clears the nearest surface by:
+
+    south  ( -3,-4)->( 3,-4)   min +0.200 m at (-2.500,-4.000)  [pillar (-2.5,-4.5)]   p50 0.259
+    east   (  3,-4)->( 3, 4)   min +0.200 m at ( 3.000,-3.500)  [pillar ( 2.5,-3.5)]   p50 0.276
+    north  (  3, 4)->(-3, 4)   min +0.200 m at ( 2.500, 4.000)  [pillar ( 2.5, 4.5)]   p50 0.259
+    west   (-3, 4)->(-3,-4)    min +0.200 m at (-3.000, 3.500)  [pillar (-2.5, 3.5)]   p50 0.259
+    corners (-3,-4) (3,-4) (3,4) (-3,4):  +0.407 m each
+
+The criterion is >= 0.000 m, so the straight line clears by the full 0.200 m and no offset from it improves the
+number -- the centrelines are the maximum-clearance paths of this field, and the corners have twice their room.
+That is the reason the corridor clamp is safe by construction: what it removes is the plan's +-0.4-0.5 m snake
+(the AD top view shows the east edge running out to x ~ 3.9 at y = 1.5-2.5 and in to x = 2.67 at y = 2.5, 0.13 m
+inside the (2.5,2.5) pillar, which is where the worst sample -0.134 m was recorded).
