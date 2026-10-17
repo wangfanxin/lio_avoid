@@ -1,0 +1,70 @@
+# GUIDED POSITION-CONTROLLER LIMITS, RAISED -- the arm for "can the flight controller follow ego's plan at all"
+#
+# WHY (measured, `docs/metrics/why-collide-20261016.txt` and `plan-quality-tracking-20261016.txt`):
+#   * ArduPilot's GUIDED posvelaccel path does not fly the position we send.  It treats it as a GOAL for an
+#     acceleration-limited reference model (`shape_pos_vel_accel_xy`, `AP_Math/control.cpp:346-400`) whose limit
+#     comes from `WP_ACC` (old `WPNAV_ACCEL`) via `mode_guided.cpp:255/321`.
+#   * `WP_ACC` default = 2.5 m/s2 (`AC_WPNav.h:15`), and the run realised 2.463 m/s2 -- while ego's plan asks for
+#     p99 6.15 / max 13.84 m/s2.  The FCU's internal reference therefore trailed the plan by up to 0.591 m, and
+#     `PSCN.TVN - PSCN.DVN = PSC_NE_POS_P x (DPN - PN)` proves the loop closes on THAT reference.
+#   * 24.4 % of all 1664 setpoints demanded more than the 2.463 m/s2 the shaper would give.
+#
+# THE FOUR THAT BIND TOGETHER -- raising one alone does nothing:
+#   WP_ACC         the shaper's horizontal acceleration limit      (2.5 -> 6.0 m/s2)
+#   PSC_NE_JERK    how fast it may REACH that limit                (5.0 -> 30 m/s3: 6 m/s2 in 0.2 s, not 1.2 s)
+#   ATC_ANGLE_MAX  the geometric ceiling, g*tan(tilt)              (30 -> 40 deg: 5.66 -> 8.2 m/s2)
+#   WP_SPD         the shaper's horizontal SPEED limit             (2.0 -> 4.0 m/s; it was BELOW the 2.35 m/s
+#                                                                    the plan commanded, so it was clipping too)
+#
+# TWO NAMES THAT LOOK RIGHT AND ARE NOT.  `ATC_ACCEL_P_MAX` / `ATC_ACCEL_R_MAX` do not exist in this firmware --
+# 4.7 renamed them to **`ATC_ACC_R_MAX` / `ATC_ACC_P_MAX`** in deg/s/s (`AC_AttitudeControl.cpp:51,193,203`, and
+# the built-in conversions at `:1189,1197` exist precisely because the old names are gone).  The first version of
+# this file set the old names, and `_stage/live-params.py` caught it on the pad: the FCU answered "(no answer)"
+# for both, i.e. a parameter that is silently ignored -- the same trap `tools/install-ego-launch.py --static`
+# exists for on the launch side.  The attitude controller's roll/pitch acceleration is left at its default here
+# ON PURPOSE: it is in deg/s/s and its default is already far above what a 40 deg tilt can use, so naming it
+# would be a third variable with no mechanism behind it.
+#
+# MEASURED ON THE PAD, live over MAVLink (`_stage/verify-guided-limits.sh`, 2026-10-16):
+#     control (the mission's own files, which set NONE of these):
+#         WP_ACC 2.5000   PSC_NE_JERK 5.0000   ATC_ANGLE_MAX 30.0000   WP_SPD 2.0000
+#     with this file appended last:
+#         WP_ACC 6.0000   PSC_NE_JERK 30.0000  ATC_ANGLE_MAX 40.0000   WP_SPD 4.0000
+
+#
+# WHAT THIS DOES *NOT* FIX, and the reader must not expect it to (`why-collide-20261016.txt`):
+#   * the REFERENCE STEPS at every 1 Hz replan (median 0.281 m, max 0.927 m on the wire; the sampled point jumps
+#     because `t_cur = now - start_time` restarts) -- a more capable controller follows a jump HARDER;
+#   * the plan's own 13.84 m/s2 peaks, which exceed even this file's ceiling;
+#   * the 5-17 cm margin the plan gives itself on the tight stretch.
+#   So this is one variable of a pair: the reference-continuity fix (review step 5) is the other, and the flight
+#   that tests this file must measure the tracking error AND the reference steps, not just the outcome.
+#
+# FLOWN WITH: EXTRA_PARM=params/guided_limits_fast.parm   (run-mission.sh appends it LAST to --defaults; the
+# path is printed in the revision block, so a sortie's own log names the arm it flew).
+WP_ACC 8.0
+PSC_NE_JERK 100.0
+ATC_ANGLE_MAX 40.0
+WP_SPD 4.0
+#
+# NOTE ON THE TWO NUMBERS THAT MOVED ON 2026-10-17 (Flight I): this file used to end `WP_ACC 6.0 /
+# PSC_NE_JERK 30.0`, and the Flight-I section below was APPENDED, which left two `WP_ACC` lines in the file.
+# ArduPilot takes the last one, so the FCU did get 8.0/100.0 -- but the sortie's own banner read the file with
+# `grep -m1 '^WP_ACC'` and printed 6.0/30.0, i.e. the banner lied about the arm that was flown.  The old lines
+# are therefore GONE rather than duplicated: one parameter, one line, and the banner is the file.
+#
+# ADDED 2026-10-17 (Flight I), and here is the measurement that asks for it.  Flight H flew the same arm at
+# 3.0 m/s and the REFERENCE itself reached p90 2.72 / p99 3.07 / max 3.33 m/s -- the speed is no longer the
+# plan's limit -- but the tracking error grew with it: |cmd - fcu| went from p50 0.034 m (Flight C, 0.8 m/s) to
+# p50 0.139 / p90 0.532 / max 0.840 m.  Those transients are the flight controller's SHAPER lagging the
+# reference it is given (`shape_pos_vel_accel_xy`, driven by WP_ACC and PSC_NE_JERK), and they are exactly where
+# a plan whose real margin is 0.10-0.20 m runs out of it (Flight H: minimum pillar-surface distance -0.258 m,
+# 4.89 % of samples inside a body).  So the shaper gets more authority, not the plan less speed.
+#
+#   PSC_NE_JERK    5.0 -> 30.0 -> **100.0**: 3 m/s2 in 30 ms instead of 100 ms.  This is the one that binds:
+#                  the plan's own accelerations are 3 m/s2 or less, so a shaper that can reach the limit in
+#                  30 ms tracks a step-free reference within centimetres.
+#   WP_ACC         6.0 -> **8.0**: still under the 8.2 m/s2 the 40 deg tilt allows (g*tan(40 deg)).
+
+# FLIGHT AE: the position loop one step further (Flight AD measured 1.5 and was the best yet).
+PSC_NE_POS_P 1.8
