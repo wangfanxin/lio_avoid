@@ -56,7 +56,14 @@ esac
 # the dense forest (default) or the fast 6.0 x 4.0 m square in the sparse one, and every geometric number
 # -- the trajectory, the corner reference the metrics judge against, the geofence -- comes from the world
 # file through tools/world-info.py, so a reference cannot drift from what is flown (STATUS.md row 44).
-WORLD="${WORLD:-$ROOT/worlds/pillars.yaml}"
+#
+# THE DEFAULT WORLD IS THE OWNER'S RANDOM FOREST (2026-10-17: "你柱子默认改成随机量拉满的方式").  It is
+# `worlds/rect68_random.yaml` -- 96 pillars of r 0.25 m on a 1 m lattice, each at a RANDOM position anywhere in
+# its cell (jitter = the whole half-cell, 0.250 m), the take-off area in the centre empty, the 9-waypoint two-lap
+# 6 x 8 m tour.  The generator is `src/tools/make-random-forest.py`, so the field is a rule in this repository and
+# not a hand-edited list.  The frozen Mission A world (`worlds/pillars.yaml`) is one flag away and is still what
+# `frozen/mission_a.manifest` pins:  WORLD=worlds/pillars.yaml bash src/tools/run-mission.sh <TAG>
+WORLD="${WORLD:-$ROOT/worlds/rect68_random.yaml}"
 MISSION_PARM="${MISSION_PARM:-$ROOT/params/phase_a_mission.parm}"
 [ -f "$WORLD" ] || { echo "no world file at $WORLD" >&2; exit 1; }
 # GEOFENCE_M may be overridden for a mission whose goal is ON the arena wall: the gate exists to catch a
@@ -103,11 +110,19 @@ fi
 # file, which is **3.0** -- and STATUS row 42 is the measured consequence of that value: the default
 # configuration flew one leg and landed.  The default is now the requirement, and which one was used is
 # PRINTED at start-up rather than inferred from the log afterwards.
+#
+# 2026-10-17, THE OWNER'S CALL: **2.0 s AT EVERY CORNER IS NOW THE DEFAULT** ("那改成角点悬停2s", chosen from a
+# direct question after the experiment was flown).  Flight FLIGHTHOLD2 measured what it buys and what it costs:
+# arrivals 0.027-0.115 m against 0.28-0.30 m for the fly-through arm, C2 -0.057 m -- the best of every arm on the
+# random forest -- and legs 2.15-10.21 s with 1 of 9 under 6 s, because the dwell sits inside the leg that follows
+# it (8 corners x 2 s = 16 s of hover, so 8 legs x 6 s is unreachable by construction).  The settle clause below
+# goes with it: without a speed test the dwell timer runs beside a still-moving aircraft, and a hover that is not
+# a hover is not what was measured.
 if [ -n "${RECT_HOLD_S:-}" ]; then
     RECT_HOLD_FROM="the CALLER (RECT_HOLD_S=$RECT_HOLD_S)"
 else
-    RECT_HOLD_S=0.0
-    RECT_HOLD_FROM="THE HARNESS DEFAULT (RECT_HOLD_S was not set)"
+    RECT_HOLD_S=2.0
+    RECT_HOLD_FROM="THE HARNESS DEFAULT (RECT_HOLD_S was not set; 2.0 s at every corner since 2026-10-17)"
 fi
 WORLD_HOLD_S="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["mission"].get("hold_s", "unset"))' "$WORLD" 2>/dev/null || echo unreadable)"
 
@@ -173,7 +188,12 @@ fi
 #   <path.py>  any file that publishes the contract
 # Nothing in the bridge or the supervisor changes with this switch: `tools/test-planner-swap.py` drives the
 # SAME consumer code with three different planners and asserts exactly that.
-PLANNER="${PLANNER:-rectangle}"
+#
+# THE DEFAULT PRODUCER IS `ego` SINCE 2026-10-17, because the default WORLD is the owner's random forest: the
+# rectangle producer has no obstacle awareness at all, and on a field whose worst leg clears a pillar by 0.020 m
+# that is not a default worth shipping.  The frozen Mission A pair is one flag away and is what the tag pins:
+#     WORLD=worlds/pillars.yaml PLANNER=rectangle bash src/tools/run-mission.sh <TAG>
+PLANNER="${PLANNER:-ego}"
 PLANNER_TOPIC="${PLANNER_TOPIC:-/plan/cmd}"
 #: the limits ego's optimiser is told to respect, when the ego stack is started (see `EGO_STACK` below).
 #: They are SOFT quadratic penalties in that optimiser (`bspline_optimizer.cpp:1118-1149`), not constraints,
@@ -231,7 +251,12 @@ EGO_ARRIVE_M="${EGO_ARRIVE_M:-0.30}"
 #: cost **9-10 s of standstill at every corner**: 5.0 s of dwell (`RECT_HOLD_S`) plus 4-5 s of waiting for a
 #: 0.08 m/s settle -- on a 6 m leg that is more than the flight itself.  `--settle-mps` 0.30 lets the tour
 #: advance while the aircraft is still rolling, which is what "fly through the waypoint" means.
-EGO_SETTLE_MPS="${EGO_SETTLE_MPS:-0.0}"
+#:
+#: 2026-10-17, WITH THE 2.0 s DWELL THIS GOES BACK UP TO 0.10 m/s (owner's call, Flight FLIGHTHOLD2): the dwell
+#: is only a HOVER if the vehicle has actually stopped when its timer starts -- with the test switched off the
+#: timer runs beside a moving aircraft.  Measured with 0.10: nine corners hovered at |v| 0.06-0.10 m/s, arrivals
+#: 0.027-0.115 m (against 0.28-0.30 m with no settle), C2 -0.057 m, the best of every arm on the random forest.
+EGO_SETTLE_MPS="${EGO_SETTLE_MPS:-0.10}"
 #: THE VERTICAL TOLERANCE OF THE SHELL'S ARRIVAL GATE (metres) and an UPPER CLAMP ON THE FORWARDED ALTITUDE.
 #: Both exist because of ONE measurement (Flight F, 2026-10-17): the aircraft arrived at corner 1 **84.4 mm away
 #: horizontally and 0.834 m high**, the 3-D gate therefore never opened in 21 s, and the reference itself had

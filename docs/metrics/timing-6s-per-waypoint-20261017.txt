@@ -1868,3 +1868,29 @@ a hover rather than a timer beside a moving aircraft -- so this is ONE variable 
   with 8 corners x 2 s = 16 s of hover, the route cannot be 8 legs x 6 s.
 
   NOT PROMOTED: RECT_HOLD_S stays 0.0.  A one-line change if the owner wants it as the default.
+
+============================================================================
+ROUND 31 -- THE DEFAULT IS NOW THE OWNER'S FOREST, AND THE DEFAULTS UNDER IT WERE MADE COHERENT (2026-10-17)
+============================================================================
+Owner: "你柱子默认改成随机量拉满的方式".  Three defaults changed in src/tools/run-mission.sh:
+  WORLD        ->  worlds/rect68_random.yaml     (the maximally random forest; was worlds/pillars.yaml)
+  PLANNER      ->  ego                           (was rectangle: no obstacle awareness on a 0.020 m leg)
+  RECT_HOLD_S  ->  2.0 s                         (was 0.0; the owner's corner-hover decision)
+  EGO_SETTLE_MPS -> 0.10 m/s                     (was 0.0; without it the dwell timer runs beside a moving aircraft)
+
+BARE VERIFICATION -- FLIGHTBARE-defaults (nothing exported but EXTRA_PARM):
+  banner                  planner ego; world rect68_random.yaml; dwell 2.0 s from the harness default;
+                          arrival gate d_xy <= 0.30 m, |dz| <= 1.00 m, |v| < 0.10 m/s, then 2.0 s
+  tour                    TOUR COMPLETE, 9 of 9, every corner hovered at |v| 0.09-0.10 m/s for 2.0 s
+  arrivals                0.081 / 0.171 / 0.089 / 0.056 / 0.041 / 0.200 / 0.187 / 0.024 / 0.042 m
+  A1 / B1 / C1 / C2       14.91 mm / E 6.382 N 8.837 / 0.084 m PASS / **-0.060 m** (24671 of 99441 in the footprint)
+  legs                    1 of 9 under 6.0 s, max 13.15 s, route ~74 s
+
+THE FIRST BARE ATTEMPT FAILED, and it is recorded because it is this arm's failure mode:
+  FLIGHTBAREHOVER: ego stops planning ("the drone is in obstacle" -- its own position marked in its map), the shim
+  keeps holding the last reference, the 560 s watchdog ends the sortie, and 31.8 % of truth samples end up inside
+  a body (minimum -0.250 m).  The 2 s dwell gives the map time to mark the vehicle itself, so the hover arm is
+  FRAGILE in a way the fly-through arm was not.
+
+REPRODUCING THE OLDER ARMS, now that the defaults moved: `RECT_HOLD_S=0 EGO_SETTLE_MPS=0` + the same world for the
+fly-through numbers, and `WORLD=worlds/pillars.yaml PLANNER=rectangle` for the frozen Mission A.
