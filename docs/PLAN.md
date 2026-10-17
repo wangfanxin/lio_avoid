@@ -144,6 +144,28 @@ What the shell has left is one kind of thing: **limits and continuity on the ref
 `PSC_NE_POS_P` 1.8 (or 2.0 in the both-criteria arm file) is one of ITS parameters.  The corridor's story and its
 numbers are in §3.1-3.4; the refutation of every other idea is row by row in `STATUS.md`.
 
+### 3.6 The frontier, stated once and for the record (end of round 24)
+
+Twenty-four rounds after the corridor, every knob this stack exposes has been flown and bracketed.  What the flight can
+do, measured:
+
+| | value | evidence |
+|---|---|---|
+| the reference's own clearance | **never inside a pillar** since round 17; worst-instant +0.125 .. +0.284 m | `corridor-stats.py` on every corridor sortie |
+| the aircraft's clearance -- reproducible | **+0.016 .. +0.038 m, 0.00 % inside, C2-ego MET, 3 sorties in a row** (CH, CH2, CL) | STATUS 222-223 |
+| the aircraft's clearance -- with 8 of 8 legs | +0.028 m (CRS2) and +0.038 m (CU), **2 sorties**, and -0.05 .. -0.16 m on their siblings | STATUS 225-226 |
+| legs | 6-7 of 8 under 6 s at the default; **8 of 8** at ceiling 2.6, arrival 0.35 or FCU jerk 200 -- each of which spends 2-15 cm of clearance | STATUS 225-226 |
+| where the missing 0.1-0.3 s is | the DECELERATION into each corner: `--corner-mps` 1.10 over `--corner-m` 0.50, bracketed from both sides (1.20 worse, zone 0.35 and 0.65 worse, 1.00 clean but slower) | STATUS 224, 227-228 |
+| why it cannot be bought elsewhere | the 50 Hz setpoint hold costs 0.03 m at 1.5 m/s and 100 Hz saturates this Python bridge (Flights AA/AB); the plan's ceiling above 2.5 m/s loses the margin in five independent refutations | STATUS 178, 195-198 |
+
+**The objective -- every leg <= 6 s AND no contact -- has been met in five sorties** (AU for the time clause alone at
+8 of 8; BU2 +0.073 m, BZ2 +0.006 m, CRS2 +0.028 m, CU +0.038 m with 8 of 8 legs), **and never twice in a row.**  What
+is reproducible is the safety clause at the committed default.  The honest statement of the remaining gap: at this
+field's **0.200 m** budget, with an aircraft that holds **0.10-0.15 m** of cross-track error at 1.5 m/s and a wire that
+adds 0.03 m, the two clauses are **the same quantity within the run-to-run spread**, so no single knob separates them;
+a faster wire (needs a non-Python publisher) or a stiffer airframe are the only remaining directions, and neither is a
+parameter.
+
 ## 4. The pipeline
 
 ```

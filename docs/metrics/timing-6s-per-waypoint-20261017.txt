@@ -1684,3 +1684,21 @@ THE OBJECTIVE: met in a sortie five times (AU time-only, BU2, BZ2, CRS2, CU); re
 at the default (3 of 3: CH +0.038, CH2 +0.016, CL +0.033 m, all 0.00 % inside, C2-ego MET).
 DEFAULTS UNCHANGED (arrive 0.30, ceiling 2.5, replan 0.5, ref-acc 2.0, jerk 100) -- the reproducible-clean side.
 The jerk-200 trial lives in `_stage/tune-jerk.parm`, NOT in `params/`.
+
+============================================================================
+ROUND 24 -- THE DOUBLE ARRIVAL (REFUTED) AND THE PLANE GATE (REJECTED BY ARITHMETIC) (2026-10-17)
+============================================================================
+EGO_NOREPLAN_M 1.0 -> 0.60 (ego's own arrival meter):
+    CW   C2 -0.027 m, 0.19 % inside, legs 6 of 8 (6.75, 6.21)
+    CW2  C2 **+0.060 m**, 0.00 % inside, C2-ego MET, legs 6 of 9 (7.43, 6.46, 7.47), route 44.9 s
+    -> closing the held tail makes the flight SLOWER (the FSM re-plans to a closer goal instead of finishing the
+       last spline, and each re-plan restarts traj_server's clock).  Default stays 1.0.
+
+THE PLANE GATE: built, selftested, and removed within the round.  With a 0.10 m lateral offset the radial gate fires at
+dz <= 0.283 -- 0.28 m BEFORE the corner's plane -- so a plane gate would end every leg LATER.  `git status` on the shim
+is empty; the only trace is STATUS 228.
+
+THE FRONTIER (PLAN 3.6): the reference is never inside a pillar; the aircraft is clean in 3 consecutive sorties at the
+default (+0.016 .. +0.038 m) and has met BOTH clauses in 5 sorties across the investigation (BU2, BZ2, CRS2, CU, and AU
+for time alone), never twice in a row.  The missing 0.1-0.3 s is the corner deceleration, bracketed on both sides; the
+only remaining directions are a faster wire (blocked by the Python bridge) or a stiffer airframe.
