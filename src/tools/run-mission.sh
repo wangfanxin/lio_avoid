@@ -179,7 +179,7 @@ PLANNER_TOPIC="${PLANNER_TOPIC:-/plan/cmd}"
 #: They are SOFT quadratic penalties in that optimiser (`bspline_optimizer.cpp:1118-1149`), not constraints,
 #: so they shape the plan rather than bound the flight -- the FCU is what bounds the flight.
 EGO_MAX_VEL="${EGO_MAX_VEL:-2.0}"
-EGO_MAX_ACC="${EGO_MAX_ACC:-3.0}"
+EGO_MAX_ACC="${EGO_MAX_ACC:-2.2}"
 #: HOW FAT THE PLANNER'S OBSTACLE IS ON TOP OF THE MARKED CELLS (`grid_map/obstacles_inflation`).  0.099 above is
 #: one 0.1 m cell and has been the flown value since DIAG14.  MEASURED consequence, Flight E's own DIAG/2 slices
 #: via `_stage/map-inflation.py`: the map's obstacle reaches 0.540 m from a pillar's axis, i.e. 0.240 m past the
@@ -502,7 +502,7 @@ echo "               $PLANNER_FILE  ->  $PLANNER_TOPIC (quadrotor_msgs/PositionC
 echo "               (the BRIDGE and the SUPERVISOR do not know which planner this is: they read the topic)"
 if [ "${EGO_STACK:-0}" = "1" ]; then
     echo "   ego stack : ON -- ego_planner_node (src/planner/ego_on_lio.launch.py) + cloud_relay"
-    echo "               /lio/cloud_world -> ${EGO_CLOUD_TOPIC:-/ego/cloud} at 0.10 m; ego max_vel ${EGO_MAX_VEL:-2.0} max_acc ${EGO_MAX_ACC:-3.0} (SOFT); inflation ${EGO_INFLATION:-0.099} m"
+    echo "               /lio/cloud_world -> ${EGO_CLOUD_TOPIC:-/ego/cloud} at 0.10 m; ego max_vel ${EGO_MAX_VEL:-2.0} max_acc ${EGO_MAX_ACC:-2.2} (SOFT); inflation ${EGO_INFLATION:-0.099} m"
 fi
 echo "   world     : $WORLD  ($CORNERS)"
 echo "   airframe  : sim model '$SITL_MODEL' against FRAME_TYPE 1 (X) -- the two must agree (see SITL_MODEL above)"
