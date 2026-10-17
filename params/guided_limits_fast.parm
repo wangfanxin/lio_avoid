@@ -72,4 +72,11 @@ WP_SPD 4.0
 #                  surface, the largest margin measured on this route.  The earlier refutations do not apply to
 #                  this configuration: Flight AE raised the gain TOGETHER with EGO_REF_ACC_MAX 2.5 (which
 #                  over-drove the loop) and Flight AX flew it with the plan's ceiling at 3.0.
-PSC_NE_POS_P 1.8
+PSC_NE_POS_P 2.0
+
+# FLIGHT CH (round 22) -- THE ATTITUDE LOOP, the one stage of ArduPilot's chain this project had never touched:
+# Copter 4.7 defaults are 4.5, and at 6.0 the aircraft's own cross-track excursion -- the last 2-3 cm that kept the
+# both-criteria arm from being CLEAN -- went away: Flights CH/CH2 read C2 **+0.038 / +0.016 m** with 0.00 % of
+# samples inside a body, C2-ego MET, on the 9-waypoint mission whose first leg is grid-aligned.
+ATC_ANG_RLL_P 6.0
+ATC_ANG_PIT_P 6.0

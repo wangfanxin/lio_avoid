@@ -83,39 +83,36 @@ pillar body, minimum surface distance >= 0).  As of 2026-10-17 the arm and the n
 | knob | value | why |
 |---|---|---|
 | `EGO_CORRIDOR_M` | **0.01 m** (`END_M`/`OPEN_M` 0.0) | holds the forwarded reference on the leg centreline, which is the field's maximum-clearance path: every edge is exactly +0.200 m from the nearest pillar surface while the plan snaked +-0.4-0.5 m about it.  Took the collision rate from 7.42 % to 0.06 % of samples (STATUS 188-198) |
-| `EGO_CORNER_M` / `MPS` | **0.50 m / 1.00 m/s** | the corner is where the aircraft's momentum is made, and at 1.0 m radius the governor set the schedule (|v_ref| p50 == the cap).  Refuted as a SAFETY lever in three forms since (`_stage/corner-exit-audit2.py`: interior cross-track p50 0.132 / 0.164 / 0.199 / 0.128 m for 0.50@1.00, 0.50@1.00+3.0, 0.50@0.70, 1.00@0.70) -- the remaining error is the aircraft's tracking, not the corner |
+| `EGO_CORNER_M` / `MPS` | **0.50 m / 1.10 m/s** | the corner is where the aircraft's momentum is made.  1.10 buys the last leg-seconds (Flight BK2: 8 of 8 legs) and 1.20 does not (CI2 -0.113 m); the ZONE must stay 0.50 (CJ/CJ2 at 0.35: -0.257 / -0.175 m, because a shorter cap means a faster entry) |
 | `EGO_MAX_VEL` / `ACC` | **2.5 m/s** | the clean band.  2.75 (BG -0.042 / -0.273) and 3.0 (AU/AX/AS/AW: -0.007 to -0.222) each buy seconds at the cost of the margin; 3.0 is the documented one-knob conversion to the time-complete variant |
-| `PSC_NE_POS_P` | **1.8** (`params/guided_limits_fast.parm`) | the horizontal position loop, and the last lever that moved the MECHANISM: the aircraft's interior cross-track error p50 0.132 -> **0.096-0.130 m** against the 0.200 m the field leaves.  Its old refutations (AE: raised together with `EGO_REF_ACC_MAX` 2.5; AX: at the 3.0 ceiling) do not apply at 2.5 with the corridor in place |
+| `PSC_NE_POS_P` | **2.0** (`params/guided_limits_fast.parm`) | the horizontal position loop: the aircraft's interior cross-track error p50 0.132 (1.5) -> 0.096-0.130 m (1.8) -> the runs that are clean three times in a row at 2.0.  Its old refutations (AE: raised together with `EGO_REF_ACC_MAX` 2.5; AX: at the 3.0 ceiling) do not apply at 2.5 with the corridor in place |
+| `ATC_ANG_RLL_P` / `PIT_P` | **6.0** (`params/guided_limits_fast.parm`; Copter default 4.5) | THE round-22 find, and the last stage of ArduPilot's own chain: a stiffened position loop can only ASK for acceleration -- how fast the airframe delivers it is the attitude loop's job.  At 6.0 the rectangle legs go clean (CG/CG2: 7 of 7 legs under 6 s, max 5.45 s, only the pad-to-corner diagonal left) and the mission's approach point finishes the job (CH/CH2/CL: +0.038 / +0.016 / +0.033 m, 0.00 % inside) |
+| the mission's first leg | **an approach waypoint at (0,-4)** in `worlds/rect68.yaml` | the pad-to-first-corner line is tangent to a pillar (0.300 m from the (-1.5,-1.5) axis = its radius) and every pad-to-corner direction is, so the tour starts with a grid-aligned dog-leg along the rectangle's own south edge.  A ROUTE belongs in the mission, not in the shell -- the shell's approach code was deleted in round 21 |
 | `fsm/emergency_time` | **0.0** (`EGO_EMERGENCY_S`) | THE round-17 find: at 1.0 s the FSM turned every collision alarm into a STATIONARY spline (`ego_replan_fsm.cpp:908-913`), i.e. a frozen reference for 0.5-3.4 s per long leg.  At 0.0 it re-plans instead -- the stops go to zero, the still time from 1.4-5.4 s to 0.9-2.6 s, the legs from 7-12 s to 4.0-6.8 s, and the clearance IMPROVES because a frozen reference is also a bad one |
-| the rest | Flight AD's | posvelacc, ref-clamp 1.2, ref-slew 6.0, ref-acc 2.0, ref-z 0.6/0.6, settle 0.0, dwell 0.0, `PSC_NE_POS_P` 1.5, 10 m pillars, lidar map 0.1 m, PATCH I + RESOLUTION/1 + the crash fix |
+| the rest | Flight AD's | posvelacc, ref-clamp 1.2, ref-slew 6.0, ref-acc 2.0, ref-z 0.6/0.6, settle 0.0, dwell 0.0, 10 m pillars, lidar map 0.1 m, PATCH I + RESOLUTION/1 + the crash fix |
 
-A **bare `PLANNER=ego` sortie** flies it.  With the emergency window at 0.0 (round 17) the last three bare sorties
-(BI, BI2, BO) read C2 minimum **+0.020 / +0.057 / -0.011 m** -- mean **+0.022 +- 0.03 m**, the first positive mean of
-any arm -- with **0.00 / 0.00 / 0.06 %** of samples inside a body, C2-ego MET in two of three, A1 9.02-10.23 mm,
-B1 E 6.211-6.546 / N 8.309-8.442, C1 0.025-0.154 m, routes 35.6-40.7 s, **6-7 of 8 legs under 6 s** and **zero
-emergency stops**.  The earlier gain-1.5 sorties of this arm (AR, AT, AY, AY2, AZ) read +0.032 / +0.029 / -0.003 /
--0.033 / -0.238 m, i.e. 0 +- 0.03 m, which is what the gain and the emergency window together improve on.  **The
-reference was on the centreline in all of them** (0.00 % of reference samples inside a body, worst-instant clearance
-+0.269..+0.284 m), so the plan-side defect is structurally gone; what varies is the aircraft and the planner's run.
-The one-knob variant that meets the TIME clause on **8 of 8 legs** is `EGO_CORNER_MPS=1.10` (Flight BK2, max 5.95 s)
-at **-0.018 m / 0.08 % inside** -- the frontier is 2 cm and 0.4 s.
+A **bare `PLANNER=ego` sortie** flies it (Flight CL: no environment at all, the committed files).  The last three
+sorties of this arm -- CH **+0.038 m**, CH2 **+0.016 m**, CL **+0.033 m** -- are all **0.00 % inside a body with
+**C2-ego MET**: the collision clause is now reproducible for the first time in this investigation.  Their legs are
+**6-7 of 8 under 6 s**, and the misses are one or two 8 m edges at 6.08-6.29 s.  Flights CG/CG2 show why the ATTITUDE
+loop was the missing stage: on the same arm without the mission's approach point they fly **7 of 7 legs under 6 s (max
+5.45 s)** -- the fastest sorties of the investigation -- with their only contact on the pad-to-corner diagonal.
 
 ### 3.3 The sortie that met BOTH clauses, and how reliable its arm is
 
-Flight **BU2** (round 18) is the first sortie in this investigation that satisfies the objective as written:
+Flight **BU2** (round 18) is the first sortie in this investigation that satisfied the objective as written:
 **8 of 8 legs under 6 s (max 5.97 s)** with **C2 minimum +0.073 m**, **0.00 %** of samples inside a body and
-**C2-ego MET**.  Its arm is the default plus two knobs: `EGO_CORNER_MPS=1.10` and
-`EXTRA_PARM=params/guided_limits_gain20.parm` (`PSC_NE_POS_P` 2.0).  Four sorties of that arm:
+**C2-ego MET**.  Its arm was the then-default plus two knobs, `EGO_CORNER_MPS=1.10` and `PSC_NE_POS_P` 2.0 -- both of
+which are the DEFAULT since round 22 (the arm file it used was deleted when they were folded in).  Four sorties:
 
     BU   -0.155 m  0.48 % inside   8 of 8 legs (5.85 s max)
     BU2  **+0.073 m**  0.00 % inside   **8 of 8 legs (5.97 s max)**   <-- both clauses
     BV   -0.027 m  0.09 % inside   7 of 8 legs (6.45 s)
     BV2  -0.002 m  0.06 % inside   7 of 8 legs (6.85 s)
 
-so its TIME clause is reliable (30 of 32 leg measurements under 6 s) and its SAFETY clause is not (one sortie in four
-clean, typical miss 2-3 cm).  **The defaults therefore stay on the safety-first arm** (corner 1.00, gain 1.8:
-+0.020 / +0.057 / -0.011 m over three bare sorties with 6-7 of 8 legs), because "no collision" is the hard clause, and
-the both-clauses arm is recorded with its exact knobs rather than promoted on one favourable draw.
+so at that time the TIME clause was reliable and the SAFETY clause was not.  **What changed in round 22**: the
+attitude loop at 6.0 and the mission's approach point make the same arm clean three times in a row, so the two knobs
+above are now the defaults and the "safety-first arm" no longer exists as a separate thing.
 
 ### 3.4 The objective as a success rate (round 19, eleven more sorties)
 
@@ -137,7 +134,7 @@ what is flown (`src/planner/ego_contract_shim.py`, `src/tools/run-mission.sh`):
 | removed | evidence that killed it |
 |---|---|
 | `--xtrack-gain` / `--xtrack-max` / `--xtrack-tau` (rounds 20-20b) | six sorties at gain 0.5, raw and filtered: no clean run, longer legs; the bias re-injects odometry noise into the reference |
-| `--approach-via` + `EGO_APPROACH_VIA` (rounds 18/21) | six sorties of the fast arm with it: clean 1 of 6, both clauses 0 of 6, against 3 of 6 and 2 of 6 without -- the diagonal's tangency is real but the replacement leg carries the same corner defect |
+| `--approach-via` + `EGO_APPROACH_VIA` (rounds 18/21) | six sorties of the fast arm with it as a SHELL option: clean 1 of 6, both clauses 0 of 6 -- the option is gone, and the approach is a WAYPOINT in the mission instead (round 22, where it works: the leg is 1.80-2.51 s and CH/CH2/CL are clean) |
 | `--corridor-end-m` / `--corridor-open-m` (round 17) | Flight AL: the reference used 0.454 m of the opening 0.9 m past a corner and the aircraft followed it in; the flown arm was always end = 0, open = 0, so the taper was dead code |
 
 What the shell has left is one kind of thing: **limits and continuity on the reference** (`--corridor-m`,

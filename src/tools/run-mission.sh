@@ -257,7 +257,7 @@ EGO_REF_SLEW_MPS="${EGO_REF_SLEW_MPS:-6.0}"
 #: rectangle -- (4.58,-1.55), (4.68,0.54), (4.30,2.45), (2.53,4.49), (3.50,-4.50) against corners at (+-3,+-4)
 #: -- i.e. the aircraft OVERSHOOTS each corner by 1-1.7 m into the pillar ring, arriving at |v_ref| 1.8-2.4 m/s.
 EGO_CORNER_M="${EGO_CORNER_M:-0.50}"
-EGO_CORNER_MPS="${EGO_CORNER_MPS:-1.00}"
+EGO_CORNER_MPS="${EGO_CORNER_MPS:-1.10}"
 #: THE FSM'S EMERGENCY-STOP WINDOW (seconds), and it is the thing that owns the long legs.  MEASURED round 17
 #: (`_stage/leg-stall.py`): every leg over 6 s contains a FREEZE of 0.5-3.4 s with the reference below 0.20 m/s --
 #: BF leg 5 26.8 % of the leg still, BF2 leg 5 a 3.40 s continuous freeze, BG leg 4 53.4 % -- and the FSM's log carries

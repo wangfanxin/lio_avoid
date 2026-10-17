@@ -283,6 +283,16 @@ mission:
   takeoff_alt: 2.0
   hold_s: 5.0
   corners:
+  # THE APPROACH POINT (round 22).  The pad is at (0,0) and the first corner is (-3,-4); the straight line between them
+  # passes 0.300 m from the (-1.5,-1.5) pillar's axis -- exactly its radius -- and the field's square lattice makes EVERY
+  # pad-to-corner direction tangent to a pillar the same way.  So the first leg is a grid-aligned dog-leg through
+  # (0,-4), which lies ON the rectangle's south edge: the two laps are unchanged, and every leg of the flight becomes one
+  # of the field's +0.200 m lines.  MEASURED (Flights CD, CD2, CG, CG2): with the diagonal in place the whole-flight
+  # minimum sits on it in run after run (-0.030, -0.041, -0.025, -0.017 m) even when every other instant is clear.
+  - &id000
+    - 0.0
+    - -4.0
+    - 2.0
   - &id001
     - -3.0
     - -4.0

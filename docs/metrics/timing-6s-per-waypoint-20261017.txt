@@ -1623,3 +1623,34 @@ A bare `PLANNER=ego` sortie on the cleaned tree (no environment at all):
     legs 0.89 / 4.79 / 5.75 / 5.06 / 6.94 / 4.41 / 5.20 / 4.47 s -- 7 of 8 under 6 s.
 The shim's start-up lines list 8 waypoints and none of the removed options: the deletion removed code that was not
 flown, and the safety-first default remains clean in 4 of its 5 bare sorties.
+
+============================================================================
+ROUND 22 -- THE ATTITUDE LOOP, THE MISSION'S APPROACH POINT, AND THE NEW DEFAULTS (2026-10-17)
+============================================================================
+THE ATTITUDE LOOP (`ATC_ANG_RLL_P`/`ATC_ANG_PIT_P` 4.5 -> 6.0), eight-waypoint tour, fast arm:
+
+    CG   **7 of 7 legs under 6 s (max 5.45 s)**, route **29.8 s**, C2 -0.025 m, 0.10 % inside,
+         minimum at (-1.280,-1.666, z 1.108) -- ON the pad-to-corner diagonal
+    CG2  7 of 8 legs (6.15 s), route 35.7 s, C2 -0.017 m, 0.08 % inside, minimum at (-1.272,-1.668)
+
+THE MISSION'S APPROACH POINT (worlds/rect68.yaml tour: pad -> (0,-4) -> the two laps; 9 waypoints):
+
+    CH   **C2 +0.038 m**, 0.00 % inside, **C2-ego MET**, legs 1.80 4.12 5.17 4.84 **6.29** 5.10 **6.08** 4.29
+    CH2  **C2 +0.016 m**, 0.00 % inside, **C2-ego MET**, legs 2.51 4.95 5.30 4.35 **6.15** 4.40 **6.15** 4.83
+    CL   **C2 +0.033 m**, 0.00 % inside, **C2-ego MET**, legs 2.12 4.28 5.46 4.84 5.74 4.46 **6.14** 4.39
+         (a BARE sortie on the committed files: parm file + corner 1.10 + the 9-waypoint tour)
+    -> the safety clause is reproducible (3 of 3) and the time clause misses on ONE 8 m edge by 0.08-0.29 s.
+
+REFUTED THIS ROUND:
+    corner 1.20            CI2  -0.113 m, 0.52 % inside
+    corner zone 0.35 m     CJ   -0.257 m, 0.72 % inside ;  CJ2  -0.175 m, 0.65 % inside
+    ceiling 2.75           CK   +0.007 m ;  CK2  -0.120 m, 0.35 % inside
+INCIDENT: Flight CI (first corner-1.20 attempt) aborted on the ego SIGSEGV (exit -11) one line after
+`Triggered! [TRIG]: from INIT to REPLAN_TRAJ` -- the third occurrence of that crash mode, unrelated to the arm.
+
+THE DEFAULTS (committed): `params/guided_limits_fast.parm` = `PSC_NE_POS_P` 2.0 + `ATC_ANG_RLL/PIT_P` 6.0 (+ the rest as
+before); `EGO_CORNER_MPS` 1.10; `EGO_CORNER_M` 0.50; `EGO_MAX_VEL/ACC` 2.5; corridor 0.01; emergency 0.0; and the
+mission's tour with the approach point.  `params/guided_limits_gain20.parm` and `params/guided_limits_att.parm` deleted.
+
+THE OBJECTIVE: safety clause met on three consecutive sorties (+0.016 .. +0.038 m, 0.00 % inside, C2-ego MET); time
+clause 6-7 of 8 with the misses on one or two 8 m edges at 6.08-6.29 s.  Both in ONE sortie: not yet.
