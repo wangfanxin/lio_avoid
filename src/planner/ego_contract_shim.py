@@ -1107,9 +1107,14 @@ def _parser() -> "argparse.ArgumentParser":
                     help="how far from each leg's ends the corridor opens back up (metres; needs --corridor-m).  "
                          "The corners are the safe places -- +0.407 m of clearance against the edges' +0.200 -- so "
                          "the turn is left free instead of being clamped into a 90 degree kink")
-    ap.add_argument("--corridor-open-m", type=float, default=2.0,
+    ap.add_argument("--corridor-open-m", type=float, default=0.0,
                     help="how much freedom (metres) the corridor gives at the very ends of a leg; the allowance "
-                         "ramps from --corridor-m in the interior to corridor-m + this at the ends")
+                         "ramps from --corridor-m in the interior to corridor-m + this at the ends.  DEFAULT 0.0 "
+                         "because the measurement said so: Flight AL flew 2.0 m of opening, the reference used 0.454 "
+                         "m of it 0.9 m past a corner, the aircraft followed it in, and when the clamp withdrew the "
+                         "lead the aircraft was still 0.47 m inside the line -- at (-1.51,-3.53), 0.03 m from the "
+                         "(-1.5,-3.5) pillar's axis.  The pillar rows are 0.5 m from EVERY edge of this route, "
+                         "corners included, so there is nowhere a lateral lead is affordable here")
     ap.add_argument("--ref-clamp-m", type=float, default=0.0,
                     help="CONTINUITY AT THE SOURCE: never forward a reference point more than this far from the "
                          "vehicle (0 = off, the behaviour every sortie before 2026-10-16 flew).  A position "
@@ -1193,6 +1198,27 @@ def main() -> int:
     print("shim: TRAJ_SERVER's %s is forwarded to %s with trajectory_id per waypoint and a real COMPLETED"
           % (args.in_topic, args.cmd_topic))
     _print_p3_2_banner(args.arrive_m, args.settle_mps, args.hold_s, args.arrive_z_m)
+
+    # THE REFERENCE CONDITIONING, said once at start-up so the RUN'S OWN LOG records it.  Every one of these knobs
+    # was added because a measurement asked for it (see each `rewrite` section), and none of them is visible anywhere
+    # else afterwards: the summary that would report them is printed at exit, and the harness ends this process with a
+    # signal, so a sortie's log would otherwise not say what its reference was held to.
+    if args.corridor_m > 0.0:
+        print("shim: ROUTE CORRIDOR %.3f m -- the forwarded reference is held on the current leg's centreline"
+              % args.corridor_m, flush=True)
+        if args.corridor_open_m > 0.0:
+            print("shim:   ... opening by %.3f m over the last %.3f m of each leg"
+                  % (args.corridor_open_m, args.corridor_end_m), flush=True)
+        else:
+            print("shim:   ... and it does NOT open at the ends: the corners are as tight as the straights",
+                  flush=True)
+    else:
+        print("shim: ROUTE CORRIDOR OFF -- the reference follows the plan's own lateral placement", flush=True)
+    if args.corner_m > 0.0:
+        print("shim: CORNER GOVERNOR %.3f m/s within %.3f m of a corner (the velocity field is capped with it)"
+              % (args.corner_mps, args.corner_m), flush=True)
+    if args.ref_acc_max > 0.0:
+        print("shim: ACCELERATION FIELD clamped to %.3f m/s2" % args.ref_acc_max, flush=True)
 
     # the CONTRACT's QoS is not negotiable: RELIABLE + KEEP_LAST(5) + TRANSIENT_LOCAL, exactly as
     # `planner/ego_source.py:421-424` publishes it (a latched subscriber must still find the newest sample)
