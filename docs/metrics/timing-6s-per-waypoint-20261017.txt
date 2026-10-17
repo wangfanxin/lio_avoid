@@ -1788,3 +1788,32 @@ THE SORTIE -- FLIGHTRAND-rect68random (bare arm: only EXTRA_PARM=params/guided_l
 
 VERDICT: the time clause is met on the owner's field (8 of 8, max 5.63 s); the safety clause is not (-0.098 m, at
 a corner, as on the field of record).  The field is a tighter second bench for the same defect, not a fix of it.
+
+============================================================================
+ROUND 28 -- THE FOREST AT MAXIMAL RANDOMNESS (jitter = the whole half-cell) (2026-10-17)
+============================================================================
+Owner: "随机量尽可能搞大，柱子更随机，不要人为设置这么小的上限".
+Tool change: src/tools/make-random-forest.py, MIN_GAP 0.25 -> 0.00 (only non-overlap is asked for).
+
+THE FIELD (worlds/rect68_random.yaml, regenerated, same seed 7):
+  pillars                 96 (4 cells dropped for the take-off area, 0 by the gap rule)
+  jitter                  max 0.250 m, mean 0.173 m   (was 0.125 / 0.086; budget = the whole half-cell)
+  drawn min surface gap   0.114 m
+  adjacent cell pairs     168 of 172 occupied (no checkerboard)
+  the tour                legs +0.259 +0.242 +0.076 +0.058 +0.020 +0.242 +0.076 +0.058   (worst +0.020)
+                          corners +0.246 m
+                          [0.125 m-jitter field: worst +0.135; field of record: uniform +0.200]
+
+THE SORTIE -- FLIGHTRAND2-maxjitter (bare arm, only WORLD changed):
+  waypoints               TOUR COMPLETE, 9 of 9
+  legs                    7 of 8 under 6.0 s  (2.15 / 4.60 / 5.96 / 5.40 / 5.82 / 4.17 / 6.55 / 4.83, max 6.55)
+  A1 / A2                 13.36 mm / 7.12 mm
+  B1                      E 6.389 / N 8.520 m  [FAIL]
+  C1                      0.146 m  [PASS]
+  C2                      **-0.090 m**, 0.74 % of samples inside a body, 28.9 % inside the 0.20 m footprint
+  the worst sample        (-3.25,+3.44): truth 0.250 m off the route, reference 0.010 m off it, |v_ref| 2.28 m/s
+  where the contact       (-2.52,-4.30), 0.57 m from the SW corner; 50 % of inside-body samples within 0.6 m of a corner
+  the REFERENCE           inside the 0.10 m standoff 3.43 % of samples, inside a BODY 0.00 %
+
+VERDICT: maximal randomness is a property of the field, and the flight pays for it: the plan's own margin at the
+worst leg is 0.020 m, so the aircraft's 10-25 cm tracking tail has nothing to spend.  The contact is again a corner.

@@ -11,15 +11,18 @@ So:
   * the take-off area in the CENTRE is empty (nothing within 0.8 m of the pad's surface);
   * z 0 -> 10 m, seed 7.
 
+OWNER'S SECOND INSTRUCTION (2026-10-17, same day): "随机量尽可能搞大，柱子更随机，不要人为设置这么小的上限".
+So the jitter is now MAXIMAL: the wanted surface gap `min_gap` is **0.0 m**, which makes the jitter budget the
+whole cell,
+    lim = (cell - 2r - min_gap)/2 = (1.00 - 0.50 - 0.00)/2 = **0.25 m**
+i.e. a pillar may stand ANYWHERE in its cell.  What is left is only the non-overlap rule (`hypot < 2r` is
+rejected), and with lim = 0.25 m the worst possible pair of adjacent cells is exactly 0.5 m apart between
+centres = just touching, so in practice nothing is ever rejected and the measured minimum gap is whatever
+the draws give (reported in the audit, and it is the number that matters to the flight).
+
 WHY IT IS NOT A CHECKERBOARD THIS TIME, in one line: the old field's `min_gap 0.8 m` needed 1.4 m between
 centres, which a 1.0 m pitch cannot give, so every other cell was dropped and only one parity class survived.
-Here the wanted surface gap is **0.25 m**, i.e. 2r + gap = 0.75 m < 1.0 m, so adjacent cells are always
-admissible and the whole lattice stands.
-
-The jitter budget follows from the same numbers rather than being chosen separately:
-    lim = (cell - 2r - min_gap) / 2 = (1.00 - 0.50 - 0.25) / 2 = **0.125 m**
-so two pillars in adjacent cells are at least 1.00 - 2(0.125) = 0.75 m apart between centres, i.e. 0.25 m
-surface-to-surface, which is exactly the rule.
+Here 2r + gap = 0.50 m < 1.0 m, so adjacent cells are always admissible and the whole lattice stands.
 
 Writes worlds/rect68_random.yaml (the tour block is copied unchanged from worlds/rect68.yaml) and prints the
 audit: count, jitter, the real minimum gap, whether adjacent cells are occupied (the anti-checkerboard
@@ -41,7 +44,8 @@ CELLS = 10
 CELL = 1.0
 RADIUS = 0.25
 SEED = 7
-MIN_GAP = 0.25          # SURFACE; 2r + gap = 0.75 m < 1.0 m, so no cell is ever dropped for the gap rule
+MIN_GAP = 0.0           # OWNER: "随机量尽可能搞大" -- no artificial gap is asked for, only non-overlap; the
+                        # jitter budget is then the whole cell: (1.0 - 0.5 - 0.0)/2 = 0.25 m
 PAD_CLEAR = 0.80       # the take-off area: no pillar SURFACE within 0.8 m of the pad
 Z0, Z1 = 0.0, 10.0
 
@@ -109,11 +113,11 @@ head = """\
 #
 # THE RULE (src/sim/make_world.py:generate -- the same generator as every world here):
 #   * {cells} x {cells} grid of {cell} m cells with integer boundaries, +-5 m arena;
-#   * **one pillar per cell, radius {radius} m, at a RANDOM position inside its cell** -- jitter budget
-#     (cell - 2r - min_gap)/2 = {lim} m with a wanted surface gap of {gaprule} m, so it is a random forest
-#     and not a lattice;
-#   * no checkerboard: the survivor rule needs 2r + min_gap = {reach} m between centres, which a {cell} m
-#     pitch always satisfies, so EVERY cell outside the reserved area stands ({n} pillars);
+#   * **one pillar per cell, radius {radius} m, at a RANDOM position inside its cell** -- the jitter budget is
+#     (cell - 2r - min_gap)/2 = {lim} m, i.e. THE WHOLE HALF-CELL (owner: "随机量尽可能搞大"), so the pillar may
+#     stand anywhere in it and the field is not a lattice;
+#   * no checkerboard: 2r + min_gap = {reach} m between centres is well inside the {cell} m pitch, so EVERY cell
+#     outside the reserved area stands ({n} pillars) and the gap rule never fires;
 #   * the take-off area in the CENTRE is empty: no pillar surface within {pad} m of the pad;
 #   * z {z0} -> {z1} m (no over-the-top).
 #

@@ -203,6 +203,15 @@ body, 82 % of them within 0.6 m of a corner.  So the time clause is reached on t
 one of record (whose 8 m edges have never gone under 6 s without spending margin), and the same corner event is
 still what spends the safety clause.  The field is not a fix for the corner; it is a second, tighter bench for it.
 
+Six hours later the owner asked for the randomness itself to be maximal -- "随机量尽可能搞大，柱子更随机，不要人为
+设置这么小的上限" -- so the tool now asks for `min_gap = 0.0` and the jitter budget is the whole half-cell
+(0.250 m; measured max 0.250, mean 0.173, drawn min surface gap 0.114 m).  The tour's clearance falls with it:
+legs **+0.020 .. +0.259 m** (the 0.125 m field was +0.135, the field of record +0.200), corners +0.246 m.  Flown
+once (`FLIGHTRAND2-maxjitter`): TOUR COMPLETE, **7 of 8 legs under 6 s** (leg 8 at 6.55 s), C1 0.146 m PASS, and
+**-0.090 m** with 0.74 % inside a body, again at a corner (0.57 m from the SW one).  The number to carry forward is
+that the **reference itself** now sits inside the 0.10 m standoff for 3.4 % of samples (never inside a body): at
+maximum randomness the plan's own margin is 2 cm, so the aircraft has nothing left to spend.
+
 ## 4. The pipeline
 
 ```
