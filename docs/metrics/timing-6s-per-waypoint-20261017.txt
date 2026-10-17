@@ -2073,3 +2073,25 @@ instrument that sees it, and it must stay on.
 
 NEXT (no flight): diff the Mission-C world's spawn / pad / arena blocks against rect68_random.yaml's (Mission B never
 shows the gap), then audit the EK3_SRC1_POSZ path that ALT_MODE=lio selects.
+
+============================================================================
+MISSION C, ROUND 8 -- THE ESTIMATOR IS THE DEFECT: lio_z ENDED AT -197 m (2026-10-17)
+============================================================================
+`phase.csv` carries t_wall, t_sim_us and the commanded / LIO / truth altitude at every phase boundary -- ONE clock.
+
+  r11:  preflight  sim  0.0   cmd 0.00  lio  0.00  truth  0.00
+        takeoff    sim 32.4   cmd 1.44  lio  0.01  truth  0.10
+        hold       sim 37.3   cmd 1.29  lio  0.02  truth  0.20
+        abort      sim 39.6   cmd 2.00  lio  1.99  truth  4.08     <- 2.09 m gap, same instant
+        done       sim 84.6   cmd 2.09  lio **-197.32**  truth 0.10  <- the estimator flew apart
+
+  r3:   abort      sim 39.4   cmd 2.00  lio  1.91  truth  2.22     <- 0.31 m gap (the flight that arrived)
+        done       sim 51.4   cmd 1.40  lio  1.40  truth  0.10     <- 1.30 m of error on the ground
+
+READ: the LIO diverges in this world -- 2 m at the abort and then an unbounded downward runaway.  Every Mission-C
+failure of rounds 1-7 is re-read through this: the supervisor's truth-based climb guard was catching an estimator
+divergence, not a planner or mission fault, and the planner was being fed a position that was wrong by metres.
+
+GEOMETRY: thin vertical structure (r = 0.10 m) on a large empty floor, with nothing at all south of y = 0 -- the
+degenerate case for a LiDAR-inertial estimator.
+NEXT: one change on the estimator's side (lio/config/livox_360.yaml: map resolution / ray length), not on the mission.
