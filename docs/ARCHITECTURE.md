@@ -405,3 +405,53 @@ planner-induced collapse during a sortie (it still was, and it stayed at 1.000-1
    silence once (`STATUS.md`, last section).
 6. **No GPS, no compass**: arming depends on a healthy EKF (origin set, vision healthy).  A transiently
    invalid FCU state is tolerated for 3 s -- the old project lost 4 of 8 flights to one bad sample.
+
+## EGO AS PUBLISHED versus THIS PROJECT'S ROUTE B -- two block diagrams, and where the defect lives
+
+`docs/figures/ego-flow-comparison.png` (regenerable: `_stage/ego-flow.py`) draws both pipelines side by side,
+stage by stage, with the measured number that decided each of our changes and, in red, the one remaining defect
+attached to the stage that owns it.  The published pipeline is the one in *EGO-Planner: An ESDF-free
+Gradient-based Local Planner for Quadrotors* (Zhou, Wang, Ye, Xu, Gao; arXiv:2008.08835) as it is implemented in
+the `ego-planner-swarm` tree this project vendors.
+
+**AS PUBLISHED.** `grid_map` is a LOCAL ROLLING BOX fed by a depth image, and it raycasts: cells the camera sees
+through are CLEARED and cells it hits are OCCUPIED, so "free" means *seen and known clear*.  A distance-only A*
+produces a global path inside that box; `getLocalTarget()` takes the point on it `planning_horizon` ahead;
+`reboundReplan` initialises a B-spline and `BsplineOptimizer` -- ESDF-free, its collision term comparing the
+trajectory against the A* guiding path -- minimises smooth + collision + feasibility + fitness + swarm; if the
+result is dynamically infeasible `refineTrajAlgo` lengthens the time allocation and fits the higher derivatives
+back on without changing the shape; `UniformBspline` is published and `traj_server` samples it at 100 Hz with
+`t_cur = now - start_time`.  The FSM walks INIT -> WAIT_TARGET -> GEN_NEW_TRAJ -> REPLAN_TRAJ -> EXEC_TRAJ with a
+1 s re-plan gate, declares arrival when the local target has caught up with the global one AND the clock is out,
+and has EMERGENCY_STOP for "suddenly discovered obstacles".
+
+THREE ASSUMPTIONS THAT DESIGN RESTS ON, all visible in the diagram, and none of which this project honours:
+the map is dense and raycast (so nothing appears behind the vehicle), the controller follows the reference
+tightly enough that the plan IS the flight, and a re-plan re-anchors the reference on the vehicle -- here
+`t_cur` restarts at every commit, so the reference STEPS (measured: median 0.281 m, max 0.927 m, STATUS 155).
+
+**WHAT WE RUN.**  `cloud_relay.py` replaces the depth image with a decimated, optionally unioned point cloud and
+NO raycast, and the numbers are the whole of rounds 3-4: the planner's obstacle reached 0.720 m from a 0.300 m
+pillar axis, which CLOSED the 1.414 m corridor between two diagonal pillars (-0.03 m) and made a
+distance-optimal A* route around the entire field; voxel 0.03 and window 1.0 s brought it to 0.380 m and the
+corridor to 0.654 m.  The map is rebuilt around the vehicle on every message, so it is a SINGLE-SCAN SHELL rather
+than the dense map above.  ego gets no odometry of its own: `fcu_pose_feed.py` feeds it the flight controller's
+own estimate (W -> L), so the planner and the controller close their loops on the same state.  `traj_server` is
+ego's own, and `ego_contract_shim.py` owns the tour, the ids and the COMPLETED flag, and bounds the reference
+with the position clamp, the slew limit, the tapered corner governor and the altitude band -- each of them
+measured and switchable, in the same family as the "continuity at the source" fix the audits asked for.  The
+bridge puts p + v + yaw on the wire at 50 Hz with the acceleration bit DROPPED, and the FCU's own shaper
+(`shape_pos_vel_accel_xy`, WP_ACC 8.0 / PSC_NE_JERK 100 / ATC_ANGLE_MAX 40 deg) turns that into attitude.
+
+**WHERE THE DEFECT IS, and it is not where the first six rounds looked.**  The map is measured free and
+SYMMETRIC on all four commanded edges -- 0 occupied cells out of 1413 / 1679 / 915 / 914, while the pillar walls
+0.5 m to either side carry 0.8-2.6 % (`_stage/edge-map.py`, STATUS 171).  An aircraft that follows the plan to
+0.04-0.06 m on those legs still ends up **0.24-0.28 m OUTSIDE the y = +-4 edges, on the plan as well as on the
+aircraft** (`_stage/edge-mean.py`), and raising `lambda_fitness` -- the only cost term that pulls the spline onto
+the A* path -- moves those offsets without removing them, in both directions.  So the plan's lateral placement is
+not determined by the mission anywhere in this chain: it is whatever the A* path and the spline settle on, and
+it varies by +-0.3 to +-1.0 m between runs.  The geometry leaves 0.200 m.  **The budget is smaller than the
+variation, which is why every lever tried in rounds 6-10 moved the outcome without making it deterministic** --
+and why the remaining options are structural rather than tunable: bind the mission's line in the shell with a
+corridor clamp, or give the route more room (there is none: 0.500 m from the pillar axes IS the widest
+axis-aligned line a 1.0 m checkerboard allows).
