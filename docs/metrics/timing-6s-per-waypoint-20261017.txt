@@ -1654,3 +1654,33 @@ mission's tour with the approach point.  `params/guided_limits_gain20.parm` and 
 
 THE OBJECTIVE: safety clause met on three consecutive sorties (+0.016 .. +0.038 m, 0.00 % inside, C2-ego MET); time
 clause 6-7 of 8 with the misses on one or two 8 m edges at 6.08-6.29 s.  Both in ONE sortie: not yet.
+
+============================================================================
+ROUND 23 -- THE LAST 0.1-0.3 s: FIVE ARMS, TWO BOTH-CRITERIA SORTIES (2026-10-17)
+============================================================================
+All against the committed default (corridor 0.01, corner 0.50 @ 1.10, ceiling 2.5, `PSC_NE_POS_P` 2.0,
+`ATC_ANG_*` 6.0, emergency 0.0, 9-waypoint mission):
+
+    arm                       sortie  C2 minimum   % inside   legs under 6 s / max
+    ceiling 2.60              CM      -0.120 m     0.24 %     7 of 8 / 6.28
+                              CM2     -0.051 m     0.29 %     **8 of 8 / 5.90**
+    re-plan gate 0.40         CN      -0.255 m     0.56 %     7 of 8 / 7.48
+                              CN2     -0.157 m     0.92 %     7 of 9 / 6.40
+    ref-acc clamp 2.5         CR      **+0.032 m** 0.00 %     5 of 9 / 6.95
+                              CR2     -0.222 m     0.31 %     6 of 8 / 6.16
+    arrival gate 0.35         CRS     -0.242 m     1.19 %     7 of 8 / 6.17
+                              CRS2    **+0.028 m** 0.00 %     **8 of 8 / 5.75**   <-- BOTH
+                              CRS3    -0.045 m     0.27 %     7 of 8 / 6.25
+                              CRS4    -0.130 m     0.45 %     7 of 8 / 6.25
+    FCU shaper jerk 200       CU      **+0.038 m** 0.00 %     **8 of 8 / 5.98**   <-- BOTH
+                              CU2     -0.077 m     0.32 %     **8 of 8 / 5.40**
+                              CU3     -0.154 m     0.26 %     6 of 8 / 6.55
+                              CU4     -0.074 m     0.40 %     **8 of 8 / 5.85**
+
+THE TRADE, in one line: every arm that reaches 8 of 8 legs pays 2-15 cm of clearance for it, and every arm that is clean
+misses 0.1-0.3 s on one or two 8 m edges.  The two criteria are not independent at this field's 0.200 m budget.
+
+THE OBJECTIVE: met in a sortie five times (AU time-only, BU2, BZ2, CRS2, CU); reproducible never.  Safety reproducible
+at the default (3 of 3: CH +0.038, CH2 +0.016, CL +0.033 m, all 0.00 % inside, C2-ego MET).
+DEFAULTS UNCHANGED (arrive 0.30, ceiling 2.5, replan 0.5, ref-acc 2.0, jerk 100) -- the reproducible-clean side.
+The jerk-200 trial lives in `_stage/tune-jerk.parm`, NOT in `params/`.
