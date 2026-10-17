@@ -1505,3 +1505,32 @@ own timing all measured clean.
 
 THE DEFAULTS stay on the safety-first arm (clean 4 of 5).  The fast arm is documented, with both knobs, as the one that
 has met the objective -- 2 of 6 sorties.
+
+============================================================================
+ROUND 20 -- THE CROSS-TRACK FEEDBACK: IMPLEMENTED, SELFTESTED, REFUTED (2026-10-17)
+============================================================================
+`--xtrack-gain k` (harness: `EGO_XTRACK_GAIN`, cap `EGO_XTRACK_MAX` 0.10 m): the forwarded reference is shifted by
+`-k x e`, `e` being the AIRCRAFT's signed offset from the current leg's centreline.  Selftest: 0.200 m -> 0.100 m shift,
+0.500 m -> the cap, gain 0 -> reference unchanged.
+
+FOUR SORTIES AT k = 0.5:
+
+    arm                       flight   C2 minimum   % inside   legs under 6 s / max
+    default (corner 1.00)     CB       -0.276 m     0.71 %     5 of 8 / 7.24 s
+    default                   CB2      -0.031 m     0.10 %     6 of 7 / 6.03 s
+    fast (corner 1.10 g2.0)   CC       -0.031 m     0.31 %     6 of 8 / 6.25 s
+    fast                      CC2      -0.046 m     0.15 %     6 of 8 / 6.94 s
+
+    against the same arms WITHOUT it: fast 3 of 6 clean (BU2, BZ, BZ2), default 4 of 5 clean (BI, BI2, BY, BY2).
+    -> no clean sortie in four, and the legs are LONGER than the arms' own baselines.
+
+WHY: the bias is computed from the FCU's own odometry sample by sample, so it re-injects the estimator's noise and its
+transients into the REFERENCE; a jittering target is harder for the position loop, not easier, and `-k*e` makes the
+reference chase the aircraft whenever `e` changes quickly.  A filtered version, or one biased on the PLAN's lag rather
+than on the measurement, is the only form worth retrying.
+
+DECISION: `EGO_XTRACK_GAIN` stays **0.0**; the knob and its refutation are documented.
+
+THE OBJECTIVE (unchanged): fast arm both clauses in 2 of 6; safety-first default clean in 4 of 5 with 6-7 of 8 legs.
+Every shell-side lever now has an evidence trail: corridor, emergency window, position gain, corner speed and radius,
+ceiling, arrival and re-plan meters, approach way, cross-track feedback.

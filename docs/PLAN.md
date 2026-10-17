@@ -129,6 +129,22 @@ A1 <= 12 mm gives C2 p50 -0.042 m against -0.235 m for A1 > 12 mm, but inside th
 fast-arm sortie has A1 9.91 mm with C2 -0.155 m.  What is left is the aircraft's cross-track excursion beside the pillar
 rows (0.14-0.36 m against the field's 0.200 m), which no shell knob has moved.
 
+### 3.5 The last shell-side idea, and why it does not work (round 20)
+
+`--xtrack-gain k` shifts the forwarded reference by `-k x e` (`e` = the aircraft's own offset from the leg, capped at
+`--xtrack-max` 0.10 m) to multiply the position loop's cross-track stiffness by (1 + k) without touching the flight
+controller.  Selftested on all three properties that matter, and **refuted in four sorties at k = 0.5**: default arm
+-0.276 m (5 of 8 legs) and -0.031 m (6 of 7), fast arm -0.031 m (6 of 8) and -0.046 m (6 of 8) -- no clean sortie in
+four, with LONGER legs than the same arms without it.  The reason is mechanical: the bias is computed from the FCU's own
+odometry sample by sample, so it re-injects the estimator's noise into the reference, and a jittering target is harder
+for the position loop than a still one.  `EGO_XTRACK_GAIN` stays 0.0.
+
+**So every shell-side lever now has an evidence trail behind it**: corridor (adopted), emergency window (adopted),
+position gain 1.8/2.0 (adopted), corner speed and radius (1.10 / 0.50), plan ceiling (2.5), arrival and re-plan meters
+(0.30 / 1.0), the approach way (available, off), the cross-track feedback (off, refuted).  The objective is met by the
+fast arm in 2 of 6 sorties and the default is clean in 4 of 5; the remaining 2-3 cm is the aircraft's cross-track
+excursion, and nothing left in this shell moves it.
+
 Two shell fixes from the same round are on by default and cost nothing: **the first leg now has a previous point** (so
 the corridor and the corner governor act on it) and **`--approach-via`** exists for a grid-aligned first leg.  The
 reason is geometric and measured (`_stage/where-min.py`): the mission's first leg is the diagonal from the pad (0,0) to

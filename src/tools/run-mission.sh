@@ -302,6 +302,15 @@ APPROACH_ARG=""
 if [ -n "$EGO_APPROACH_VIA" ]; then
     APPROACH_ARG="--approach-via $EGO_APPROACH_VIA"
 fi
+#: THE CROSS-TRACK FEEDBACK (0 = off): the forwarded reference is shifted against the AIRCRAFT's own offset from the
+#: current leg's centreline, by `EGO_XTRACK_GAIN` x the offset and never more than `EGO_XTRACK_MAX` metres.  MEASURED
+#: reason: the corridor holds the REFERENCE on the line (0.00 % of reference samples inside a pillar since Flight AN),
+#: but the aircraft still leaves it by 0.14-0.36 m against the 0.200 m this field leaves (`corner-exit-audit2.py`),
+#: and that tail is exactly what the fast arm's 2-3 cm misses are made of.  This multiplies the position loop's
+#: cross-track stiffness by (1 + gain) without touching the flight controller, and the cap is what keeps the reference
+#: inside the corridor's safety band.
+EGO_XTRACK_GAIN="${EGO_XTRACK_GAIN:-0.0}"
+EGO_XTRACK_MAX="${EGO_XTRACK_MAX:-0.10}"
 #: NO GOAL IS PUBLISHED UNTIL THE VEHICLE IS THIS HIGH (metres; 0 = off).  Route B's twin of PATCH 0008's
 #: `fsm/waypoint_start_alt`; without it ego plans a climb for the whole take-off that nothing is following
 #: (Flight F: goals from t=1.9 s, 87 "First 3 control points in obstacles" before the trigger at t=20.4 s).
@@ -395,6 +404,7 @@ case "$PLANNER" in
 --ref-slew-mps $EGO_REF_SLEW_MPS --ref-acc-max $EGO_REF_ACC_MAX --corner-m $EGO_CORNER_M --corner-mps $EGO_CORNER_MPS \
 --corridor-m $EGO_CORRIDOR_M --corridor-end-m $EGO_CORRIDOR_END_M --corridor-open-m $EGO_CORRIDOR_OPEN_M \
 $APPROACH_ARG \
+--xtrack-gain $EGO_XTRACK_GAIN --xtrack-max $EGO_XTRACK_MAX \
 --odom-topic /ego/odom_fcu --ref-clamp-m $EGO_REF_CLAMP_M --trace-csv $OUT/shim_trace.csv ${CMD_ARGS:-}"
             PLANNER_WHAT="ego's OWN traj_server samples the plan (p+v+a) + the contract shell (tour, ids, COMPLETED)"
             PLANNER_TOPIC="/plan/cmd"
