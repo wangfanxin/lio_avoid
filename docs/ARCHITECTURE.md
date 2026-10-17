@@ -455,3 +455,99 @@ variation, which is why every lever tried in rounds 6-10 moved the outcome witho
 and why the remaining options are structural rather than tunable: bind the mission's line in the shell with a
 corridor clamp, or give the route more room (there is none: 0.500 m from the pillar axes IS the widest
 axis-aligned line a 1.0 m checkerboard allows).
+
+## WHY THE THREE ASSUMPTIONS FAIL -- read out of the code, then measured
+
+The three assumptions the published design rests on (see the section above) are not stylistic.  Each one is
+load-bearing for the arithmetic that lets EGO-Planner give itself centimetres of margin, and each one is false
+here.  This section is the evidence, one block per assumption, with the source line and the flight number.
+
+### (1) "the map is dense and raycast, so nothing appears behind the vehicle"
+
+AS PUBLISHED the map is built from a DEPTH IMAGE: `GridMap::raycastProcess()` marches a ray per pixel, writing
+`md_.occupancy_buffer_[idx] = mp_.clamp_min_log_` (FREE) for every cell the ray passes through and
+`clamp_max_log_` (OCCUPIED) for the cell it hits, and `clearAndInflateLocalMap()` turns that log-odds buffer
+into the inflated binary map the planner reads.  "Free" there means **a ray went through it and nothing was
+hit** -- seen and known clear.
+
+WHAT WE RUN has no depth camera (`grid_map/use_depth_filter: false`, `pose_type 0`), so the ONLY path is
+`GridMap::cloudCallback()`, and reading it settles the question:
+
+  * `grid_map.cpp:835` -- `this->resetBuffer(camera_pos - local_update_range, camera_pos + local_update_range)`
+    ON EVERY CLOUD MESSAGE, and `resetBuffer` (`:219-236`) writes `occupancy_buffer_inflate_[...] = 0` over that
+    whole 11 x 11 x 9 m box;
+  * `grid_map.cpp:880-914` -- for each point, a 27-cell cube loop whose only write is
+    `md_.occupancy_buffer_inflate_[idx_inf] = 1`.  **There is no `= 0` write from a cloud point anywhere in the
+    function, and no raycast;**
+  * `md_.occupancy_buffer_` -- the raw buffer the raycast path maintains -- is written only at `:535`, `:543`,
+    `:546` and `:607-647`, all of them inside `raycastProcess()` / `clearAndInflateLocalMap()`, i.e. the depth
+    path we do not take.
+
+So the map the planner reads is **the current cloud message, inside +-5.5 m of the vehicle, inflated by a
+27-cell cube, rebuilt from scratch on every message**.  Three separate failures follow, and all three are
+SAFETY failures rather than performance ones:
+
+  (a) NO MEMORY.  A pillar the aircraft saw 0.3 s ago and no longer sees -- occluded, or outside the lidar's
+      FOV as the yaw turns -- STOPS EXISTING for the planner.  This is the "single-scan shell" the relay's
+      `--window` was invented for, and `_stage/cloud_relay.py`'s own log said it held 0 % of the pillar the
+      vehicle was inside.
+  (b) NO "SEEN EMPTY".  A cell with no point in it reads free whether it was looked at or not, so the A* treats
+      unknown space as flyable -- and points the flight through it.
+  (c) THE OPPOSITE OUTSIDE THE BOX.  Every caller reads `isInMap == false` as OCCUPIED, which is what makes the
+      box a wall -- so the map is optimistic inside and pessimistic outside, with the switch at an arbitrary
+      distance from the vehicle.
+  The measured hollow annulus (free space reaching 0.27 m from the axis, INSIDE a 0.300 m pillar; STATUS 154/155
+  and `_stage/map-inflation.py`) is a direct consequence of (a) and (b): the marks are wherever points landed,
+  and everything else is free.
+
+### (2) "the controller follows the reference tightly enough that the plan IS the flight"
+
+AS PUBLISHED the planner's margins are centimetres because the inner loop is assumed to be much faster than the
+planner.  HERE the reference passes through four stages that each lose tracking, and one of them is a design
+choice inside the flight controller: ArduPilot's GUIDED `posvel` path does NOT fly the position we send, it
+treats it as a GOAL for an acceleration-limited reference model (`shape_pos_vel_accel_xy`, limited by `WP_ACC`
+and reached at `PSC_NE_JERK`), which is why `params/guided_limits_fast.parm` records the FCU's internal
+reference trailing the plan by up to 0.591 m.  Measured |truth - reference|, three speeds:
+
+    0.8 m/s  Flight C   p50 0.034   p95 0.132                (the only configuration that MET C2-ego)
+    2.0 m/s  Flight Q   p50 0.078   p90 0.178   max 0.294    (the best tracking ever measured here)
+    2.5 m/s  Flight L   p50 0.161   p90 0.487                (and R, which needs 2.5 for the time)
+
+The error is proportional to speed -- about 40 ms of lag times v -- and **the route leaves 0.200 m at its
+tightest point, once per metre along every leg**.  So this assumption holds only at roughly 0.8 m/s, which is
+2.5x SLOWER than the 6 s per leg the owner asked for.  That is the whole of the tension the last five rounds
+have been measuring.
+
+### (3) "a re-plan re-anchors the reference on the vehicle"
+
+AS PUBLISHED it does: `EGOReplanFSM::planFromCurrentTraj` starts the new spline at
+`info->position_traj_.evaluateDeBoorT(t_cur)` -- the OLD plan's own state -- and `traj_server` sets
+`start_time = now` for every new spline, so the reference continues from where the old one had reached.  In a
+system where the vehicle tracks well, that point IS the vehicle, and the reference is continuous.
+
+HERE the vehicle does not track to within the sampling error, so `evaluateDeBoorT(t_cur)` is ahead of the
+aircraft by exactly the tracking error of (2) -- and restarting the clock hands the reference BACK to that
+point, i.e. a backwards STEP once per re-plan.  MEASURED on the wire in Flight A: median 0.281 m, max 0.927 m.
+Nothing in the FSM bounds it: its only in-flight check tests the PLAN, never `odom_pos_`.
+
+This is why `ego_contract_shim.py` carries `--ref-clamp-m` and `--ref-slew-mps` at all: **two clamps that exist
+only because this assumption fails.**  And the three interact viciously -- (3) makes the reference step, the
+step makes (2) worse, and a worse (2) makes the next step bigger.
+
+### AND THAT IS WHY THE FLIGHTS GOT WORSE WHILE GETTING FASTER
+
+Rounds 6-10 bought time with changes that all lean on (2) being true: a shorter re-plan gate (more re-anchoring
+steps per second), a zero dwell (the tour advances while the aircraft is still turning), a higher top speed, a
+larger `lambda_fitness`.  Each one bought seconds and paid in contact rate:
+
+    Flight Q  gate 0.5 s, 2.0 m/s, dwell 0.3 s   legs 6.0-9.6 s (1 of 8 under 6)   **1.34 %** inside
+    Flight U  + tapered corner, dwell 0.0        legs 5.4-8.2 s (4 of 8 under 6)   **2.83 %** inside
+    Flight V  + lambda_fitness 3.0               legs 5.9-9.2 s (2 of 8 under 6)   **3.78 %** inside
+    Flight R  2.5 m/s, corner cap 1.40           legs 5.5-7.2 s (5 of 8 under 6)   **4.42 %** inside
+
+The safest configuration measured on this route is still **Flight Q**, and what pushed it off safety was
+exactly the six-second criterion.  The chain has no stage that can express "fly this line": the map does not
+know the line (1), the plan does not hold the line (the A*/spline placement varies +-0.3..1.0 m run to run),
+and the controller cannot hold it to 0.2 m at the speed the criterion needs (2).  A corridor clamp in the
+contract shell is the only place left that CAN express it, and its risk -- it fights a plan that legitimately
+leaves the line for a real obstacle -- has to be handled rather than ignored.
