@@ -106,7 +106,7 @@ fi
 if [ -n "${RECT_HOLD_S:-}" ]; then
     RECT_HOLD_FROM="the CALLER (RECT_HOLD_S=$RECT_HOLD_S)"
 else
-    RECT_HOLD_S=5.0
+    RECT_HOLD_S=0.3
     RECT_HOLD_FROM="THE HARNESS DEFAULT (RECT_HOLD_S was not set)"
 fi
 WORLD_HOLD_S="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["mission"].get("hold_s", "unset"))' "$WORLD" 2>/dev/null || echo unreadable)"
@@ -200,7 +200,7 @@ EGO_RESOLUTION="${EGO_RESOLUTION:-0.1}"
 EGO_LAMBDA_FITNESS="${EGO_LAMBDA_FITNESS:-1.0}"
 #: `fsm/thresh_replan_time`: how long a committed spline is executed before the FSM re-plans from its own tail.
 #: Every re-plan also restarts `traj_server`'s clock, so this is "how much of each spline the aircraft flies".
-EGO_REPLAN_S="${EGO_REPLAN_S:-1.0}"
+EGO_REPLAN_S="${EGO_REPLAN_S:-0.5}"
 #: THE FSM'S ARRIVAL METER (`fsm/thresh_no_replan_meter`, default 1.0 m).  It is the distance at which ego
 #: STOPS PLANNING and hands the rest to a controller holding a FIXED point -- so at 1.0 m an aircraft doing
 #: 2.5 m/s crosses the goal at speed, overshoots it and loops back.  MEASURED Flight J: the shell's own arrival
@@ -232,25 +232,25 @@ EGO_SETTLE_MPS="${EGO_SETTLE_MPS:-0.08}"
 #: supervisor's 3.00 m climb guard).  The tour is a horizontal one, so the arrival test is horizontal with a
 #: vertical tolerance, and `EGO_REF_Z_CLAMP_M` stops a reference that climbs away from the mission altitude.
 EGO_ARRIVE_Z_M="${EGO_ARRIVE_Z_M:-1.00}"
-EGO_REF_Z_CLAMP_M="${EGO_REF_Z_CLAMP_M:-0.0}"
+EGO_REF_Z_CLAMP_M="${EGO_REF_Z_CLAMP_M:-0.6}"
 #: AND THE FLOOR (metres below the tour's own z; 0 = off).  MEASURED Flight O, leg 5: the reference froze 0.8 m
 #: LOW for four seconds and the truth's worst sample of the entire flight is at ALTITUDE 0.18 m, 0.143 m inside a
 #: pillar of the outermost column -- a one-sided ceiling cannot stop that, and the 21.35 s leg is that event.
-EGO_REF_Z_FLOOR_M="${EGO_REF_Z_FLOOR_M:-0.0}"
+EGO_REF_Z_FLOOR_M="${EGO_REF_Z_FLOOR_M:-0.6}"
 EGO_REF_ACC_MAX="${EGO_REF_ACC_MAX:-2.0}"
 #: THE FORWARDED REFERENCE'S OWN SPEED LIMIT (m/s; 0 = off).  `EGO_REF_CLAMP_M` bounds how FAR a re-plan's step
 #: may land from the vehicle; this bounds how FAST the point may move, which is what the controller feels.
 #: MEASURED Flight H at 3 m/s: tracking error p50 0.139 m but p90 0.532 and max 0.840 m -- the transients, and
 #: they are exactly where a 0.10-0.20 m real margin disappears.  A legitimate 3 m/s reference advances 0.03 m
 #: per 100 Hz message, so a 6 m/s cap touches nothing but the steps.
-EGO_REF_SLEW_MPS="${EGO_REF_SLEW_MPS:-0.0}"
+EGO_REF_SLEW_MPS="${EGO_REF_SLEW_MPS:-6.0}"
 #: THE CORNER GOVERNOR (0 = off): within `EGO_CORNER_M` of the tour's current corner the forwarded reference may
 #: not move faster than `EGO_CORNER_MPS`, and the velocity the message carries is capped with it.  MEASURED
 #: (`_stage/corner-forensics.py`, Flights J and K): EVERY pillar contact of both sorties is OUTSIDE the
 #: rectangle -- (4.58,-1.55), (4.68,0.54), (4.30,2.45), (2.53,4.49), (3.50,-4.50) against corners at (+-3,+-4)
 #: -- i.e. the aircraft OVERSHOOTS each corner by 1-1.7 m into the pillar ring, arriving at |v_ref| 1.8-2.4 m/s.
-EGO_CORNER_M="${EGO_CORNER_M:-0.0}"
-EGO_CORNER_MPS="${EGO_CORNER_MPS:-1.0}"
+EGO_CORNER_M="${EGO_CORNER_M:-1.0}"
+EGO_CORNER_MPS="${EGO_CORNER_MPS:-1.1}"
 #: NO GOAL IS PUBLISHED UNTIL THE VEHICLE IS THIS HIGH (metres; 0 = off).  Route B's twin of PATCH 0008's
 #: `fsm/waypoint_start_alt`; without it ego plans a climb for the whole take-off that nothing is following
 #: (Flight F: goals from t=1.9 s, 87 "First 3 control points in obstacles" before the trigger at t=20.4 s).
@@ -315,7 +315,7 @@ EGO_SELF_BLIND="${EGO_SELF_BLIND:-0.0}"
 #: the reference was 0.623 m ahead of it while the plan's own margin there was 5-17 cm.  A position reference is a
 #: place to go, not a schedule: capping its distance from the vehicle costs the mission nothing and removes the
 #: steps the controller otherwise chases.
-EGO_REF_CLAMP_M="${EGO_REF_CLAMP_M:-0.0}"
+EGO_REF_CLAMP_M="${EGO_REF_CLAMP_M:-1.2}"
 case "$PLANNER" in
     rectangle)
         PLANNER_FILE="$REPO/planner/rectangle_source.py"
