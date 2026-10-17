@@ -1702,3 +1702,50 @@ THE FRONTIER (PLAN 3.6): the reference is never inside a pillar; the aircraft is
 default (+0.016 .. +0.038 m) and has met BOTH clauses in 5 sorties across the investigation (BU2, BZ2, CRS2, CU, and AU
 for time alone), never twice in a row.  The missing 0.1-0.3 s is the corner deceleration, bracketed on both sides; the
 only remaining directions are a faster wire (blocked by the Python bridge) or a stiffer airframe.
+
+============================================================================
+ROUND 25 -- THE REPRODUCIBILITY CAMPAIGN: THE ARM OF RECORD AS A DISTRIBUTION (n=4 more, n=7 total) (2026-10-17)
+============================================================================
+Four BARE sorties (only EXTRA_PARM=params/guided_limits_fast.parm; every other knob the committed default):
+
+  sortie                          C2 min    % inside body   C2-ego   legs under 6 s   max leg   route
+  FLIGHTREP1-rect68              -0.054 m      0.41 %       NOT MET      9 of 9        5.57 s   38.0 s
+  FLIGHTREP2-rect68              -0.074 m      0.93 %       NOT MET      7 of 8         6.22 s   36.0 s
+  FLIGHTREP3-rect68              -0.209 m      0.72 %       NOT MET      8 of 8         5.91 s   34.7 s
+  FLIGHTREP4-rect68              -0.039 m      0.45 %       NOT MET      8 of 8         5.79 s   36.6 s
+
+  A1 route rms 9.58-10.43 mm in all four (the estimator and the planner are unchanged: the spread is the aircraft's).
+
+JOINT, with the three pre-campaign bare sorties (CH +0.038 / CH2 +0.016 / CL +0.033, legs 6-7 of 8 at 6.08-6.29 s):
+  collision clause met in 3 of 7;  time clause met in 3 of 7;  BOTH in the same sortie: 0 of 7.
+
+WHERE THE CONTACT IS (`_stage/where-contact.py`, new):
+  REP1  -0.054 at (-0.49,-4.25)   0.55 m from a corner   inside-body samples 53 % within 0.6 m of a corner
+  REP2  -0.074 at (+2.48,+4.27)   0.59 m from a corner   53 %
+  REP3  -0.191 at (-1.54,-3.60)   1.51 m from a corner   61 %
+  REP4  -0.039 at (-2.60,-4.74)   0.84 m from a corner    6 %  (p50 0.85 m)
+  CH    +0.039 at (-2.55,-4.16)   0.48 m from a corner   no inside-body sample
+  CH2   +0.018 at (-2.48,-4.18)   0.55 m from a corner   no inside-body sample
+  -> the binding event is the CORNER TRANSMISSION (the vehicle swinging wide as it turns; B1 E 6.18-6.66 m against a
+     6.00 m command all along), not cross-track error on the straights.  The lever is the corner SPEED, which round 20
+     raised 1.00 -> 1.10 to buy the 8-of-8 legs.  Round 26 flies 1.00 at the current gain 2.0 / ATC 6.0, four times.
+
+============================================================================
+ROUND 26 -- CORNER 1.00 m/s AT THE CURRENT GAINS: REFUTED ON THE FIRST FLIGHT (CAMPAIGN INTERRUPTED) (2026-10-17)
+============================================================================
+FLIGHTC100A-rect68 (bare defaults except EGO_CORNER_MPS 1.10 -> 1.00):
+    C2 minimum              -0.261 m
+    truth inside a body      2.57 %  (53 of 2062 route samples)
+    legs                     5 of 8 under 6 s  (6.12 / 6.78 / 6.31)
+    route                    39.9 s
+    B1                       E 6.588 / N 8.738
+    worst sample             (-2.47,-4.53), clearance -0.256 m, truth 0.530 m OFF the route, reference 0.010 m off,
+                             |v_ref| 1.64 m/s
+
+  Same place and signature as Flight AZ (-0.238 at (-2.46,-4.55)) and Flight AK (-0.276): the slow-plan /
+  large-excursion mode, not a gentler corner.
+
+THE CAMPAIGN WAS INTERRUPTED AT THE OWNER'S INSTRUCTION (pause + report + top view) after 1 of 4 sorties.  The tree is
+unchanged: EGO_CORNER_MPS remains 1.10 by default.  The figure that accompanies this round is
+docs/figures/traj-xy-CAMPAIGN-round25-rect68.png -- seven bare sorties of the arm of record in one page: three clean,
+four contacts, every contact at a corner.

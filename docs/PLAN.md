@@ -152,19 +152,41 @@ do, measured:
 | | value | evidence |
 |---|---|---|
 | the reference's own clearance | **never inside a pillar** since round 17; worst-instant +0.125 .. +0.284 m | `corridor-stats.py` on every corridor sortie |
-| the aircraft's clearance -- reproducible | **+0.016 .. +0.038 m, 0.00 % inside, C2-ego MET, 3 sorties in a row** (CH, CH2, CL) | STATUS 222-223 |
+| the aircraft's clearance -- as shipped | **+0.016 .. +0.038 m, 0.00 % inside, C2-ego MET in 3 of 7 bare sorties**; the other 4 are -0.039 .. -0.209 m (CH, CH2, CL clean; REP1-4 not) | STATUS 222-223, 229 |
 | the aircraft's clearance -- with 8 of 8 legs | +0.028 m (CRS2) and +0.038 m (CU), **2 sorties**, and -0.05 .. -0.16 m on their siblings | STATUS 225-226 |
-| legs | 6-7 of 8 under 6 s at the default; **8 of 8** at ceiling 2.6, arrival 0.35 or FCU jerk 200 -- each of which spends 2-15 cm of clearance | STATUS 225-226 |
+| legs | 6-7 of 8 under 6 s in the pre-campaign sorties, **8-9 of 9 in 3 of the 4 campaign sorties**; **8 of 8** at ceiling 2.6, arrival 0.35 or FCU jerk 200 -- each of which spends 2-15 cm of clearance | STATUS 225-226, 229 |
 | where the missing 0.1-0.3 s is | the DECELERATION into each corner: `--corner-mps` 1.10 over `--corner-m` 0.50, bracketed from both sides (1.20 worse, zone 0.35 and 0.65 worse, 1.00 clean but slower) | STATUS 224, 227-228 |
 | why it cannot be bought elsewhere | the 50 Hz setpoint hold costs 0.03 m at 1.5 m/s and 100 Hz saturates this Python bridge (Flights AA/AB); the plan's ceiling above 2.5 m/s loses the margin in five independent refutations | STATUS 178, 195-198 |
 
 **The objective -- every leg <= 6 s AND no contact -- has been met in five sorties** (AU for the time clause alone at
-8 of 8; BU2 +0.073 m, BZ2 +0.006 m, CRS2 +0.028 m, CU +0.038 m with 8 of 8 legs), **and never twice in a row.**  What
-is reproducible is the safety clause at the committed default.  The honest statement of the remaining gap: at this
+8 of 8; BU2 +0.073 m, BZ2 +0.006 m, CRS2 +0.028 m, CU +0.038 m with 8 of 8 legs), **and 0 of the 7 bare sorties of the arm of record met both.**  What
+is reproducible is neither clause; what 3.7 measures is that both are the same corner transmission.  The honest statement of the remaining gap: at this
 field's **0.200 m** budget, with an aircraft that holds **0.10-0.15 m** of cross-track error at 1.5 m/s and a wire that
 adds 0.03 m, the two clauses are **the same quantity within the run-to-run spread**, so no single knob separates them;
 a faster wire (needs a non-Python publisher) or a stiffer airframe are the only remaining directions, and neither is a
 parameter.
+
+### 3.7 What the campaign changed (round 25)
+
+The frontier of 3.6 was written from single sorties.  Flown as a distribution -- the arm of record, bare, four more
+times -- it reads:
+
+| the committed default, n = 7 bare sorties | value | how many |
+|---|---|---|
+| collision clause met (min clearance > 0, C2-ego MET) | +0.038 / +0.016 / +0.033 m | **3 of 7**; the other four are -0.039 .. -0.209 m with 0.4-0.9 % of samples inside a body |
+| time clause met (every leg <= 6 s) | max leg 5.57 / 5.79 / 5.91 s | **3 of 7**; the misses are 6.15-6.29 s |
+| both clauses in the same sortie | -- | **0 of 7** |
+| the binding event | the vehicle swinging wide at a 90 deg corner (worst sample 0.55-1.51 m from a corner in every contact sortie) | `_stage/where-contact.py` |
+
+So the two clauses are not "one knob apart": they are **the same 0.2 m of corner overshoot, sampled from a distribution
+with sigma ~0.07 m**, and the arm sits on its mean.  A single sortie cannot resolve a further 0.05 s or 0.03 m, which
+is why rounds 21-24 produced five refutations and no improvement.  What CAN be decided by 4-sortie sampling is which
+arm's distribution to ship -- and on the hard clause, the corner-1.00 arm's distribution (STATUS 200: 4 of 5 within
+3 cm, one -0.238) looked better than the corner-1.10 arm's (this campaign: 0 of 4 clean).  **Round 26 measured it and
+it does not transfer**: corner 1.00 at the current gains (Flight C100A, one sortie) is **-0.261 m with 2.57 % inside
+and 5 of 8 legs**, the truth 0.530 m off the route on the south edge while the reference is 0.010 m off it -- the
+slow-plan/large-excursion signature of Flights AK and AZ, not a gentler corner.  So the corner speed is not a monotone
+safety lever either, and the round was stopped there at the owner's instruction with 1 of its 4 sorties flown.
 
 ## 4. The pipeline
 
