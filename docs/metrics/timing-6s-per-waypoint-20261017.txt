@@ -1613,3 +1613,13 @@ VERIFIED AFTER THE DELETION: shim selftest PASSED (its corridor cases now assert
 removed taper used to open it); `bash -n run-mission.sh` clean; the harness's Route-B argv is
 `--world ... --arrive-m ... --corridor-m ... --ref-clamp-m ...` with no removed flag; `frozen-check` 53 of 53;
 `docs-budget` 5 of 5; `check-doc-citations` 147 of 147.
+
+============================================================================
+FLIGHT CF -- THE POST-CLEANUP VERIFICATION (2026-10-17)
+============================================================================
+A bare `PLANNER=ego` sortie on the cleaned tree (no environment at all):
+    C2 **+0.018 m**, 0.00 % inside a body, **C2-ego MET**, 1.50 % below the 0.10 m standoff,
+    A1 9.72 mm, A2 8.61 mm, B1 E 6.640 / N 8.527, C1 0.087 m [PASS], route 36.6 s,
+    legs 0.89 / 4.79 / 5.75 / 5.06 / 6.94 / 4.41 / 5.20 / 4.47 s -- 7 of 8 under 6 s.
+The shim's start-up lines list 8 waypoints and none of the removed options: the deletion removed code that was not
+flown, and the safety-first default remains clean in 4 of its 5 bare sorties.
