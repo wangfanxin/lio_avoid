@@ -130,6 +130,19 @@ def generate_launch_description():
                                           "the odometry start can land in an obstacle at all.  0.0 is the only "
                                           "other value the integer `inf_step = ceil(inflation/resolution)` can "
                                           "express besides one cell, and it is the point of Flight F."),
+        DeclareLaunchArgument('emergency_time', default_value='0.0',
+                              description="`fsm/emergency_time`: in `checkCollisionCallback`, when the remaining part "
+                                          "of the committed spline is found in collision AND `planFromCurrentTraj()` "
+                                          "fails, the FSM compares the time to the collision against this value -- "
+                                          "inside it, EMERGENCY_STOP (a STATIONARY spline, so the reference the "
+                                          "shell forwards FREEZES); outside it, REPLAN_TRAJ (a fresh plan).  "
+                                          "MEASURED round 17 (`_stage/leg-stall.py`): every leg over 6 s contains a "
+                                          "FREEZE of 0.5-3.4 s at |v_ref| < 0.20 m/s (BF leg 5 26.8 % of the leg, "
+                                          "BF2 leg 5 3.40 s continuous, BG leg 4 53.4 %), and the FSM's own log "
+                                          "carries the matching `[SAFETY]: from EXEC_TRAJ to EMERGENCY_STOP` "
+                                          "events -- so the seconds that were being blamed on the planner's speed "
+                                          "are the emergency stop's, and a value of 0.0 turns the stop into a "
+                                          "re-plan instead."),
         DeclareLaunchArgument('thresh_no_replan_meter', default_value='1.0',
                               description="`fsm/thresh_no_replan_meter`: the FSM's ARRIVAL METER -- it declares the "
                                           "goal reached when the plan's clock is out AND the vehicle is within this "
@@ -198,7 +211,7 @@ def generate_launch_description():
         'fsm/thresh_no_replan_meter': LaunchConfiguration('thresh_no_replan_meter'),
         'fsm/planning_horizon': LaunchConfiguration('planning_horizon'),
         'fsm/planning_horizen_time': 3.0,
-        'fsm/emergency_time': 1.0,
+        'fsm/emergency_time': LaunchConfiguration('emergency_time'),
         'fsm/fail_safe': True,
         # PATCH COLLISION-FIX/1 (H1): the FSM's collision check tests the PLAN at 20 Hz and, until 2026-10-16,
         # never the VEHICLE -- measured: the aircraft sat 0.136 m inside a pillar for 0.330 s while `Suddenly

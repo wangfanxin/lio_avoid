@@ -258,6 +258,15 @@ EGO_REF_SLEW_MPS="${EGO_REF_SLEW_MPS:-6.0}"
 #: -- i.e. the aircraft OVERSHOOTS each corner by 1-1.7 m into the pillar ring, arriving at |v_ref| 1.8-2.4 m/s.
 EGO_CORNER_M="${EGO_CORNER_M:-0.50}"
 EGO_CORNER_MPS="${EGO_CORNER_MPS:-1.00}"
+#: THE FSM'S EMERGENCY-STOP WINDOW (seconds), and it is the thing that owns the long legs.  MEASURED round 17
+#: (`_stage/leg-stall.py`): every leg over 6 s contains a FREEZE of 0.5-3.4 s with the reference below 0.20 m/s --
+#: BF leg 5 26.8 % of the leg still, BF2 leg 5 a 3.40 s continuous freeze, BG leg 4 53.4 % -- and the FSM's log carries
+#: the matching `[SAFETY]: from EXEC_TRAJ to EMERGENCY_STOP`.  In `checkCollisionCallback` the FSM, when the rest of the
+#: committed spline is in collision and re-committing from the current trajectory fails, does:
+#:     if (t - t_cur < emergency_time_)  EMERGENCY_STOP   // a STATIONARY spline: the reference FREEZES
+#:     else                              REPLAN_TRAJ      // a fresh plan
+#: so 0.0 turns every one of those stops into a re-plan.  1.0 is the node's own default and what every sortie so far flew.
+EGO_EMERGENCY_S="${EGO_EMERGENCY_S:-0.0}"
 #: THE ROUTE CORRIDOR (metres; 0 = off = every sortie before 2026-10-17): the forwarded horizontal reference is
 #: held within this distance of the CURRENT leg's centreline, with the across-the-line parts of the velocity and
 #: acceleration fields removed.  MEASURED why (`_stage/leg-clearance.py` on `worlds/rect68.yaml`): the pillars are
@@ -783,7 +792,7 @@ if [ "$EGO_STACK" = "1" ]; then
         max_vel:="$EGO_MAX_VEL" max_acc:="$EGO_MAX_ACC" \
         obstacles_inflation:="$EGO_INFLATION" resolution:="$EGO_RESOLUTION" \
         lambda_fitness:="$EGO_LAMBDA_FITNESS" thresh_replan_time:="$EGO_REPLAN_S" \
-        thresh_no_replan_meter:="$EGO_NOREPLAN_M" \
+        thresh_no_replan_meter:="$EGO_NOREPLAN_M" emergency_time:="$EGO_EMERGENCY_S" \
         > "$OUT/ego_planner.log" 2>&1 &
     EGO_LAUNCH_PID=$!
     echo "   ego stack : contract $EGO_CONTRACT; cloud_relay pid $EGO_RELAY_PID -> $EGO_CLOUD_TOPIC;"

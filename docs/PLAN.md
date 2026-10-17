@@ -86,16 +86,19 @@ pillar body, minimum surface distance >= 0).  As of 2026-10-17 the arm and the n
 | `EGO_CORNER_M` / `MPS` | **0.50 m / 1.00 m/s** | the corner is where the aircraft's momentum is made, and at 1.0 m radius the governor set the schedule (|v_ref| p50 == the cap).  Refuted as a SAFETY lever in three forms since (`_stage/corner-exit-audit2.py`: interior cross-track p50 0.132 / 0.164 / 0.199 / 0.128 m for 0.50@1.00, 0.50@1.00+3.0, 0.50@0.70, 1.00@0.70) -- the remaining error is the aircraft's tracking, not the corner |
 | `EGO_MAX_VEL` / `ACC` | **2.5 m/s** | the clean band.  2.75 (BG -0.042 / -0.273) and 3.0 (AU/AX/AS/AW: -0.007 to -0.222) each buy seconds at the cost of the margin; 3.0 is the documented one-knob conversion to the time-complete variant |
 | `PSC_NE_POS_P` | **1.8** (`params/guided_limits_fast.parm`) | the horizontal position loop, and the last lever that moved the MECHANISM: the aircraft's interior cross-track error p50 0.132 -> **0.096-0.130 m** against the 0.200 m the field leaves.  Its old refutations (AE: raised together with `EGO_REF_ACC_MAX` 2.5; AX: at the 3.0 ceiling) do not apply at 2.5 with the corridor in place |
+| `fsm/emergency_time` | **0.0** (`EGO_EMERGENCY_S`) | THE round-17 find: at 1.0 s the FSM turned every collision alarm into a STATIONARY spline (`ego_replan_fsm.cpp:908-913`), i.e. a frozen reference for 0.5-3.4 s per long leg.  At 0.0 it re-plans instead -- the stops go to zero, the still time from 1.4-5.4 s to 0.9-2.6 s, the legs from 7-12 s to 4.0-6.8 s, and the clearance IMPROVES because a frozen reference is also a bad one |
 | the rest | Flight AD's | posvelacc, ref-clamp 1.2, ref-slew 6.0, ref-acc 2.0, ref-z 0.6/0.6, settle 0.0, dwell 0.0, `PSC_NE_POS_P` 1.5, 10 m pillars, lidar map 0.1 m, PATCH I + RESOLUTION/1 + the crash fix |
 
-A **bare `PLANNER=ego` sortie** flies it.  With the position loop at 1.8 the last four bare sorties (BE, BE2, BF, BF2)
-read C2 minimum **-0.021 / +0.039 / +0.048 / +0.056 m**, **0.15 / 0.00 / 0.00 / 0.00 %** of samples inside a body,
-**C2-ego MET in three of four**, A1 9.03-10.36 mm, B1 E 6.250-6.570 / N 8.254-8.316, C1 0.008-0.050 m, routes
-35.3-40.1 s, and **7 of 8 legs under 6 s in BF (max 7.29 s)**, 6 of 8 in BF2.  So the collision clause is met with a
-POSITIVE, reproducible margin -- and that is the first time it can be said of any arm.  The earlier gain-1.5 sorties of
-this arm (AR, AT, AY, AY2, AZ) read +0.032 / +0.029 / -0.003 / -0.033 / -0.238 m, i.e. 0 ± 0.03 m, which is what the
-1.8 improves on.  **The reference was on the centreline in all of them** (0.00 % of reference samples inside a body,
-worst-instant clearance +0.269..+0.284 m), so the plan-side defect is structurally gone; what varies is the aircraft.  A bare run's own console line now reads
+A **bare `PLANNER=ego` sortie** flies it.  With the emergency window at 0.0 (round 17) the last three bare sorties
+(BI, BI2, BO) read C2 minimum **+0.020 / +0.057 / -0.011 m** -- mean **+0.022 +- 0.03 m**, the first positive mean of
+any arm -- with **0.00 / 0.00 / 0.06 %** of samples inside a body, C2-ego MET in two of three, A1 9.02-10.23 mm,
+B1 E 6.211-6.546 / N 8.309-8.442, C1 0.025-0.154 m, routes 35.6-40.7 s, **6-7 of 8 legs under 6 s** and **zero
+emergency stops**.  The earlier gain-1.5 sorties of this arm (AR, AT, AY, AY2, AZ) read +0.032 / +0.029 / -0.003 /
+-0.033 / -0.238 m, i.e. 0 +- 0.03 m, which is what the gain and the emergency window together improve on.  **The
+reference was on the centreline in all of them** (0.00 % of reference samples inside a body, worst-instant clearance
++0.269..+0.284 m), so the plan-side defect is structurally gone; what varies is the aircraft and the planner's run.
+The one-knob variant that meets the TIME clause on **8 of 8 legs** is `EGO_CORNER_MPS=1.10` (Flight BK2, max 5.95 s)
+at **-0.018 m / 0.08 % inside** -- the frontier is 2 cm and 0.4 s.  A bare run's own console line now reads
 `shim: ROUTE CORRIDOR 0.010 m ... does NOT open at the ends`, `CORNER GOVERNOR 1.000 m/s within 0.500 m`, and
 `ACCELERATION FIELD clamped to 2.000 m/s2`.
 

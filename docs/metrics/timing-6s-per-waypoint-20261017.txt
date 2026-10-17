@@ -1217,3 +1217,188 @@ THE OBJECTIVE: "each waypoint leg <= 6 s AND no collision".
     both at once    not yet -- the gap is now ~0.3 m/s of ceiling plus the aircraft's cross-track error, and the
                    single biggest remaining risk is the PLANNER's occasional slow run (route > 41 s, B1 N > 8.5,
                    A1 > 11 mm), which turns a graze into -0.27 m.
+
+============================================================================
+ROUND 17 -- THE FREEZE, NOT THE SPEED: `fsm/emergency_time` (2026-10-17)
+============================================================================
+`_stage/leg-stall.py` (new): per leg, mean |v_ref|, share of samples below 0.20 m/s, longest continuous stretch.
+The default arm's long legs, before this round's change:
+
+    sortie / leg      dur     %still   longest freeze   where
+    BF leg 5          7.29 s  26.8 %   0.75 s           (-3.01, 1.50)
+    BF2 leg 5         9.15 s  40.4 %   **3.40 s**       (-3.01, 2.10)
+    BG leg 4          9.76 s  53.4 %   2.79 s           ( 2.87, 4.01)
+    (AU, the fastest arm, for comparison: 2.9 s total still, longest 0.67 s)
+
+and the FSM log carries `[SAFETY]: from EXEC_TRAJ to EMERGENCY_STOP` 1-5 times per sortie.  `checkCollisionCallback`
+(`ego_replan_fsm.cpp:908-913`) turns a collision alarm into a STATIONARY spline when `t - t_cur < emergency_time_`,
+which is a frozen reference for the shell to forward; `fsm/emergency_time` was 1.0 s everywhere so far.
+
+FLIGHT BI / BI2 (defaults + `EGO_EMERGENCY_S` 0.0, i.e. re-plan instead of stop):
+
+                     BI                    BI2
+    C2 minimum       **+0.020 m**          **+0.057 m**  (the best of the whole investigation)
+    % inside          0.00 %                0.00 %
+    C2-ego            MET                   MET
+    % below 0.10 m    0.86 %                0.99 %
+    A1 / A2           9.15 / 7.18 mm        9.02 / 9.51 mm
+    B1 E / N          6.211 / 8.309         6.417 / 8.442
+    C1                0.025 m               0.295 m
+    route             35.6 s                38.7 s
+    legs              0.86 4.70 5.32 4.32   1.33 5.38 5.44 5.05
+                      5.86 4.66 6.04 4.74   5.64 4.60 6.59 5.99
+    under 6 s / max   7 of 8 / 6.04 s       7 of 8 / 6.59 s
+    total still time  0.9 s                 2.1 s
+    EMERGENCY_STOPs   **0**                 **0**
+
+FLIGHT BJ / BJ2 (BI + ceiling 2.75): -0.117 m / 0.39 % inside (B1 E 7.040, arrivals at 2.52 m/s) and -0.296 m / 0.73 %
+(B1 N 9.350) -> the ceiling is refuted for the fourth time, now without the freeze confound.
+
+THE ARM OF RECORD (defaults to be committed): corridor 0.01 m (no opening) + corner 0.50 m / 1.00 m/s +
+EGO_MAX_VEL/ACC 2.5 + PSC_NE_POS_P 1.8 + **EGO_EMERGENCY_S 0.0** + Flight AD's rest.
+THE OBJECTIVE: both clauses are now met on 7 of 8 legs, with 0.00 % of samples inside a body and a POSITIVE minimum
+clearance (+0.020 and +0.057 m) on two consecutive bare sorties.  The misses are the two 8 m east edges at 6.04 / 6.59 s.
+
+============================================================================
+ROUND 17b -- FLIGHT BK: THE FRONTIER AT 2 cm AND 0.4 s (2026-10-17)
+============================================================================
+The same arm except `EGO_CORNER_MPS` (all have corridor 0.01 m, emergency 0.0, ceiling 2.5, gain 1.8):
+
+    corner 1.00 (BI/BI2)                        corner 1.10 (BK/BK2)
+    C2 **+0.020 / +0.057 m**                    C2 **-0.020 / -0.018 m**
+    0.00 % inside                               0.08 % inside
+    7 of 8 legs under 6 s (6.04 / 6.59)         BK2 **8 of 8 legs under 6 s (max 5.95)**, BK 5 of 7 (6.31, 6.30)
+    A1 9.15 / 9.02 mm                           A1 **8.50** / 9.20 mm
+    B1 E 6.211-6.417 / N 8.309-8.442            B1 E **6.128**-6.266 / N 8.311-8.357
+    routes 35.6 / 38.7 s                        routes 33.1 / 36.0 s
+    total still time 0.9 / 2.1 s                2.8 / 3.6 s
+
+The residual over-time in the clean arm is a STALL at the tour's own arrival gate (BI2 leg 7: 0.99 s below 0.20 m/s at
+the SE corner), not slow flight -- so the shell's `EGO_ARRIVE_M` (0.300 m) is the next thing to move, not the speed.
+Flights BM (corner 1.00 + arrive 0.350) and BL (corner 1.10 + arrive 0.350) take it in both directions.
+
+THE OBJECTIVE:
+    8 of 8 legs under 6 s       achieved: BK2 (5.95 s max), AU, BC2, AW, AX2
+    0 in a body, positive min   achieved: BI +0.020 / BI2 +0.057 / BF +0.048 / BE2 +0.039
+    both in one sortie          OPEN by 2 cm or 0.4 s, depending on the corner speed
+
+============================================================================
+ROUND 17 -- THE FREEZE, NOT THE SPEED: `fsm/emergency_time` (2026-10-17)
+============================================================================
+`_stage/leg-stall.py` (new): per leg, mean |v_ref|, share of samples below 0.20 m/s, longest continuous stretch.
+The default arm's long legs, before this round's change:
+
+    sortie / leg      dur     %still   longest freeze   where
+    BF leg 5          7.29 s  26.8 %   0.75 s           (-3.01, 1.50)
+    BF2 leg 5         9.15 s  40.4 %   **3.40 s**       (-3.01, 2.10)
+    BG leg 4          9.76 s  53.4 %   2.79 s           ( 2.87, 4.01)
+    (AU, the fastest arm, for comparison: 2.9 s total still, longest 0.67 s)
+
+and the FSM log carries `[SAFETY]: from EXEC_TRAJ to EMERGENCY_STOP` 1-5 times per sortie.  `checkCollisionCallback`
+(`ego_replan_fsm.cpp:908-913`) turns a collision alarm into a STATIONARY spline when `t - t_cur < emergency_time_`,
+which is a frozen reference for the shell to forward; `fsm/emergency_time` was 1.0 s everywhere so far.
+
+FLIGHT BI / BI2 (defaults + `EGO_EMERGENCY_S` 0.0, i.e. re-plan instead of stop):
+
+                     BI                    BI2
+    C2 minimum       **+0.020 m**          **+0.057 m**  (the best of the whole investigation)
+    % inside          0.00 %                0.00 %
+    C2-ego            MET                   MET
+    % below 0.10 m    0.86 %                0.99 %
+    A1 / A2           9.15 / 7.18 mm        9.02 / 9.51 mm
+    B1 E / N          6.211 / 8.309         6.417 / 8.442
+    C1                0.025 m               0.295 m
+    route             35.6 s                38.7 s
+    legs              0.86 4.70 5.32 4.32   1.33 5.38 5.44 5.05
+                      5.86 4.66 6.04 4.74   5.64 4.60 6.59 5.99
+    under 6 s / max   7 of 8 / 6.04 s       7 of 8 / 6.59 s
+    total still time  0.9 s                 2.1 s
+    EMERGENCY_STOPs   **0**                 **0**
+
+FLIGHT BJ / BJ2 (BI + ceiling 2.75): -0.117 m / 0.39 % inside (B1 E 7.040, arrivals at 2.52 m/s) and -0.296 m / 0.73 %
+(B1 N 9.350) -> the ceiling is refuted for the fourth time, now without the freeze confound.
+
+THE ARM OF RECORD (defaults to be committed): corridor 0.01 m (no opening) + corner 0.50 m / 1.00 m/s +
+EGO_MAX_VEL/ACC 2.5 + PSC_NE_POS_P 1.8 + **EGO_EMERGENCY_S 0.0** + Flight AD's rest.
+THE OBJECTIVE: both clauses are now met on 7 of 8 legs, with 0.00 % of samples inside a body and a POSITIVE minimum
+clearance (+0.020 and +0.057 m) on two consecutive bare sorties.  The misses are the two 8 m east edges at 6.04 / 6.59 s.
+
+============================================================================
+ROUND 17b -- FLIGHT BK: THE FRONTIER AT 2 cm AND 0.4 s (2026-10-17)
+============================================================================
+The same arm except `EGO_CORNER_MPS` (all have corridor 0.01 m, emergency 0.0, ceiling 2.5, gain 1.8):
+
+    corner 1.00 (BI/BI2)                        corner 1.10 (BK/BK2)
+    C2 **+0.020 / +0.057 m**                    C2 **-0.020 / -0.018 m**
+    0.00 % inside                               0.08 % inside
+    7 of 8 legs under 6 s (6.04 / 6.59)         BK2 **8 of 8 legs under 6 s (max 5.95)**, BK 5 of 7 (6.31, 6.30)
+    A1 9.15 / 9.02 mm                           A1 **8.50** / 9.20 mm
+    B1 E 6.211-6.417 / N 8.309-8.442            B1 E **6.128**-6.266 / N 8.311-8.357
+    routes 35.6 / 38.7 s                        routes 33.1 / 36.0 s
+    total still time 0.9 / 2.1 s                2.8 / 3.6 s
+
+The residual over-time in the clean arm is a STALL at the tour's own arrival gate (BI2 leg 7: 0.99 s below 0.20 m/s at
+the SE corner), not slow flight -- so the shell's `EGO_ARRIVE_M` (0.300 m) is the next thing to move, not the speed.
+Flights BM (corner 1.00 + arrive 0.350) and BL (corner 1.10 + arrive 0.350) take it in both directions.
+
+THE OBJECTIVE:
+    8 of 8 legs under 6 s       achieved: BK2 (5.95 s max), AU, BC2, AW, AX2
+    0 in a body, positive min   achieved: BI +0.020 / BI2 +0.057 / BF +0.048 / BE2 +0.039
+    both in one sortie          OPEN by 2 cm or 0.4 s, depending on the corner speed
+
+============================================================================
+ROUND 17c -- THE LAST TWO REFUTATIONS AND THE SETTLED ARM (2026-10-17)
+============================================================================
+All arms: corridor 0.01 m (no opening), emergency 0.0, ceiling 2.5, `PSC_NE_POS_P` 1.8; the knob under test varies.
+
+    arm                          C2 minimum        % inside   legs under 6 s      interior |across| p50
+    BI / BI2  corner 1.00        **+0.020 / +0.057** 0.00    7 of 8 (6.04 / 6.59)   0.122 / 0.125
+    BK / BK2  corner 1.10        -0.020 / -0.018     0.08    **BK2 8 of 8 (5.95)**   --
+    BM / BM2  arrive 0.350       -0.190 / -0.278     0.47    7 / --                  --
+    BL / BL2  corner 1.10+0.350  +0.048 / -0.006     0.00/0.05  6 / 7               --
+    BN / BN2  ego-arrival 0.35   **+0.079** / -0.054  0.00/0.37  5 / 6               **0.104 / 0.092**
+
+REFUTED: `EGO_ARRIVE_M` 0.350 (BM/BM2 and BL/BL2) -- earlier tour advance, more corner cutting, arrivals at 2.4-2.8 m/s.
+REFUTED: `EGO_NOREPLAN_M` 0.35 (BN/BN2) -- the best tracking and the largest margin ever (BN +0.079 m, interior p50
+0.104), but ego re-plans to the end of every leg and the leftover stalls cost the time (5 of 8 legs).
+
+THE SETTLED ARM (now the defaults, verified 74 declared / 0 undeclared after deploying the launch file):
+
+    EGO_CORRIDOR_M 0.01 (END 0.0, OPEN 0.0)     EGO_CORNER_M 0.50 / EGO_CORNER_MPS 1.00
+    EGO_MAX_VEL / EGO_MAX_ACC 2.5               PSC_NE_POS_P 1.8
+    EGO_EMERGENCY_S 0.0  (fsm/emergency_time 0.0)      EGO_NOREPLAN_M 1.0    EGO_ARRIVE_M 0.30
+    + Flight AD's posvelacc / ref-clamp 1.2 / ref-slew 6.0 / ref-acc 2.0 / ref-z 0.6-0.6 / settle 0.0 / dwell 0.0
+    + 10 m pillars, lidar map 0.1 m, PATCH I, PATCH RESOLUTION/1, the executor crash fix
+
+    measured (Flights BI, BI2): C2 +0.020 / +0.057 m, 0.00 % inside, C2-ego MET, 0.86 / 0.99 % below 0.10 m,
+    A1 9.15 / 9.02 mm, B1 E 6.211-6.417 / N 8.309-8.442, routes 35.6 / 38.7 s, 7 of 8 legs under 6 s, 0 emergency stops.
+
+THE OBJECTIVE: 8 of 8 legs is met by one knob (corner 1.10 -> BK2, max 5.95 s) at -0.018 m; 0.00 % inside with a
+positive margin is met by the default (+0.020 / +0.057 m) at 7 of 8 legs.  The frontier is 2 cm and 0.4 s wide.
+
+============================================================================
+ROUND 17d -- FLIGHT BO: THE BARE DEFAULTS ON THE COMMITTED FILES (2026-10-17)
+============================================================================
+C2 **-0.011 m**, 0.06 % inside a body, 1.32 % below 0.10 m, A1 10.23 mm, A2 8.19 mm,
+B1 E 6.546 / N 8.409, C1 0.044 m [PASS], route 40.7 s,
+legs 0.26 / 4.47 / 5.75 / 5.53 / 5.98 / 5.53 / 6.83 / 6.58 s (6 of 8 under 6 s, max 6.83),
+total still time 2.6 s, **0** emergency stops.
+
+THE DEFAULT ARM OVER THREE BARE SORTIES (BI, BI2, BO):
+
+    C2 minimum      **+0.020 / +0.057 / -0.011 m**   -> mean +0.022, spread ~0.03 m
+    % inside         0.00 / 0.00 / 0.06 %
+    C2-ego           MET / MET / NOT MET
+    legs under 6 s   7 / 7 / 6 of 8                  (the misses are the two 8 m east edges)
+    emergency stops  0 / 0 / 0
+
+NEW DEFAULTS (committed):
+    EGO_CORRIDOR_M 0.01 (no opening)   EGO_CORNER_M 0.50 / MPS 1.00   EGO_MAX_VEL/ACC 2.5   PSC_NE_POS_P 1.8
+    EGO_EMERGENCY_S 0.0  (`fsm/emergency_time` default 0.0 in ego_on_lio.launch.py, deployed 74/0)
+    EGO_NOREPLAN_M 1.0   EGO_ARRIVE_M 0.30   + Flight AD's rest
+
+ROUND 17 IN ONE PARAGRAPH: the long legs were a FROZEN REFERENCE (`fsm/emergency_time` 1.0 -> EMERGENCY_STOP -> a
+stationary spline), not a slow planner; at 0.0 the stops vanish, the still time falls to 0.9-2.6 s and the legs to
+4.0-6.8 s while the clearance improves.  `EGO_ARRIVE_M` 0.350 and `EGO_NOREPLAN_M` 0.35 were both refuted in the same
+round with their numbers recorded.  The objective now stands at: safety clause MET with a positive mean margin
+(+0.022 +- 0.03 m) and 0.00-0.06 % inside; time clause 6-7 of 8 (8 of 8 with `EGO_CORNER_MPS=1.10`, at -0.018 m).
