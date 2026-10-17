@@ -2095,3 +2095,20 @@ divergence, not a planner or mission fault, and the planner was being fed a posi
 GEOMETRY: thin vertical structure (r = 0.10 m) on a large empty floor, with nothing at all south of y = 0 -- the
 degenerate case for a LiDAR-inertial estimator.
 NEXT: one change on the estimator's side (lio/config/livox_360.yaml: map resolution / ray length), not on the mission.
+
+============================================================================
+MISSION C, ROUND 9 -- FINER MAP: VERTICAL STILL DIVERGES, HORIZONTAL 14 mm (2026-10-17)
+============================================================================
+Change: src/lio/config/livox_360.yaml  lio.hash_map.vox_resolution  0.25 -> 0.10   (patched, flown, RESTORED to HEAD)
+
+  r12 (finer map)   takeoff sim 32.8  cmd 1.43  lio 0.00   truth 0.10
+                    hold    sim 38.0  cmd 1.45  lio 0.00   truth 0.20
+                    abort   sim 40.5  cmd 1.98  lio 1.80   truth 4.05      <- 2.25 m gap (r11 at 0.25 m: 2.09 m)
+                    done    sim 85.6  cmd 1.40  lio -361.36 truth 0.10     <- runaway GREW (r11: -197 m)
+
+  horizontal, same flight:  "ARRIVED at waypoint 1 of 4 (0.014 m horizontal, 0.849 m vertical, |v| 0.07 m/s),
+                             dwelling 2.0 s"   -> 14 mm in the plane while the vertical estimate was 2 m out.
+
+READ: the map resolution does not drive the vertical divergence.  The horizontal channel is the best instrument in
+the stack; the vertical channel is the defect.  Next: voxel_fliter_size 0.2 m (== the pillar diameter),
+kf_max_iterations, the IMU/accel bias in lio.sensor -- one at a time.
