@@ -1945,3 +1945,26 @@ READ: with 791 r = 0.10 m pillars on a 0.5 m lattice the aircraft flew 70 s with
 fine forest is flyable.  What failed is the mission definition: the tour the shell published is not the tour the world
 file declares, so the next round instruments the W->L conversion of mission.corners (the shell prints the goal it
 publishes; the world file states the goal it wants) before anything else is changed.
+
+============================================================================
+MISSION C, ROUNDS 2-5 -- THE FRAME IS RIGHT, THE PLANNER IS THE OBSTACLE (2026-10-17)
+============================================================================
+  round  change                                   outcome
+  1      (0,2)->(0,4)->(0,8), 1.5 s hover          flew SOUTH, fence at 20.6 s; C2 +0.077, 0 % inside
+  2      tour pulled inside ego's 16 m map box     flew away (commanded (-26.4,-14.7) W); 31 076 a-star errors,
+                                                  31 022 'the drone is in obstacle'; C2 +0.096, 0 % inside
+  3      EGO_RESOLUTION 0.1 -> 0.05               **ARRIVED at waypoint 1** (0.158 m, |v| 0.08, 2.0 s hover),
+                                                  then left the mission mode; 21 794 a-star errors; C2 +0.042
+  4      + EGO_SELF_BLIND 0.35                    aborted EARLY on the take-off guard (truth 3.01 m vs 2.00);
+                                                  54 696 / 52 880 planning failures
+  5      + EGO_CLOUD_VOXEL 0.04 (no self-blind)    aborted EARLY on the same take-off guard; voxel UNTESTED
+
+FINDINGS
+  * the W->L conversion is CORRECT: the shell publishes (2.004,-0.003,1.884) L for the world's (0,2), and 2/3
+    likewise -- the tour the world declares is the tour published.  Item (c) of the objective is closed.
+  * ego cannot plan in a 0.5 m lattice of r 0.10 m pillars at 0.10 m resolution: 20 000-55 000 'a star error' per
+    sortie, 'the drone is in obstacle' in the same counts, and a degenerate plan that sends the aircraft away.
+    0.05 m resolution is the first change that produced an ARRIVAL.
+  * the take-off altitude datum failure has now ablated four sorties today (two of them in this round's work);
+    it must be understood before more flights are spent.
+  * the forest is NOT the obstacle: C2 +0.077 / +0.096 / +0.042 m, 0.00 % inside a body, C2-ego MET.
