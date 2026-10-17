@@ -1534,3 +1534,29 @@ DECISION: `EGO_XTRACK_GAIN` stays **0.0**; the knob and its refutation are docum
 THE OBJECTIVE (unchanged): fast arm both clauses in 2 of 6; safety-first default clean in 4 of 5 with 6-7 of 8 legs.
 Every shell-side lever now has an evidence trail: corridor, emergency window, position gain, corner speed and radius,
 ceiling, arrival and re-plan meters, approach way, cross-track feedback.
+
+============================================================================
+ROUND 20b -- THE FILTERED CROSS-TRACK FEEDBACK (2026-10-17)
+============================================================================
+`--xtrack-tau 0.40` (first-order lag on the offset) at gain 0.5, fast arm (corner 1.10, gain 2.0):
+
+    CD    C2 -0.030 m, 0.10 % inside, A1 9.37 mm, B1 6.448 / 8.228, C1 0.008 m, route 32.7 s,
+          legs 4.10 5.36 4.32 5.97 5.88 6.14 5.00  (+ leg 1) -> 6 of 7 under 6 s
+    CD2   C2 -0.041 m, 0.53 % inside, A1 9.88 mm, B1 6.980 / 8.842, C1 0.223 m, route 37.6 s,
+          legs **0.87 5.14 5.12 4.78 5.73 5.21 5.70 5.89 -> 8 of 8 under 6 s (max 5.89)**
+
+Both minima are on the PAD-TO-FIRST-CORNER DIAGONAL:
+    CD   (-1.285, -1.663)  z 1.107 m  clr -0.030
+    CD2  (-1.295, -1.658)  z 0.528 m  clr -0.041
+and that line passes 0.300 m from the (-1.5,-1.5) pillar's axis -- exactly its radius -- so a contact there is geometry,
+not control.  Each sortie's NEXT-worst instant is clear: the diagonal is the whole of their deficit.
+
+THE CROSS-TRACK FEEDBACK, ALL SIX SORTIES:
+    raw (gain 0.5)       CB -0.276 / CB2 -0.031 / CC -0.031 / CC2 -0.046
+    filtered (tau 0.40)  CD -0.030 / CD2 -0.041
+-> refuted in both forms; `EGO_XTRACK_GAIN` stays 0.0, the knob is documented off.
+
+THE OBJECTIVE AFTER ROUNDS 16-20: fast arm (corner 1.10 + gain 2.0) meets both clauses in **2 of 6** sorties
+(BU2 +0.073 m / 8 of 8 legs, BZ2 +0.006 m / 8 of 8 legs); the safety-first default (corner 1.00 + gain 1.8) is clean in
+**4 of 5** with 6-7 of 8 legs.  The shell has no lever left that has not been flown; the residual is the aircraft's
+0.14-0.36 m cross-track excursion against a field that leaves 0.200 m.

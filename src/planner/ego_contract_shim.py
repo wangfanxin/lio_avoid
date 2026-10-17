@@ -71,7 +71,7 @@ class TourSequencer:
                  arrive_z_m=1.00, start_alt_m=0.0, ref_z_clamp_m=0.0, ref_slew_mps=0.0,
                  corner_m=0.0, corner_mps=1.0, ref_z_floor_m=0.0, ref_acc_max=0.0,
                  corridor_m=0.0, corridor_end_m=0.0, corridor_open_m=2.0,
-                 xtrack_gain=0.0, xtrack_max=0.10):
+                 xtrack_gain=0.0, xtrack_max=0.10, xtrack_tau=0.0):
         self.targets = np.asarray(targets_l, dtype=float).reshape(-1, 3)
         self.arrive_m = float(arrive_m)
         self.hold_s = float(hold_s)
@@ -193,6 +193,14 @@ class TourSequencer:
         #: reference itself can never leave the corridor's safety band.
         self.xtrack_gain = float(xtrack_gain)
         self.xtrack_max = float(xtrack_max)
+        #: THE OFFSET'S OWN TIME CONSTANT (seconds; 0 = use the raw measurement).  MEASURED Flight CB/CC (round 20):
+        #: the raw signal re-injects the estimator's sample-to-sample noise into the reference, which is a harder target
+        #: for the position loop than a still one -- four sorties at gain 0.5 read -0.276 / -0.031 / -0.031 / -0.046 m
+        #: with longer legs than the same arms without the bias.  A first-order filter on `e` is the obvious repair and
+        #: is what `xtrack_tau` adds.
+        self.xtrack_tau = float(xtrack_tau)
+        self.e_filt = None
+        self.t_last_xtrack = None
         self.n_xtrack = 0
         self.xtrack_shift = 0.0
     # ---- inputs ---------------------------------------------------------------------------------------
@@ -530,7 +538,17 @@ class TourSequencer:
                 along = float(np.dot(q, u))
                 across = float(np.dot(q, n))
                 if 0.0 <= along <= seg_len and abs(across) > 1e-3:
-                    bias = float(np.clip(-self.xtrack_gain * across, -self.xtrack_max, self.xtrack_max))
+                    # THE FILTER (optional): a first-order lag on the measured offset, because the raw signal carries
+                    # the estimator's sample-to-sample noise straight into the reference (Flight CB/CC, round 20).
+                    e = across
+                    if self.xtrack_tau > 0.0:
+                        dt = now - self.t_last_xtrack if self.t_last_xtrack is not None else 1e-3
+                        dt = min(max(dt, 1e-3), 0.5)
+                        alpha = dt / (self.xtrack_tau + dt)
+                        self.e_filt = e if self.e_filt is None else (1.0 - alpha) * self.e_filt + alpha * e
+                        e = self.e_filt
+                    self.t_last_xtrack = now
+                    bias = float(np.clip(-self.xtrack_gain * e, -self.xtrack_max, self.xtrack_max))
                     msg.position.x = float(msg.position.x) + bias * float(n[0])
                     msg.position.y = float(msg.position.y) + bias * float(n[1])
                     self.xtrack_shift = bias
@@ -1214,6 +1232,10 @@ def _parser() -> "argparse.ArgumentParser":
     ap.add_argument("--xtrack-max", type=float, default=0.10,
                     help="the cap on that shift (metres).  It is a SAFETY parameter: the reference may lead the "
                          "aircraft back toward the line, but never far enough to enter a pillar row itself")
+    ap.add_argument("--xtrack-tau", type=float, default=0.0,
+                    help="the cross-track offset's own TIME CONSTANT (seconds; 0 = raw).  Flights CB/CC measured that "
+                         "the raw bias re-injects the odometry's noise into the reference and makes the legs longer; "
+                         "a first-order lag on the offset is the repair, and this is it")
     ap.add_argument("--corridor-m", type=float, default=0.0,
                     help="THE ROUTE CORRIDOR (0 = off): the forwarded horizontal reference is held within this "
                          "distance of the CURRENT leg's centreline, and the across-the-line component of the "
@@ -1327,7 +1349,8 @@ def main() -> int:
                         ref_z_floor_m=args.ref_z_floor_m, ref_acc_max=args.ref_acc_max,
                         corridor_m=args.corridor_m, corridor_end_m=args.corridor_end_m,
                         corridor_open_m=args.corridor_open_m,
-                        xtrack_gain=args.xtrack_gain, xtrack_max=args.xtrack_max)
+                        xtrack_gain=args.xtrack_gain, xtrack_max=args.xtrack_max,
+                        xtrack_tau=args.xtrack_tau)
     print("shim: %d waypoint(s) in L from %s" % (len(targets_l), args.world))
     for i, t in enumerate(targets_l):
         print("shim: waypoint %d -> %s (L)" % (i + 1, np.round(t, 3)))
@@ -1354,8 +1377,8 @@ def main() -> int:
         print("shim: CORNER GOVERNOR %.3f m/s within %.3f m of a corner (the velocity field is capped with it)"
               % (args.corner_mps, args.corner_m), flush=True)
     if args.xtrack_gain > 0.0:
-        print("shim: CROSS-TRACK FEEDBACK gain %.2f, cap %.3f m -- the reference is shifted against the aircraft's "
-              "own offset" % (args.xtrack_gain, args.xtrack_max), flush=True)
+        print("shim: CROSS-TRACK FEEDBACK gain %.2f, cap %.3f m, offset filter tau %.2f s -- the reference is shifted "
+              "against the aircraft's own offset" % (args.xtrack_gain, args.xtrack_max, args.xtrack_tau), flush=True)
     if args.ref_acc_max > 0.0:
         print("shim: ACCELERATION FIELD clamped to %.3f m/s2" % args.ref_acc_max, flush=True)
 
