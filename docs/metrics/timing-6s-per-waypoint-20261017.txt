@@ -1968,3 +1968,24 @@ FINDINGS
   * the take-off altitude datum failure has now ablated four sorties today (two of them in this round's work);
     it must be understood before more flights are spent.
   * the forest is NOT the obstacle: C2 +0.077 / +0.096 / +0.042 m, 0.00 % inside a body, C2-ego MET.
+
+============================================================================
+MISSION C, ROUND 3 -- THE TAKEOFF GUARD IS A SYMPTOM; TWO KNOBS REFUTED (2026-10-17)
+============================================================================
+  r4  cmd_z max 2.60, fcu_z 3.00, truth 5.26   -> guard (truth > 2.00 + 1.00); the vertical loop diverged
+  r5  cmd_z max 2.53, fcu_z 2.87, truth 3.19   -> same
+  r3  cmd_z max 2.00, fcu_z 2.06, truth 2.48   -> the flight that ARRIVED at waypoint 1
+
+  r6  EGO_RESOLUTION 0.05 + EGO_CLOUD_VOXEL 0.04 + EGO_REF_Z_CLAMP_M 0.10
+      38 s  ABORT: THE PLAN BOX IS NOT TALKING (nothing on /plan/cmd within 20 s), a-star 0, in-obstacle 0,
+            setpoints.csv EMPTY
+      -> the z clamp is the reference's own envelope AROUND the mission altitude; 0.10 pinches 2.00 out of it.
+         REFUTED, reverted.
+
+  r7  r3's configuration + EGO_CLOUD_VOXEL 0.04 (the only change)
+      41 s  the SAME silence, a-star 0, in-obstacle 0
+      -> a 0.04 m relay lattice stalls the cloud path before ego can plan.  REFUTED.
+
+BEST-KNOWN MISSION C CONFIGURATION: EGO_RESOLUTION=0.05, relay voxel 0.10 (default), self-blind 0 (default),
+ref z clamp 0.6 (default), 2 s hover, settle 0.10, geofence 14 m -- i.e. r3, the only configuration that has
+arrived (waypoint 1 at 0.158 m, |v| 0.08 m/s, 2.0 s hover) with zero planner failures in the arrival window.
