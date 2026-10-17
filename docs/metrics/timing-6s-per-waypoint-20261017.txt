@@ -604,3 +604,52 @@ EGO-Planner on Orin NX + PX4), `Lumin-edu/uav-mission-stack` (ROS 2, PX4 + FAST-
 ROS 1, and this stack's bridge, supervisor, contract shell and relay are ROS 2.  A drop-in replacement is
 therefore not a file copy; the transferable part is the MAP, and it has to be imported file by file through the
 harness because the shell cannot reach GitHub.
+
+============================================================================================================
+FLIGHT X -- THE FIRST SORTIE ON THE LIDAR-ADAPTED PLANNER: it builds, the parameter surface matches, and the
+node CRASHES in the one place the old tree's patches had already fixed.
+============================================================================================================
+
+THE SWAP IS IN PLACE AND VERIFIED:
+  * `src/ego-planner-swarm/src/planner` <- the tree vendored by `Lumin-edu/uav-mission-stack` (8 packages, all
+    ROS 2); the old pristine checkout kept at `src/ego-planner-swarm.orig23a8d5a` for rollback (52 MB);
+  * `colcon build --packages-up-to ego_planner` -> **rc=0, 6 packages, 5min02s** (stderr is warnings only);
+  * `tools/install-ego-launch.py --run` -> **"the node declares 74 parameter(s); set by us but NOT declared: 0"**
+    -- the five extra declarations are the new map's (`p_hit`/`p_miss`/`p_min`/`p_max`, the static layer), so the
+    swap ADDS capability without changing the interface our harness talks to;
+  * `plan_env/src` differs from upstream ONLY in `grid_map.cpp` (136 lines): `raycastProcess()` on a point cloud
+    with `p_hit`/`p_miss`, and a persistent `static_occupancy_buffer_inflate_` that `getInflateOccupancy`
+    consults beside the rolling buffer.
+
+FLIGHT X (the relay's memory compensation turned OFF: `EGO_CLOUD_WINDOW=0.0`, which is the right arm now that the
+map owns the memory; everything else Flight Q + U's two continuity fixes, 0.1 m lattice):
+**the plan box went silent at t=54.95 s after ONE waypoint, and the supervisor ended the sortie on its own
+3.0 s rule.**  The node's own log says why, and it is not silent:
+
+    [SAFETY]: from EXEC_TRAJ to EMERGENCY_STOP
+    [FSM]: state: EMERGENCY_STOP
+    Triggered!
+    terminate called after throwing an instance of 'std::runtime_error'
+      what():  Node '/drone_0_ego_planner_node' has already been added to an executor.
+    [ERROR] process has died [pid 476256, exit code -6]
+
+and the crash site is in `ego_replan_fsm.cpp`, in `triggerCallback`:
+
+    while (exec_state_ != EXEC_TRAJ)
+    {
+      rclcpp::spin_some(node_);          // <-- adds a node rclcpp::spin() in main() already owns to a SECOND
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));   // executor -> std::runtime_error -> abort
+    }
+
+THIS IS A BUG WE HAD ALREADY PAID FOR.  `_stage/ego-mods-20261017/our-mods.patch` line 4360 removes exactly this
+loop, and its own comment records the diagnosis and the date: "(a) `rclcpp::spin_some(node_)` adds a node that
+`rclcpp::spin()` in main() already owns to a SECOND executor, which throws \"Node ... has already been added to
+an executor\" and ABORTS the process.  Observed 2026-10-14: the node died ~1 s into the ...".  The feasibility
+audit called these the THREE CRASH FIXES without which the node dies -- and by reverting to pristine we removed
+them, as the reset record said we would.
+
+WHAT THIS COSTS AND WHAT IT DOES NOT: the FSM went EXEC_TRAJ -> EMERGENCY_STOP within the first leg, so the crash
+is a symptom of a second thing to look at (why the safety check fired so early on a fresh map), but the fix is
+known, minimal and already written.  The next sortie therefore needs, in this order: re-apply the crash fix (the
+`spin_some` loops) to the lidar tree; then the map parameters that suit OUR sensor (`p_hit`/`p_miss` were tuned
+for a MID-360 at a different range and rate); then re-fly and read the same instruments.
