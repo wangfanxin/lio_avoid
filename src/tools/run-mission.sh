@@ -284,6 +284,24 @@ EGO_CORRIDOR_END_M="${EGO_CORRIDOR_END_M:-0.0}"
 #: line (clearance -0.271 m).  The pillar rows are 0.5 m from EVERY edge, corners included, so there is no place
 #: on this route where the reference may leave the line: the opening was the wrong idea and its size was the defect.
 EGO_CORRIDOR_OPEN_M="${EGO_CORRIDOR_OPEN_M:-0.0}"
+#: THE APPROACH WAY, "x,y" in the WORLD frame, inserted before the world's own tour (round 18; empty = off).  WHY IT
+#: EXISTS, measured: the mission's first leg is the DIAGONAL from the pad (0,0) to the first corner (-3,-4), and that
+#: line passes **0.300 m from the (-1.5,-1.5) pillar's axis** -- tangentially through its surface by pure geometry,
+#: whatever the aircraft does.  `_stage/where-min.py` finds several sorties' whole-flight minimum at (-1.27,-1.67),
+#: which is ON that diagonal.  A grid-aligned approach -- pad -> (0,-4) along x = 0, then the rectangle's south edge --
+#: keeps every leg at the field's standard +0.200 m, so the corridor can hold the whole flight and not all but its
+#: first leg.  The shim also gives the first leg a previous point now (the vehicle's own position), without which the
+#: corridor and the corner governor skip it.
+EGO_APPROACH_VIA="${EGO_APPROACH_VIA:-}"
+# THE ARGUMENT MUST NOT BE PASSED EMPTY.  `--approach-via ""` LOOKS harmless, but this harness builds the shim's argv as
+# ONE STRING that is word-split at launch, so an empty value disappears and argparse is left holding `--approach-via`
+# followed by the next token: "argument --approach-via: expected one argument", the shell dies at start-up, and the
+# supervisor ends the sortie on its 20 s plan-silence rule.  MEASURED three times (Flights BP2, BQ, BT) before the error
+# in `traj.log` was read instead of guessed about.
+APPROACH_ARG=""
+if [ -n "$EGO_APPROACH_VIA" ]; then
+    APPROACH_ARG="--approach-via $EGO_APPROACH_VIA"
+fi
 #: NO GOAL IS PUBLISHED UNTIL THE VEHICLE IS THIS HIGH (metres; 0 = off).  Route B's twin of PATCH 0008's
 #: `fsm/waypoint_start_alt`; without it ego plans a climb for the whole take-off that nothing is following
 #: (Flight F: goals from t=1.9 s, 87 "First 3 control points in obstacles" before the trigger at t=20.4 s).
@@ -376,6 +394,7 @@ case "$PLANNER" in
 --arrive-z-m $EGO_ARRIVE_Z_M --start-alt-m $EGO_START_ALT_M --ref-z-clamp-m $EGO_REF_Z_CLAMP_M --ref-z-floor-m $EGO_REF_Z_FLOOR_M \
 --ref-slew-mps $EGO_REF_SLEW_MPS --ref-acc-max $EGO_REF_ACC_MAX --corner-m $EGO_CORNER_M --corner-mps $EGO_CORNER_MPS \
 --corridor-m $EGO_CORRIDOR_M --corridor-end-m $EGO_CORRIDOR_END_M --corridor-open-m $EGO_CORRIDOR_OPEN_M \
+$APPROACH_ARG \
 --odom-topic /ego/odom_fcu --ref-clamp-m $EGO_REF_CLAMP_M --trace-csv $OUT/shim_trace.csv ${CMD_ARGS:-}"
             PLANNER_WHAT="ego's OWN traj_server samples the plan (p+v+a) + the contract shell (tour, ids, COMPLETED)"
             PLANNER_TOPIC="/plan/cmd"

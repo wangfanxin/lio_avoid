@@ -98,7 +98,30 @@ emergency stops**.  The earlier gain-1.5 sorties of this arm (AR, AT, AY, AY2, A
 reference was on the centreline in all of them** (0.00 % of reference samples inside a body, worst-instant clearance
 +0.269..+0.284 m), so the plan-side defect is structurally gone; what varies is the aircraft and the planner's run.
 The one-knob variant that meets the TIME clause on **8 of 8 legs** is `EGO_CORNER_MPS=1.10` (Flight BK2, max 5.95 s)
-at **-0.018 m / 0.08 % inside** -- the frontier is 2 cm and 0.4 s.  A bare run's own console line now reads
+at **-0.018 m / 0.08 % inside** -- the frontier is 2 cm and 0.4 s.
+
+### 3.3 The sortie that met BOTH clauses, and how reliable its arm is
+
+Flight **BU2** (round 18) is the first sortie in this investigation that satisfies the objective as written:
+**8 of 8 legs under 6 s (max 5.97 s)** with **C2 minimum +0.073 m**, **0.00 %** of samples inside a body and
+**C2-ego MET**.  Its arm is the default plus two knobs: `EGO_CORNER_MPS=1.10` and
+`EXTRA_PARM=params/guided_limits_gain20.parm` (`PSC_NE_POS_P` 2.0).  Four sorties of that arm:
+
+    BU   -0.155 m  0.48 % inside   8 of 8 legs (5.85 s max)
+    BU2  **+0.073 m**  0.00 % inside   **8 of 8 legs (5.97 s max)**   <-- both clauses
+    BV   -0.027 m  0.09 % inside   7 of 8 legs (6.45 s)
+    BV2  -0.002 m  0.06 % inside   7 of 8 legs (6.85 s)
+
+so its TIME clause is reliable (30 of 32 leg measurements under 6 s) and its SAFETY clause is not (one sortie in four
+clean, typical miss 2-3 cm).  **The defaults therefore stay on the safety-first arm** (corner 1.00, gain 1.8:
++0.020 / +0.057 / -0.011 m over three bare sorties with 6-7 of 8 legs), because "no collision" is the hard clause, and
+the both-clauses arm is recorded with its exact knobs rather than promoted on one favourable draw.
+
+Two shell fixes from the same round are on by default and cost nothing: **the first leg now has a previous point** (so
+the corridor and the corner governor act on it) and **`--approach-via`** exists for a grid-aligned first leg.  The
+reason is geometric and measured (`_stage/where-min.py`): the mission's first leg is the diagonal from the pad (0,0) to
+the first corner (-3,-4), and that line passes **0.300 m from the (-1.5,-1.5) pillar's axis** -- exactly its radius,
+i.e. tangent to its surface whatever the aircraft does.  A bare run's own console line now reads
 `shim: ROUTE CORRIDOR 0.010 m ... does NOT open at the ends`, `CORNER GOVERNOR 1.000 m/s within 0.500 m`, and
 `ACCELERATION FIELD clamped to 2.000 m/s2`.
 

@@ -1402,3 +1402,67 @@ stationary spline), not a slow planner; at 0.0 the stops vanish, the still time 
 4.0-6.8 s while the clearance improves.  `EGO_ARRIVE_M` 0.350 and `EGO_NOREPLAN_M` 0.35 were both refuted in the same
 round with their numbers recorded.  The objective now stands at: safety clause MET with a positive mean margin
 (+0.022 +- 0.03 m) and 0.00-0.06 % inside; time clause 6-7 of 8 (8 of 8 with `EGO_CORNER_MPS=1.10`, at -0.018 m).
+
+============================================================================
+ROUND 18 -- THE DIAGONAL'S TANGENCY, THE APPROACH WAY, AND TWO REFUTATIONS (2026-10-17)
+============================================================================
+`_stage/where-min.py` (new): every sortie's 1200 Hz minimum, its position, and whether it is on the rectangle or on the
+first leg.  The finding: many minima sit at **(-1.27,-1.67)**, which is ON the diagonal from the pad (0,0) to the first
+corner (-3,-4) -- and that line passes **0.300 m from the (-1.5,-1.5) pillar's axis**, exactly its radius.  The first
+leg is tangent to a pillar BY GEOMETRY.
+
+LANDED THIS ROUND (both in `ego_contract_shim.py`, selftested):
+  * the first leg now starts at the VEHICLE's own position (it had no `prev_target`, so the corridor and the corner
+    governor skipped leg 1 entirely);
+  * `--approach-via "x,y"` (WORLD frame; `EGO_APPROACH_VIA` in the harness) inserts one extra first target.
+
+THE FOUR SORTIES THAT USED IT (approach at (0,-4), 9 waypoints):
+
+    flight                          C2 minimum      % inside   legs under 6 s        where the minimum is
+    BR   defaults                   -0.162 m        0.76 %     5 of 8 / 7.21 s       (-1.47,-3.64)
+    BR2  defaults                   **+0.006 m**    0.00 %     5 of 8 / 6.45 s       (-2.60,-4.21)
+    BS   defaults + corner 1.10     **-0.005 m**    0.09 %     7 of 8 / 6.19 s       (-2.56,-4.21)
+    BS2  defaults + corner 1.10     **-0.028 m**    0.19 %     **8 of 8 / 5.91 s**   (-2.52,-4.23)
+
+Every minimum moved to the SOUTH EDGE beside the (-2.5,-4.5) pillar -- the aircraft's 0.21 m excursion, the same
+cross-track story as everywhere else -- so the diagonal class of graze is gone and the numerical gain is neutral.
+
+REFUTED: `EGO_CORNER_M` 0.65 (BP: -0.147 m, 1.63 % inside, B1 N 9.878) -- braking earlier for the same corner speed
+does not buy the 2 cm back.
+INVALID (process error, recorded): BP2 (rc=2, never took off), BQ and BQ2 (started while I was editing the shim, so the
+shell rejected the new argument and the supervisor aborted on 20 s of plan silence).  The gain-2.0 arm is UNTESTED.
+
+THE OBJECTIVE: unchanged from round 17 -- the default arm is CLEAN with a positive mean margin (+0.022 +- 0.03 m,
+0.00-0.06 % inside) at 6-7 of 8 legs; the 8-of-8 arm (corner 1.10) is -0.018 to -0.028 m.  The frontier is 2 cm / 0.4 s.
+
+============================================================================
+ROUND 18b -- THE FIRST SORTIE THAT MEETS BOTH CRITERIA, AND THE ARM'S STATISTICS (2026-10-17)
+============================================================================
+FLIGHT BU2.  Arm: corridor 0.01 m (no opening) + corner 0.50 m @ **1.10 m/s** + `EGO_MAX_VEL`/`ACC` 2.5 +
+**`PSC_NE_POS_P` 2.0** + `fsm/emergency_time` 0.0 + Flight AD's rest.
+
+    C2 minimum            **+0.073 m**   (positive: the 1200 Hz truth never closer than 7.3 cm to a pillar surface)
+    samples inside a body  0.00 %
+    C2-ego                **MET**
+    below the 0.10 m standoff  0.62 %
+    legs                  **0.87 / 5.06 / 5.50 / 4.70 / 5.97 / 5.08 / 5.71 / 5.56 s -- 8 of 8 under 6 s, max 5.97**
+    A1 / A2 / B1 / C1     8.83 mm / 9.78 mm / E 6.476 N 8.362 / 0.093 m [PASS]
+    route                 37.6 s
+
+THE ARM OVER FOUR SORTIES (same binary, same files, nothing else changed):
+
+    flight   C2 minimum   % inside   legs under 6 s / max
+    BU       -0.155 m     0.48 %     8 of 8 / 5.85 s
+    BU2      **+0.073 m** 0.00 %     **8 of 8 / 5.97 s**   <-- both criteria
+    BV       -0.027 m     0.09 %     7 of 8 / 6.45 s  (leg 5)
+    BV2      -0.002 m     0.06 %     7 of 8 / 6.85 s  (leg 5)
+
+TIME clause: 30 of 32 leg measurements under 6 s.  SAFETY clause: 1 of 4 sorties clean, typical miss 2-3 cm.
+
+THE DEFAULTS STAY SAFETY-FIRST (corner 1.00, gain 1.8: +0.020 / +0.057 / -0.011 m, 6-7 of 8 legs), because "no collision"
+is the objective's hard clause.  The both-criteria arm is recorded with its exact two knobs so the next round can work on
+its 2-3 cm rather than rediscovering it.
+
+A HARNESS BUG, FIXED: `--approach-via ""` (knob unset) lost its empty value in the word-split argv and the shell died at
+start-up with "argument --approach-via: expected one argument" -- three sorties lost (BP2, BQ/BQ2, BT/BT2) before the
+log was read instead of theorised about.  `run-mission.sh:301-303` now builds the argument only when it is set.

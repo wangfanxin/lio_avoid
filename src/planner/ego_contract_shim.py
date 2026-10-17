@@ -341,6 +341,18 @@ class TourSequencer:
             return None
         self.t_last_goal = now
         self.goals_sent += 1
+        # THE FIRST LEG GETS A PREVIOUS POINT TOO (added 2026-10-17, round 18).  `prev_target` is set when the TOUR
+        # ADVANCES, so the very first leg had none -- and both the corridor and the corner governor skip a leg whose
+        # previous point is unknown.  That was invisible while the first leg was the diagonal from the pad, but it is
+        # exactly the leg that the world's geometry makes marginal: the diagonal from (0,0) to (-3,-4) passes
+        # **0.300 m from the (-1.5,-1.5) pillar's axis**, i.e. tangentially through its surface (`_stage/where-min.py`:
+        # several sorties' whole-flight minimum sits at (-1.27,-1.67), on that diagonal).  With `--approach-via` a
+        # grid-aligned first leg exists and the corridor must be able to hold it, so the vehicle's own position at the
+        # moment the first goal is dispatched is used as its start.
+        if self.prev_target is None:
+            self.prev_target = self.p.copy()
+            self.log("shim: first leg starts at the vehicle %s (corridor/governor active on leg 1)"
+                     % np.round(self.p, 3))
         return self.target
 
     def rewrite(self, msg, now: float):
@@ -1014,6 +1026,26 @@ def _selftest() -> int:
         bad.append("with the corridor at 0 the reference was changed -- the flown behaviour must stay "
                    "byte-identical when the knob is 0")
 
+    # ... AND THE FIRST LEG HAS A PREVIOUS POINT TOO (round 18): without it the corridor and the governor skip leg 1,
+    # which is exactly the leg the world's geometry makes marginal (the pad -> first corner diagonal passes 0.300 m
+    # from the (-1.5,-1.5) pillar's axis, i.e. tangentially through its surface).
+    f0 = TourSequencer([[0.0, -5.0, 2.0], [-5.0, -5.0, 2.0]], log=lambda s: None, settle_mps=0.0,
+                       corridor_m=0.15)
+    f0.on_odom([0.02, 0.01, 2.0], [0.0, 0.0, 0.0], now=t0)
+    g0 = f0.goal_to_send(now=t0 + 0.1)
+    got = None if f0.prev_target is None else np.round(f0.prev_target, 3)
+    mf0 = M()
+    mf0.position.x, mf0.position.y, mf0.position.z = 0.40, -2.0, 2.0        # 0.40 m off the pad -> target line
+    f0.rewrite(mf0, now=t0 + 0.2)
+    print("   first leg: prev_target %s (the vehicle's own position), a 0.400 m-across reference was forwarded at "
+          "x = %.3f m (%d clamp(s))" % (got, float(mf0.position.x), f0.n_corridor))
+    if g0 is None or f0.prev_target is None:
+        bad.append("the first goal was not dispatched with a previous point -- the corridor and the corner governor "
+                   "would skip leg 1, which is the geometrically marginal one")
+    elif abs(float(mf0.position.x) - (0.02 + 0.15)) > 0.02 or f0.n_corridor != 1:
+        bad.append("the corridor did not act on the FIRST leg (x = %.3f against the wall at 0.020+0.150, %d clamp(s))"
+                   % (float(mf0.position.x), f0.n_corridor))
+
     if bad:
         print("\nCONTRACT SHIM SELFTEST FAILED (%d problem(s)):" % len(bad))
         for b in bad:
@@ -1096,6 +1128,13 @@ def _parser() -> "argparse.ArgumentParser":
                          "`--wp-index-topic` drives the id and the COMPLETED transition, and no goal is sent.")
     ap.add_argument("--wp-index-topic", default="/wp_index",
                     help="`std_msgs/Int32`, published by PATCH 0011: the current waypoint, -1 when finished")
+    ap.add_argument("--approach-via", default="",
+                    help="an extra FIRST target, \"x,y\" in the WORLD frame, inserted before the world's own tour.  "
+                         "MEASURED reason (round 18): the mission's first leg is the diagonal from the pad (0,0) to "
+                         "the first corner (-3,-4), and that line passes 0.300 m from the (-1.5,-1.5) pillar's axis "
+                         "-- tangentially through its surface by geometry, which is where several sorties' whole-"
+                         "flight minimum sits.  A grid-aligned approach keeps every leg at the field's standard "
+                         "+0.200 m so the corridor can hold the entire flight")
     ap.add_argument("--corridor-m", type=float, default=0.0,
                     help="THE ROUTE CORRIDOR (0 = off): the forwarded horizontal reference is held within this "
                          "distance of the CURRENT leg's centreline, and the across-the-line component of the "
@@ -1168,6 +1207,23 @@ def main() -> int:
     d = json.load(open(args.calib_file))
     calib = frames.Calib(R_WL=np.array(d["R_WL"], dtype=float), t_WL=np.array(d["t_WL"], dtype=float))
     targets_l = _targets_from_world(args.world, calib, args.z)
+    # THE APPROACH WAY (round 18, `--approach-via`): an extra first target in WORLD coordinates, inserted before the
+    # world's own tour.  WHY IT EXISTS, measured: the mission's first leg is the DIAGONAL from the pad (0,0) to the
+    # first corner (-3,-4), and that line passes **0.300 m from the (-1.5,-1.5) pillar's axis** -- tangentially through
+    # its surface, by geometry, whatever the aircraft does (`_stage/where-min.py` finds several sorties' whole-flight
+    # minimum at (-1.27,-1.67), which is on that diagonal).  A grid-aligned approach -- pad -> (0,-4) along x = 0, then
+    # the rectangle's south edge -- keeps every leg at the field's standard +0.200 m, so the corridor can hold the whole
+    # flight instead of all but its first leg.
+    if args.approach_via:
+        try:
+            ax, ay = [float(v) for v in args.approach_via.replace(" ", "").split(",")[:2]]
+        except Exception:                                                        # noqa: BLE001
+            raise SystemExit("--approach-via wants \"x,y\" in the WORLD frame, got %r" % args.approach_via)
+        tw = np.array([[ax, ay, float(targets_l[0][2])]])
+        t_l = (calib.R_WL.T @ (tw - calib.t_WL).T).T
+        targets_l = np.vstack([t_l, targets_l])
+        print("shim: APPROACH WAY %.2f,%.2f (W) inserted before the tour -> %d waypoint(s) in L"
+              % (ax, ay, len(targets_l)))
     try:
         from rclpy.signals import SignalHandlerOptions
         rclpy.init(args=[], signal_handler_options=SignalHandlerOptions.NO)
