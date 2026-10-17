@@ -237,6 +237,7 @@ EGO_REF_Z_CLAMP_M="${EGO_REF_Z_CLAMP_M:-0.0}"
 #: LOW for four seconds and the truth's worst sample of the entire flight is at ALTITUDE 0.18 m, 0.143 m inside a
 #: pillar of the outermost column -- a one-sided ceiling cannot stop that, and the 21.35 s leg is that event.
 EGO_REF_Z_FLOOR_M="${EGO_REF_Z_FLOOR_M:-0.0}"
+EGO_REF_ACC_MAX="${EGO_REF_ACC_MAX:-2.0}"
 #: THE FORWARDED REFERENCE'S OWN SPEED LIMIT (m/s; 0 = off).  `EGO_REF_CLAMP_M` bounds how FAR a re-plan's step
 #: may land from the vehicle; this bounds how FAST the point may move, which is what the controller feels.
 #: MEASURED Flight H at 3 m/s: tracking error p50 0.139 m but p90 0.532 and max 0.840 m -- the transients, and
@@ -340,7 +341,7 @@ case "$PLANNER" in
             PLANNER_ARGS="--world $WORLD $TRAJ_CALIB_ARG --hold-s $RECT_HOLD_S --arrive-m $EGO_ARRIVE_M \
 --settle-mps $EGO_SETTLE_MPS --leg-timeout-s $EGO_LEG_TIMEOUT_S --leg-abort-s $EGO_LEG_ABORT_S \
 --arrive-z-m $EGO_ARRIVE_Z_M --start-alt-m $EGO_START_ALT_M --ref-z-clamp-m $EGO_REF_Z_CLAMP_M --ref-z-floor-m $EGO_REF_Z_FLOOR_M \
---ref-slew-mps $EGO_REF_SLEW_MPS --corner-m $EGO_CORNER_M --corner-mps $EGO_CORNER_MPS \
+--ref-slew-mps $EGO_REF_SLEW_MPS --ref-acc-max $EGO_REF_ACC_MAX --corner-m $EGO_CORNER_M --corner-mps $EGO_CORNER_MPS \
 --odom-topic /ego/odom_fcu --ref-clamp-m $EGO_REF_CLAMP_M --trace-csv $OUT/shim_trace.csv ${CMD_ARGS:-}"
             PLANNER_WHAT="ego's OWN traj_server samples the plan (p+v+a) + the contract shell (tour, ids, COMPLETED)"
             PLANNER_TOPIC="/plan/cmd"
@@ -397,7 +398,13 @@ esac
 # alternating sign is what threw the aircraft out of the arena.  The acceleration goes back on the wire when the
 # SAMPLER is continuous (the `traj_server` patch the owner has been asked about), not before.
 if [ "${PLANNER:-}" = "ego" ]; then
-    BRIDGE_FIELDS="${BRIDGE_FIELDS:-posvel}"
+    #: THE MASK DEFAULTS TO posvelacc SINCE 2026-10-17.  `posvel` (2496) makes the FCU ignore the
+#: acceleration field, and Flight Z measured what that costs: the tracking error is CROSS-TRACK
+#: (along the plan p50 0.081 m, across it p50 0.210 / p90 0.456 m at matched speed), which is the
+#: signature of a missing lateral feed-forward.  The acceleration now rides the wire THROUGH the
+#: contract shell, so it is bounded there (`EGO_REF_ACC_MAX`) -- Flight D failed because it was
+#: unclamped, and its refutation was in any case invalidated by its own LIO diverging 3.65 m.
+BRIDGE_FIELDS="${BRIDGE_FIELDS:-posvelacc}"
 else
     BRIDGE_FIELDS="${BRIDGE_FIELDS:-pos}"
 fi

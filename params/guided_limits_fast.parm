@@ -65,3 +65,4 @@ WP_SPD 4.0
 #                  the plan's own accelerations are 3 m/s2 or less, so a shaper that can reach the limit in
 #                  30 ms tracks a step-free reference within centimetres.
 #   WP_ACC         6.0 -> **8.0**: still under the 8.2 m/s2 the 40 deg tilt allows (g*tan(40 deg)).
+PSC_NE_POS_P 1.5

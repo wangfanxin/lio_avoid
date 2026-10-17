@@ -69,7 +69,7 @@ class TourSequencer:
     def __init__(self, targets_l, arrive_m=0.30, hold_s=5.0, settle_mps=0.08, goal_resend_s=1.0,
                  log=None, ego_driven=False, ref_clamp_m=0.0, leg_timeout_s=0.0, leg_abort_s=0.0,
                  arrive_z_m=1.00, start_alt_m=0.0, ref_z_clamp_m=0.0, ref_slew_mps=0.0,
-                 corner_m=0.0, corner_mps=1.0, ref_z_floor_m=0.0):
+                 corner_m=0.0, corner_mps=1.0, ref_z_floor_m=0.0, ref_acc_max=0.0):
         self.targets = np.asarray(targets_l, dtype=float).reshape(-1, 3)
         self.arrive_m = float(arrive_m)
         self.hold_s = float(hold_s)
@@ -142,6 +142,9 @@ class TourSequencer:
         self.ref_z_floor_m = float(ref_z_floor_m)
         self.n_z_floored = 0
         self.z_floor_armed = False
+        #: THE ACCELERATION CLAMP (see `rewrite`): the bound on the acceleration field the FCU is given.
+        self.ref_acc_max = float(ref_acc_max)
+        self.n_acc_clamped = 0
         #: True the first time a forwarded message asks for motion: see `_leg_watchdog`.
         self.motion_seen = False
         #: THE REFERENCE'S OWN SPEED LIMIT (m/s; 0 = off).  A position reference must be CONTINUOUS, and this
@@ -409,6 +412,23 @@ class TourSequencer:
                 if float(msg.position.z) < z_floor:
                     msg.position.z = z_floor
                     self.n_z_floored += 1
+        # ---- THE ACCELERATION CLAMP, added 2026-10-17 with the mask opened ----
+        # Flight D's only `posvelacc` trial was refuted for the wrong reason -- its LIO had diverged 3.65 m -- but
+        # the review's own diagnosis of it stands: the clamp that protects the POSITION left the ACCELERATION
+        # field riding unclamped in the same message, so the sampler's 1 Hz spike went into a channel ArduPilot
+        # adds to its velocity target with `limit_total=false` (unshaped).  That pre-condition -- a continuous
+        # reference -- is met now (`--ref-clamp-m` and `--ref-slew-mps`), so the acceleration is put on the wire
+        # with a bound of its own.  MEASURED reason to want it at all (Flight Z, `_stage/tracking-z.py`): the
+        # tracking error is CROSS-TRACK -- ALONG the plan p50 0.081 m, ACROSS it p50 0.210 / p90 0.456 m -- at
+        # matched speed, which is the signature of a missing lateral feed-forward, and the contacts are exactly
+        # where that cross-track error is largest (gap p50 0.532 m with the reference itself +0.157 m clear).
+        if self.ref_acc_max > 0.0:
+            a = np.array([float(msg.acceleration.x), float(msg.acceleration.y), float(msg.acceleration.z)])
+            an = float(np.linalg.norm(a))
+            if an > self.ref_acc_max:
+                a = a * (self.ref_acc_max / an)
+                msg.acceleration.x, msg.acceleration.y, msg.acceleration.z = float(a[0]), float(a[1]), float(a[2])
+                self.n_acc_clamped += 1
         # ---- THE REFERENCE'S OWN SPEED LIMIT, last, so it sees exactly what would have gone out ----
         if self.ref_slew_mps > 0.0:
             p = np.array([float(msg.position.x), float(msg.position.y), float(msg.position.z)])
@@ -643,7 +663,7 @@ def _selftest() -> int:
     for field in ("world", "calib_file", "z", "hold_s", "arrive_m", "settle_mps", "in_topic", "cmd_topic",
                   "goal_topic", "odom_topic", "trace_csv", "tour_source", "wp_index_topic",
                   "leg_timeout_s", "leg_abort_s", "arrive_z_m", "start_alt_m", "ref_z_clamp_m",
-                  "ref_slew_mps", "corner_m", "corner_mps", "ref_z_floor_m"):
+                  "ref_slew_mps", "corner_m", "corner_mps", "ref_z_floor_m", "ref_acc_max"):
         if not hasattr(a, field):
             bad.append("the start-up banner's argument surface has no %r -- main() would raise AttributeError "
                        "at start-up, in the flown mode, before the node spins" % field)
@@ -915,6 +935,12 @@ def _parser() -> "argparse.ArgumentParser":
                          "is OUTSIDE the rectangle, 1-1.7 m past a corner, at |v_ref| 1.8-2.4 m/s.")
     ap.add_argument("--corner-mps", type=float, default=1.0,
                     help="the reference's speed limit inside the corner governor's radius (m/s)")
+    ap.add_argument("--ref-acc-max", type=float, default=0.0,
+                    help="the bound on the ACCELERATION field the FCU is given (0 = off).  Added with the mask "
+                         "opened: Flight D's trial of `posvelacc` was refuted for the wrong reason, but the review "
+                         "was right that the position clamp leaves this channel unclamped, and ArduPilot adds it "
+                         "to its velocity target unshaped.  The pre-condition -- a continuous reference -- is met "
+                         "by --ref-clamp-m and --ref-slew-mps")
     ap.add_argument("--ref-z-floor-m", type=float, default=0.0,
                     help="never forward an altitude more than this far BELOW the tour's own z, once the vehicle "
                          "has been up there (0 = off).  MEASURED Flight O: the reference froze 0.8 m low for four "
@@ -1018,7 +1044,7 @@ def main() -> int:
                         arrive_z_m=args.arrive_z_m, start_alt_m=args.start_alt_m,
                         ref_z_clamp_m=args.ref_z_clamp_m, ref_slew_mps=args.ref_slew_mps,
                         corner_m=args.corner_m, corner_mps=args.corner_mps,
-                        ref_z_floor_m=args.ref_z_floor_m)
+                        ref_z_floor_m=args.ref_z_floor_m, ref_acc_max=args.ref_acc_max)
     print("shim: %d waypoint(s) in L from %s" % (len(targets_l), args.world))
     for i, t in enumerate(targets_l):
         print("shim: waypoint %d -> %s (L)" % (i + 1, np.round(t, 3)))
