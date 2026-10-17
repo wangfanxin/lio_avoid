@@ -2112,3 +2112,26 @@ Change: src/lio/config/livox_360.yaml  lio.hash_map.vox_resolution  0.25 -> 0.10
 READ: the map resolution does not drive the vertical divergence.  The horizontal channel is the best instrument in
 the stack; the vertical channel is the defect.  Next: voxel_fliter_size 0.2 m (== the pillar diameter),
 kf_max_iterations, the IMU/accel bias in lio.sensor -- one at a time.
+
+============================================================================
+MISSION C, ROUND 10 -- voxel_fliter_size 0.2 -> 0.05: THE ESTIMATOR DOES NOT SEE THE CLIMB (2026-10-17)
+============================================================================
+Change: src/lio/config/livox_360.yaml  lio.sensor.voxel_fliter_size  0.2 -> 0.05   (patched, flown, RESTORED to HEAD)
+
+  r13   takeoff sim 32.8  cmd 1.43  lio 0.00   truth 0.10
+        hold    sim 35.5  cmd 1.46  lio 0.04   truth 0.21
+        abort   sim 37.3  cmd 1.95  lio 0.54   truth 4.08      <- 3.54 m gap (r11 2.09, r12 2.25)
+        done    sim 82.3  cmd 2.60  lio +221.73 truth +390.21  <- the vehicle reached 390 m, the estimate 170 m behind
+
+  the vertical channel across three estimator settings, at the abort:
+      map 0.25 / filter 0.20 (r11)   lio 1.99  truth 4.08   gap 2.09
+      map 0.10 / filter 0.20 (r12)   lio 1.80  truth 4.05   gap 2.25
+      map 0.25 / filter 0.05 (r13)   lio 0.54  truth 4.08   gap 3.54
+
+READ: the LIO's z does not track the climb at all -- the degenerate case of a LiDAR estimator over a ground plane with
+no vertical structure, where "the sensor went up" and "the world went down" are indistinguishable.  Neither knob touches
+that layer.
+
+NEXT: fly Mission C with ALT_MODE=baro -- the FCU's own barometric altitude (the launcher's DEFAULT, which this mission
+has been overriding with lio) -- so the vertical loop no longer depends on the LiDAR map.  The geofence, the climb guard
+and the 2.0 m mission altitude all stay truth-checked.
