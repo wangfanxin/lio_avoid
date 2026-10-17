@@ -106,7 +106,7 @@ fi
 if [ -n "${RECT_HOLD_S:-}" ]; then
     RECT_HOLD_FROM="the CALLER (RECT_HOLD_S=$RECT_HOLD_S)"
 else
-    RECT_HOLD_S=0.3
+    RECT_HOLD_S=0.0
     RECT_HOLD_FROM="THE HARNESS DEFAULT (RECT_HOLD_S was not set)"
 fi
 WORLD_HOLD_S="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["mission"].get("hold_s", "unset"))' "$WORLD" 2>/dev/null || echo unreadable)"
@@ -179,7 +179,7 @@ PLANNER_TOPIC="${PLANNER_TOPIC:-/plan/cmd}"
 #: They are SOFT quadratic penalties in that optimiser (`bspline_optimizer.cpp:1118-1149`), not constraints,
 #: so they shape the plan rather than bound the flight -- the FCU is what bounds the flight.
 EGO_MAX_VEL="${EGO_MAX_VEL:-2.0}"
-EGO_MAX_ACC="${EGO_MAX_ACC:-2.2}"
+EGO_MAX_ACC="${EGO_MAX_ACC:-2.0}"
 #: HOW FAT THE PLANNER'S OBSTACLE IS ON TOP OF THE MARKED CELLS (`grid_map/obstacles_inflation`).  0.099 above is
 #: one 0.1 m cell and has been the flown value since DIAG14.  MEASURED consequence, Flight E's own DIAG/2 slices
 #: via `_stage/map-inflation.py`: the map's obstacle reaches 0.540 m from a pillar's axis, i.e. 0.240 m past the
@@ -187,7 +187,7 @@ EGO_MAX_ACC="${EGO_MAX_ACC:-2.2}"
 #: therefore been INSIDE the planner's obstacle -- the 1-2 m detours, the 0.33 m map corridor and the
 #: "First 3 control points in obstacles" deadlock all follow from it.  0.0 removes the 27-cell cube (`inf_step`
 #: is an INTEGER cell count, so 0.099 and 0.0 are the only two values this parameter can express).
-EGO_INFLATION="${EGO_INFLATION:-0.099}"
+EGO_INFLATION="${EGO_INFLATION:-0.0}"
 #: THE MAP'S LATTICE (`grid_map/resolution`, 0.1 m in every sortie so far).  `EGO_INFLATION` above is in CELLS
 #: (`inf_step` is an integer count), so the two move together: at 0.1 m the planner's obstacle reaches 0.380 m
 #: from a pillar's 0.300 m axis and the tour's legs at 0.500 m leave a 2-cell channel; at 0.05 m the same marks
@@ -224,7 +224,7 @@ EGO_ARRIVE_M="${EGO_ARRIVE_M:-0.30}"
 #: cost **9-10 s of standstill at every corner**: 5.0 s of dwell (`RECT_HOLD_S`) plus 4-5 s of waiting for a
 #: 0.08 m/s settle -- on a 6 m leg that is more than the flight itself.  `--settle-mps` 0.30 lets the tour
 #: advance while the aircraft is still rolling, which is what "fly through the waypoint" means.
-EGO_SETTLE_MPS="${EGO_SETTLE_MPS:-0.08}"
+EGO_SETTLE_MPS="${EGO_SETTLE_MPS:-0.0}"
 #: THE VERTICAL TOLERANCE OF THE SHELL'S ARRIVAL GATE (metres) and an UPPER CLAMP ON THE FORWARDED ALTITUDE.
 #: Both exist because of ONE measurement (Flight F, 2026-10-17): the aircraft arrived at corner 1 **84.4 mm away
 #: horizontally and 0.834 m high**, the 3-D gate therefore never opened in 21 s, and the reference itself had
@@ -502,7 +502,7 @@ echo "               $PLANNER_FILE  ->  $PLANNER_TOPIC (quadrotor_msgs/PositionC
 echo "               (the BRIDGE and the SUPERVISOR do not know which planner this is: they read the topic)"
 if [ "${EGO_STACK:-0}" = "1" ]; then
     echo "   ego stack : ON -- ego_planner_node (src/planner/ego_on_lio.launch.py) + cloud_relay"
-    echo "               /lio/cloud_world -> ${EGO_CLOUD_TOPIC:-/ego/cloud} at 0.10 m; ego max_vel ${EGO_MAX_VEL:-2.0} max_acc ${EGO_MAX_ACC:-2.2} (SOFT); inflation ${EGO_INFLATION:-0.099} m"
+    echo "               /lio/cloud_world -> ${EGO_CLOUD_TOPIC:-/ego/cloud} at 0.10 m; ego max_vel ${EGO_MAX_VEL:-2.0} max_acc ${EGO_MAX_ACC:-2.0} (SOFT); inflation ${EGO_INFLATION:-0.0} m"
 fi
 echo "   world     : $WORLD  ($CORNERS)"
 echo "   airframe  : sim model '$SITL_MODEL' against FRAME_TYPE 1 (X) -- the two must agree (see SITL_MODEL above)"
