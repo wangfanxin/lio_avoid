@@ -84,23 +84,28 @@ pillar body, minimum surface distance >= 0).  As of 2026-10-17 the arm and the n
 |---|---|---|
 | `EGO_CORRIDOR_M` | **0.01 m** (`END_M`/`OPEN_M` 0.0) | holds the forwarded reference on the leg centreline, which is the field's maximum-clearance path: every edge is exactly +0.200 m from the nearest pillar surface while the plan snaked +-0.4-0.5 m about it.  Took the collision rate from 7.42 % to 0.06 % of samples (STATUS 188-198) |
 | `EGO_CORNER_M` / `MPS` | **0.50 m / 1.00 m/s** | the corner is where the aircraft's momentum is made, and at 1.0 m radius the governor set the schedule (|v_ref| p50 == the cap).  Refuted as a SAFETY lever in three forms since (`_stage/corner-exit-audit2.py`: interior cross-track p50 0.132 / 0.164 / 0.199 / 0.128 m for 0.50@1.00, 0.50@1.00+3.0, 0.50@0.70, 1.00@0.70) -- the remaining error is the aircraft's tracking, not the corner |
-| `EGO_MAX_VEL` / `ACC` | **2.5 m/s** | the clean band.  2.75 and 3.0 each bought seconds at the cost of a negative minimum (STATUS 192-203), and 3.0 is the documented one-knob conversion to the time-complete variant |
+| `EGO_MAX_VEL` / `ACC` | **2.5 m/s** | the clean band.  2.75 (BG -0.042 / -0.273) and 3.0 (AU/AX/AS/AW: -0.007 to -0.222) each buy seconds at the cost of the margin; 3.0 is the documented one-knob conversion to the time-complete variant |
+| `PSC_NE_POS_P` | **1.8** (`params/guided_limits_fast.parm`) | the horizontal position loop, and the last lever that moved the MECHANISM: the aircraft's interior cross-track error p50 0.132 -> **0.096-0.130 m** against the 0.200 m the field leaves.  Its old refutations (AE: raised together with `EGO_REF_ACC_MAX` 2.5; AX: at the 3.0 ceiling) do not apply at 2.5 with the corridor in place |
 | the rest | Flight AD's | posvelacc, ref-clamp 1.2, ref-slew 6.0, ref-acc 2.0, ref-z 0.6/0.6, settle 0.0, dwell 0.0, `PSC_NE_POS_P` 1.5, 10 m pillars, lidar map 0.1 m, PATCH I + RESOLUTION/1 + the crash fix |
 
-A **bare `PLANNER=ego` sortie** flies it.  The last five sorties of this arm (AR, AT, AY, AY2, AZ) read C2 minimum
-**+0.032 / +0.029 / -0.003 / -0.033 / -0.238 m**, **0.00 / 0.00 / 0.06 / 0.17 / 0.31 %** of samples inside a body,
-6 of 8 legs under 6 s in three of them, B1 E 6.30-6.48 / N 8.27-8.86, A1 10.3-11.5 mm.  **The reference was on the
-centreline in all five** (0.00 % of reference samples inside a body, worst-instant clearance +0.269 m), so the
-plan-side defect is structurally gone; what varies is the aircraft.  A bare run's own console line now reads
+A **bare `PLANNER=ego` sortie** flies it.  With the position loop at 1.8 the last four bare sorties (BE, BE2, BF, BF2)
+read C2 minimum **-0.021 / +0.039 / +0.048 / +0.056 m**, **0.15 / 0.00 / 0.00 / 0.00 %** of samples inside a body,
+**C2-ego MET in three of four**, A1 9.03-10.36 mm, B1 E 6.250-6.570 / N 8.254-8.316, C1 0.008-0.050 m, routes
+35.3-40.1 s, and **7 of 8 legs under 6 s in BF (max 7.29 s)**, 6 of 8 in BF2.  So the collision clause is met with a
+POSITIVE, reproducible margin -- and that is the first time it can be said of any arm.  The earlier gain-1.5 sorties of
+this arm (AR, AT, AY, AY2, AZ) read +0.032 / +0.029 / -0.003 / -0.033 / -0.238 m, i.e. 0 ± 0.03 m, which is what the
+1.8 improves on.  **The reference was on the centreline in all of them** (0.00 % of reference samples inside a body,
+worst-instant clearance +0.269..+0.284 m), so the plan-side defect is structurally gone; what varies is the aircraft.  A bare run's own console line now reads
 `shim: ROUTE CORRIDOR 0.010 m ... does NOT open at the ends`, `CORNER GOVERNOR 1.000 m/s within 0.500 m`, and
 `ACCELERATION FIELD clamped to 2.000 m/s2`.
 
-**Both criteria have been met, in different sorties, and the gap between them is one knob**: Flight AR/AT
-(+0.032 / +0.029 m, 0 of ~1900 samples inside) and Flight AU (**8 of 8 legs at 3.55-5.30 s**, minimum -0.007 m) differ
-only in `EGO_MAX_VEL`/`ACC` (2.5 vs 3.0).  The default is the 2.5 side, because "0 samples inside a body" is this
-table's hard gate.  **What is NOT claimed**: that 0.00 % is reproducible at the default -- it is 0 ± 0.03 m over five
-sorties, i.e. ON the surface, and one slow/jerky plan (AZ: |v_ref| p50 0.92 m/s, route 53.1 s) still produced -0.238 m
-with the reference on the line the whole time.
+**Both criteria have been met, in different sorties, and the gap between them is one knob**: the arm of record
+(+0.039 / +0.048 / +0.056 m, 0 of ~2000 samples inside, 6-7 of 8 legs) and Flight AU (**8 of 8 legs at 3.55-5.30 s**,
+minimum -0.007 m) differ only in `EGO_MAX_VEL`/`ACC` (2.5 vs 3.0).  The default is the 2.5 side, because "0 samples
+inside a body" is this table's hard gate.  **What is NOT claimed**: that 0.00 % is unconditional -- one slow/jerky plan
+(AZ: |v_ref| p50 0.92 m/s, route 53.1 s) still produced -0.238 m with the reference on the line the whole time, and at
+2.75 the same arm reads -0.042 and -0.273 m (BG/BG2).  The planner's occasional slow run is now the single biggest
+risk, and it is characterised: route > 41 s, B1 N > 8.5, A1 > 11 mm.
 
 ### 3.2 What round 16 measured on the aircraft side
 

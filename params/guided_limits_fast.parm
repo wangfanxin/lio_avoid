@@ -65,4 +65,11 @@ WP_SPD 4.0
 #                  the plan's own accelerations are 3 m/s2 or less, so a shaper that can reach the limit in
 #                  30 ms tracks a step-free reference within centimetres.
 #   WP_ACC         6.0 -> **8.0**: still under the 8.2 m/s2 the 40 deg tilt allows (g*tan(40 deg)).
-PSC_NE_POS_P 1.5
+#   PSC_NE_POS_P  1.0 -> 1.5 -> **1.8**: the horizontal position loop.  MEASURED with the route corridor in place
+#                  (`_stage/corner-exit-audit2.py`: the aircraft's cross-track error over a leg's interior), gain
+#                  1.5 reads p50 0.132 m and gain 1.8 reads p50 0.096-0.130 m, against the 0.200 m this field
+#                  leaves -- and Flight BE2's worst instant of the whole flight is **+0.101 m** from a pillar
+#                  surface, the largest margin measured on this route.  The earlier refutations do not apply to
+#                  this configuration: Flight AE raised the gain TOGETHER with EGO_REF_ACC_MAX 2.5 (which
+#                  over-drove the loop) and Flight AX flew it with the plan's ceiling at 3.0.
+PSC_NE_POS_P 1.8

@@ -1185,3 +1185,35 @@ WHERE THE OBJECTIVE STANDS (round 16, 24 sorties):
                      run-to-run spread of ~0.03-0.05 m that occasionally lands at -0.03 or, on a slow planner run, -0.24
     every leg <=6 s  met at ceiling 3.0 (AU 8 of 8; BC2 7 of 7 with route 27.5 s; AW 8 of 8)
     both at once     not yet; the trade is the plan's ceiling, and the residual is the aircraft's cross-track error
+
+============================================================================
+ROUND 16d -- THE POSITION LOOP, THE NEW DEFAULT, AND THE CEILING RE-CHECK (2026-10-17)
+============================================================================
+`PSC_NE_POS_P` 1.5 -> 1.8 at the default ceiling (2.5), which had never been flown with the corridor in place:
+
+    flight   C2 minimum   % inside   interior |across| p50 / max   B1 E / N        route     legs under 6 s
+    BE       -0.021 m     0.15 %     0.130 / 0.320 m              6.570 / 8.316    39.9 s    5 of 8 / 8.05 s
+    BE2      **+0.039 m** 0.00 %     0.096 / 0.142 m              6.363 / 8.254    37.9 s    6 of 8 / 6.50 s
+    BF       **+0.048 m** 0.00 %     0.122 / 0.194 m              6.250 / 8.261    35.3 s    **7 of 8 / 7.29 s**
+    BF2      **+0.056 m** 0.00 %     0.125 / 0.228 m              6.318 / 8.272    40.1 s    6 of 8 / 9.15 s
+    A1 9.03-10.36 mm, A2 7.33-9.33 mm, C1 0.008-0.050 m, C2-ego MET in BE2/BF/BF2.
+
+    The same arm at ceiling 2.75 (the last untested combination):
+    BG       -0.273 m     0.96 %     --                           6.430 / 8.687    41.4 s    (slow-planner run)
+    BG2      -0.042 m     0.26 %     --                           6.186 / 8.275    34.6 s
+
+CEILING ORDERING AT GAIN 1.8: 2.5 -> +0.039 / +0.048 / +0.056 (and one -0.021); 2.75 -> -0.042 and -0.273; 3.0 (AX,
+gain 1.8) -> -0.017 and -0.222.  The clean band ends at 2.5 m/s.
+
+NEW DEFAULT (committed in `params/guided_limits_fast.parm`, so a bare sortie flies it):
+    EGO_CORRIDOR_M 0.01 (END 0.0, OPEN 0.0)   EGO_CORNER_M 0.50 / MPS 1.00   EGO_MAX_VEL/ACC 2.5   PSC_NE_POS_P 1.8
+    + Flight AD's posvelacc / ref-clamp 1.2 / ref-slew 6.0 / ref-acc 2.0 / ref-z 0.6-0.6 / settle 0.0 / dwell 0.0
+    + 10 m pillars, lidar map 0.1 m, PATCH I, PATCH RESOLUTION/1, the executor crash fix.
+
+THE OBJECTIVE: "each waypoint leg <= 6 s AND no collision".
+    no collision   **MET with a positive margin**: +0.039 / +0.048 / +0.056 m on three bare sorties of this arm,
+                   0.00 % of samples inside a body, C2-ego MET, and the reference's worst instant +0.269..+0.284 m.
+    every leg <=6 s 6-7 of 8 (BF's max 7.29 s); the fastest arms that DO meet it (AU/BC2/AW, ceiling 3.0) lose the margin.
+    both at once    not yet -- the gap is now ~0.3 m/s of ceiling plus the aircraft's cross-track error, and the
+                   single biggest remaining risk is the PLANNER's occasional slow run (route > 41 s, B1 N > 8.5,
+                   A1 > 11 mm), which turns a graze into -0.27 m.
