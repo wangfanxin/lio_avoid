@@ -232,6 +232,23 @@ therefore geometric, not kinetic -- slowing down or stopping does not remove it,
 show.  What would address it is a different turn rule (arrive on the incoming line, then turn in place) or a field
 with more room at the corners; neither is a parameter of this arm.
 
+### 3.10 A 2 s hover at every corner (round 30)
+
+Asked for directly.  `RECT_HOLD_S=2.0` (+ `EGO_SETTLE_MPS=0.10`, without which the dwell timer runs beside a
+moving aircraft) -- one variable against the stop-without-hover flight of §3.9.
+
+| arm (maximally random forest) | C2 minimum | arrivals | legs < 6 s | max leg | route |
+|---|---|---|---|---|---|
+| fly through (default) | -0.090 m | 0.28-0.30 m | 7 of 8 | 6.55 s | 37.3 s |
+| stop, no hover | -0.105 m | 0.28-0.30 m | 2 of 9 | 15.92 s | 64.2 s |
+| **hover 2.0 s** | **-0.057 m** | **0.027-0.115 m** | **1 of 9** | 10.21 s | 67.7 s |
+
+The hover is the first lever that has moved C2 on this field, and it improves the arrival accuracy 7x, because a
+slow arrival does not overshoot the point.  Its remaining contact is at (-3.22,+3.46) -- 0.22 m *outside* the west
+leg at the NW corner, i.e. the OUTWARD overshoot as the aircraft leaves the corner, not the inward cut.  The price
+is structural: the dwell sits inside the leg that follows it, so every leg carries 2 s before it moves and
+**1 of 9** legs can be under 6 s.  Not promoted to the default.
+
 ## 4. The pipeline
 
 ```

@@ -1842,3 +1842,29 @@ gate cannot be tightened further (0.20 was flown).  Slowing the corner cap makes
 worse (-0.168 m, the same slow-plan effect as STATUS 200/231); stopping at the corner costs 1.7-2x the mission time
 and does not remove the contact.  The corner cut is geometric, not kinetic.  The default remains the best arm of the
 four on both clauses.
+
+============================================================================
+ROUND 30 -- A 2 s HOVER AT EVERY CORNER (2026-10-17)
+============================================================================
+Owner: "那改成角点悬停2s".  Knob: RECT_HOLD_S -> ego_contract_shim --hold-s (the tour does not advance until the
+dwell has elapsed; the entry leg gets none).  Flown with EGO_SETTLE_MPS=0.10 -- the settle clause is what makes it
+a hover rather than a timer beside a moving aircraft -- so this is ONE variable against FLIGHTSET010.
+
+  FLIGHTHOLD2-maxjitter (maximally random forest, bare arm otherwise):
+    the hovers              nine arrivals at |v| 0.06-0.10 m/s, "dwelling 2.0 s" each
+    arrival accuracy        0.027 / 0.040 / 0.027 / 0.036 / 0.080 / 0.038 / 0.064 / 0.058 / 0.115 m  (was 0.28-0.30)
+    C2                      **-0.057 m**, 323 of 145 342 samples inside a body (best of every arm on this field)
+                            fly-through -0.090 | stop-no-hover -0.105 | corner 0.50 -0.168 | tighter gate -0.089
+    the remaining contact   (-3.22,+3.46), 0.22 m OUTSIDE the west leg, NW corner, second lap, altitude 1.8 m
+                            -> the OUTWARD overshoot as the aircraft leaves the corner, not the inward cut
+    B1                      E 6.709 / N 8.252 (N is the best of the four arms)
+    A1 / A2 / A4            14.23 mm / 8.92 mm / 30.02 mm horizontal (A4 PASS)
+    C1                      0.039 m  [PASS]
+    legs                    2.15 .. 10.21 s, **1 of 9 under 6.0 s**
+    route                   67.7 s (fly-through 37.3 s)
+
+  WHY THE TIME IS LOST BY CONSTRUCTION: the dwell is inside the leg that follows it (the next waypoint is not
+  published until the 2 s have passed), so every leg carries 2 s of hover before it moves.  No tuning recovers it:
+  with 8 corners x 2 s = 16 s of hover, the route cannot be 8 legs x 6 s.
+
+  NOT PROMOTED: RECT_HOLD_S stays 0.0.  A one-line change if the owner wants it as the default.
