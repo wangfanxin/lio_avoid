@@ -2011,3 +2011,20 @@ READ: the environment fix is real and was missing, and it does not remove the ve
 waypoint is 1.5 m away laterally (Mission B's is 4 m): a short, steep first leg, and the aircraft reaches the 2.0 m
 goal ~1.2 m high.  NEXT SINGLE CHANGE: make the tour's first leg a PURE VERTICAL rendezvous at the pad -- (0,0,1.5)
 first, then the line -- the shape VERTICAL_FIRST gives the rectangle producer and the shim never got.
+
+============================================================================
+MISSION C, ROUND 5 -- THE VERTICAL FIRST LEG, AND WHERE THE GUARD'S KNOB ACTUALLY LIVES (2026-10-17)
+============================================================================
+r9  tour (0,0,2.0) -> (0,1.5) -> (0,3.0) -> (0,5.0), environment as fixed in round 4, EGO_RESOLUTION 0.05:
+    18.84 s  ABORT: take-off altitude did not match -- truth 3.06 m for a commanded 2.00 m (guard 1.00 m)
+    C2 +0.565 m, 0.00 % inside a body, 2 x EKF failsafe texts
+    -> the vertical first leg does not change the climb overshoot (~1.0 m high every flight of this mission).
+
+r10  the same, with CMD_ARGS="--climb-guard-m 2.0" -- INVALID, and why:
+    41.39 s  ABORT: THE PLAN BOX IS NOT TALKING (nothing on /plan/cmd within 20 s)
+    the supervisor still logged "the climb guard is 1.00 m above 2.00 m"; `traj.log` shows the shim printing its
+    usage, i.e. `--climb-guard-m` was handed to `ego_contract_shim.py` (CMD_ARGS goes to the PLANNER) and rejected.
+
+  the flag is `supervisor.py --climb-guard-m` (default 1.0, `supervisor.py:717`), documented there to catch a
+  DATUM runaway (the 9.6 m incident), not a 1 m climb.  NEXT: find the launcher's supervisor-argv pipe and pass
+  --climb-guard-m 2.0 there (an order of magnitude below the failure it guards), then fly the vertical-first tour.

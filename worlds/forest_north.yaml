@@ -820,13 +820,15 @@ mission:
   takeoff_alt: 2.0
   hold_s: 5.0
   corners:
+  - [0.0, 0.0, 2.0]
   - [0.0, 1.5, 2.0]
   - [0.0, 3.0, 2.0]
   - [0.0, 5.0, 2.0]
   name: forest_north
   square: [-0.6, 0.0, 0.6, 5.0]
-  note: 'MISSION C: north forest.  Tour (0,1.5) -> (0,3) -> (0,5): every goal inside ego''s own map box (16 m centred
-    on L origin), because a goal outside it reads as OCCUPIED and the planner is sent nowhere.'
+  note: 'MISSION C: north forest.  Tour starts with a PURE VERTICAL leg above the pad -- (0,0,2.0) -- then the line
+    (0,1.5) -> (0,3.0) -> (0,5.0): a short steep first leg was climbing the aircraft ~1.2 m above its goal and the
+    take-off guard ended the sortie.'
 mission_b:
   takeoff_alt: 2.0
   goal: [0.0, 5.0]
