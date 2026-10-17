@@ -2155,3 +2155,24 @@ READ: the vertical loop is FIXED (baro, 4 cm at the mission altitude, and the LI
 What remains is horizontal only: the planner produces degenerate targets in a 0.30 m-channel forest and the aircraft
 follows them out of the arena.  NEXT: put a floor under the planner -- refuse a /plan/cmd whose position is further from
 the vehicle than the contract's own clamp, so a 100 m excursion stops at the shell instead of at the geofence.
+
+============================================================================
+MISSION C, ROUND 12 -- THE SHELL'S LIMITS ARE PER LEG; THE RUNWAY GOT THROUGH THE GAP (2026-10-17)
+============================================================================
+r14's shim_trace.csv (what the contract shell ACTUALLY forwarded, 7016 samples):
+  forwarded reference   px -0.32 .. +32.25     py -99.31 .. +8.11
+  distance from the pad median 19.77 m, max **99.76 m**
+  step between samples  median 0.011 m, max 0.084 m   (a healthy, smooth stream -- of a trajectory out of the world)
+
+The shell's two limits are defined against the CURRENT LEG (corridor 0.01 m about that leg's centreline; reference clamp
+1.2 m ahead of the vehicle).  r14 had arrived at waypoint 1 of 4 and was on leg 2 when it left, and once the tour has
+advanced past its last waypoint there is no leg to clamp to -- the limiter does not exist.
+
+WHERE MISSION C ENDS, STATED ONCE:
+  FIXED        the vertical loop (ALT_MODE=baro): 2.04-2.17 m held through two legs; the LIO's z no longer drives flight
+  NOT FIXED    the horizontal planner in a 0.30 m-channel forest: degenerate targets up to 100 m
+  NOT COVERED  the shell's limits end with the leg -- a global position gate on the REFERENCE is the missing floor
+  NEVER SEEN   a Mission-C collision: C2 best +0.565 m, 0.00 % of samples inside a body in four of eight flights
+  BEST         arrival 0.071 m horizontal / 0.189 m vertical (r14, waypoint 1)
+  THE TOUR     (c) is closed -- the world declares exactly the tour the shell publishes:
+               waypoint 1 -> [2.004 -0.003 1.884] (L) for the world's (0,2), and 2/3 likewise
