@@ -83,8 +83,8 @@ pillar body, minimum surface distance >= 0).  As of 2026-10-17 the arm and the n
 | knob | value | why |
 |---|---|---|
 | `EGO_CORRIDOR_M` | **0.01 m** (`END_M`/`OPEN_M` 0.0) | holds the forwarded reference on the leg centreline, which is the field's maximum-clearance path: every edge is exactly +0.200 m from the nearest pillar surface while the plan snaked +-0.4-0.5 m about it.  Took the collision rate from 7.42 % to 0.06 % of samples (STATUS 188-198) |
-| `EGO_CORNER_M` / `MPS` | **0.50 m / 1.00 m/s** | the corner is where the aircraft's momentum is made; the governor's radius was 1.0 m and 8 corners is ~16 m of a 44 m route, so it set the schedule (|v_ref| p50 == the cap) |
-| `EGO_MAX_VEL` / `ACC` | **2.5 m/s** | the clean band.  2.75 and 3.0 each bought seconds at the cost of a negative minimum (STATUS 192-198) |
+| `EGO_CORNER_M` / `MPS` | **0.50 m / 1.00 m/s** | the corner is where the aircraft's momentum is made, and at 1.0 m radius the governor set the schedule (|v_ref| p50 == the cap).  Refuted as a SAFETY lever in three forms since (`_stage/corner-exit-audit2.py`: interior cross-track p50 0.132 / 0.164 / 0.199 / 0.128 m for 0.50@1.00, 0.50@1.00+3.0, 0.50@0.70, 1.00@0.70) -- the remaining error is the aircraft's tracking, not the corner |
+| `EGO_MAX_VEL` / `ACC` | **2.5 m/s** | the clean band.  2.75 and 3.0 each bought seconds at the cost of a negative minimum (STATUS 192-203), and 3.0 is the documented one-knob conversion to the time-complete variant |
 | the rest | Flight AD's | posvelacc, ref-clamp 1.2, ref-slew 6.0, ref-acc 2.0, ref-z 0.6/0.6, settle 0.0, dwell 0.0, `PSC_NE_POS_P` 1.5, 10 m pillars, lidar map 0.1 m, PATCH I + RESOLUTION/1 + the crash fix |
 
 A **bare `PLANNER=ego` sortie** flies it.  The last five sorties of this arm (AR, AT, AY, AY2, AZ) read C2 minimum
@@ -100,8 +100,27 @@ plan-side defect is structurally gone; what varies is the aircraft.  A bare run'
 only in `EGO_MAX_VEL`/`ACC` (2.5 vs 3.0).  The default is the 2.5 side, because "0 samples inside a body" is this
 table's hard gate.  **What is NOT claimed**: that 0.00 % is reproducible at the default -- it is 0 ± 0.03 m over five
 sorties, i.e. ON the surface, and one slow/jerky plan (AZ: |v_ref| p50 0.92 m/s, route 53.1 s) still produced -0.238 m
-with the reference on the line the whole time.  The two remaining terms are the aircraft's 0.15-0.35 m cross-track
-excursions against the 0.200 m this field leaves, and the planner's occasional slow run, which doubles them.
+with the reference on the line the whole time.
+
+### 3.2 What round 16 measured on the aircraft side
+
+`_stage/corner-exit-audit2.py` (the offset from the CURRENT leg, projected ALONG it, so the corner neighbourhood --
+where the two legs' frames are meaningless -- is excluded) gives the number that now bounds this mission:
+
+| arm | interior cross-track p50 | max | C2 minimum |
+|---|---|---|---|
+| corner 0.50 @ 1.00, ceiling 2.5 (AT) | 0.132 m | 0.201 m | **+0.029 m** |
+| corner 0.50 @ 1.00, ceiling 3.0 (AU) | 0.164 m | 0.207 m | -0.007 m |
+| corner 0.50 @ 0.70, ceiling 3.0 (BC/BC2) | 0.199 m | 0.479 m | -0.079 / -0.205 m |
+| corner 1.00 @ 0.70, ceiling 3.0 (BD) | 0.128 m | 0.316 m | -0.102 m |
+
+**The aircraft's cross-track error is 0.12-0.20 m at p50 against a 0.200 m total budget**, and its tail on one bad leg
+is 0.3-0.65 m.  The corner knobs move that typical value by +-0.04 m in both directions and leave the tail alone, so
+they are refuted as the safety lever; the plan's ceiling is the only knob that has ever moved the outcome, and it moves
+the two criteria in opposite directions.  Two more refutations this round, each with its evidence in STATUS 201-203:
+`EGO_ARRIVE_M` 0.150 (the tour never advanced -- 20 s plan-silence on one run, an EKF-failsafe LAND on its retry) and
+`RECT_HOLD_S` 0.15 (clean on one run, -0.290 m on its repeat).  Also recorded, unexplained: `ego_planner_node` SIGSEGV
+(exit -11) one line after `Triggered! [TRIG]: from INIT to REPLAN_TRAJ` in Flight BD2 -- 1 in 24 corridor sorties.
 
 ## 4. The pipeline
 
