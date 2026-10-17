@@ -2049,3 +2049,27 @@ fixed overshoot.  Raising the guard cannot fix it and would only move the ceilin
 NEXT (single measurement, no flight needed): the wire's z.  setpoints.csv carries cmd_z, fcu_z and lio_z at 50 Hz and
 the supervisor's phase log gives the trigger instant -- compare the two seconds after the trigger to separate "the plan
 asks for the climb" from "the FCU's take-off executor keeps climbing".
+
+============================================================================
+MISSION C, ROUND 7 -- THE WIRE ASKED FOR 2.00 m; THE AIRCRAFT WAS 2 m HIGHER THAN EVERY ESTIMATE (2026-10-17)
+============================================================================
+r11's setpoints.csv is one clock with three altitude columns at 50 Hz, covering the 1.9 s from the trigger to the abort:
+
+  t (s)   cmd_z   fcu_z   lio_z        (selected rows)
+  0.00     1.22    0.28    0.02
+  ...
+  37.00    1.13    0.31    0.02        <- the bridge's relay enables (the trigger)
+  38.00    1.43    0.71    0.45
+  38.75    2.00    2.03    1.86        <- everyone agrees on ~2.0 m
+
+  and the TRUTH tap for the same flight: 4.08 m at the abort (supervisor, 19.98 s).
+
+  the same gap in the other flights:  r4 truth 5.26 vs fcu 3.00 (cmd 2.60);  r3 truth 2.48 vs fcu 2.06 (cmd 2.00)
+
+READ: the plan asked for exactly the mission altitude and both estimators tracked it; the vehicle was ~0.4-2.3 m
+higher than its own navigation believed.  The climb is not commanded and not estimated -- it is a VERTICAL DATUM/SCALE
+defect between the simulated world and the navigation chain.  The supervisor's truth-based guard is therefore the only
+instrument that sees it, and it must stay on.
+
+NEXT (no flight): diff the Mission-C world's spawn / pad / arena blocks against rect68_random.yaml's (Mission B never
+shows the gap), then audit the EK3_SRC1_POSZ path that ALT_MODE=lio selects.
