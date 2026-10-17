@@ -1989,3 +1989,25 @@ MISSION C, ROUND 3 -- THE TAKEOFF GUARD IS A SYMPTOM; TWO KNOBS REFUTED (2026-10
 BEST-KNOWN MISSION C CONFIGURATION: EGO_RESOLUTION=0.05, relay voxel 0.10 (default), self-blind 0 (default),
 ref z clamp 0.6 (default), 2 s hover, settle 0.10, geofence 14 m -- i.e. r3, the only configuration that has
 arrived (waypoint 1 at 0.158 m, |v| 0.08 m/s, 2.0 s hover) with zero planner failures in the arrival window.
+
+============================================================================
+MISSION C, ROUND 4 -- THE HARNESS ENVIRONMENT BUG, AND THE VERTICAL OVERSHOOT THAT SURVIVES IT (2026-10-17)
+============================================================================
+FOUND (r3's own FCU log): 'EKF variance' -> 'EKF Failsafe: changed to Land Mode' 11 s after arming, i.e. the sortie
+died of a failsafe, not of the mission.
+
+ROOT CAUSE: every Mission-C flight was launched from run-mission.sh with only EXTRA_PARM, so the FCU ran
+  FS_EKF_THRESH 1.0        (params/apm_lio_only.parm)  instead of 30.0 (params/ekf_trust_lio_measured.parm,
+                                                       the measured trust table every Mission-B sortie passes)
+  ALT_MODE baro            instead of lio             (the launcher's default)
+  MISSION_PARM phase_a_mission.parm instead of phase_a_mission_fast.parm
+
+FIXED AND FLOWN (r8: ALT_MODE=lio NAV_SOURCE=lio MISSION_PARM=..._fast EKF_PARM=..._measured, r3's planner config):
+  17.36 s  ABORT: THE TAKE-OFF ALTITUDE DID NOT MATCH THE REQUEST: truth 3.17 m for a commanded 2.00 m
+  3 x EKF Failsafe texts still present
+  C2 -0.048 m, 0.41 % inside a body
+
+READ: the environment fix is real and was missing, and it does not remove the vertical excursion.  Mission C's first
+waypoint is 1.5 m away laterally (Mission B's is 4 m): a short, steep first leg, and the aircraft reaches the 2.0 m
+goal ~1.2 m high.  NEXT SINGLE CHANGE: make the tour's first leg a PURE VERTICAL rendezvous at the pad -- (0,0,1.5)
+first, then the line -- the shape VERTICAL_FIRST gives the rectangle producer and the shim never got.
