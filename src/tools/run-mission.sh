@@ -121,8 +121,8 @@ fi
 if [ -n "${RECT_HOLD_S:-}" ]; then
     RECT_HOLD_FROM="the CALLER (RECT_HOLD_S=$RECT_HOLD_S)"
 else
-    RECT_HOLD_S=2.0
-    RECT_HOLD_FROM="THE HARNESS DEFAULT (RECT_HOLD_S was not set; 2.0 s at every corner since 2026-10-17)"
+    RECT_HOLD_S=0.0
+    RECT_HOLD_FROM="THE HARNESS DEFAULT (RECT_HOLD_S was not set; 0.0 s = fly THROUGH, the fastest rectangle arm)"
 fi
 WORLD_HOLD_S="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["mission"].get("hold_s", "unset"))' "$WORLD" 2>/dev/null || echo unreadable)"
 
@@ -256,7 +256,7 @@ EGO_ARRIVE_M="${EGO_ARRIVE_M:-0.30}"
 #: is only a HOVER if the vehicle has actually stopped when its timer starts -- with the test switched off the
 #: timer runs beside a moving aircraft.  Measured with 0.10: nine corners hovered at |v| 0.06-0.10 m/s, arrivals
 #: 0.027-0.115 m (against 0.28-0.30 m with no settle), C2 -0.057 m, the best of every arm on the random forest.
-EGO_SETTLE_MPS="${EGO_SETTLE_MPS:-0.10}"
+EGO_SETTLE_MPS="${EGO_SETTLE_MPS:-0.0}"
 #: THE VERTICAL TOLERANCE OF THE SHELL'S ARRIVAL GATE (metres) and an UPPER CLAMP ON THE FORWARDED ALTITUDE.
 #: Both exist because of ONE measurement (Flight F, 2026-10-17): the aircraft arrived at corner 1 **84.4 mm away
 #: horizontally and 0.834 m high**, the 3-D gate therefore never opened in 21 s, and the reference itself had

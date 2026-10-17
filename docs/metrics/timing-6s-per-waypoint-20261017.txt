@@ -1927,3 +1927,21 @@ WHY THE FLIGHTS GO BADLY -- read off the recordings, not argued:
 
 So the hover buys the corner (arrivals 0.003-0.25 m, contacts no longer at corners) and cannot buy margin; past
 2 s it buys only time.
+
+============================================================================
+MISSION C, ROUND 1 -- THE NORTH FOREST IS FLYABLE; THE MISSION FRAME IS NOT (2026-10-17)
+============================================================================
+World: worlds/forest_north.yaml (791 pillars, r 0.10 m, 0.5 m cells, random in cell, y > 0, 1.1 m start clearing).
+Tour: (0,2) -> (0,4) -> (0,8) at 2.0 m, 1.5 s hover, geofence 14 m.  Sortie FLIGHTC-r1.
+
+  abort          20.55 s  geofence: truth at [-1.29 -14.03]   (the aircraft flew SOUTH)
+  last commanded (+5.10, -5.49) in W                              (neither world waypoint nor its negative)
+  A1             104.57 mm
+  C2             **minimum +0.077 m, 0.00 % of samples inside a body, C2-ego MET**
+  C1             36.48 m from the commanded point  [FAIL]
+  plans drawn    2970, no planning stall
+
+READ: with 791 r = 0.10 m pillars on a 0.5 m lattice the aircraft flew 70 s without touching anything -- the dense
+fine forest is flyable.  What failed is the mission definition: the tour the shell published is not the tour the world
+file declares, so the next round instruments the W->L conversion of mission.corners (the shell prints the goal it
+publishes; the world file states the goal it wants) before anything else is changed.
