@@ -831,3 +831,36 @@ radius -- so only the hard velocity cap makes the whole radius slow.  Flight AQ 
 *** THE BEST MEASURED ARM IS NOW AP ***: corridor 0.01 m with no opening, `EGO_CORNER_MPS` 0.80, everything else the
 harness defaults -- C2 -0.031 m, 0.17 % inside a body, 0.37 % below 0.10 m, B1 6.378 / 8.210, and 0 of 2581 samples
 inside a pillar in the instrument window.  Its remaining failure is TIME: 3 of 8 legs under 6 s, max 9.89 s.
+
+============================================================================
+FLIGHTS AQ + AR -- AR IS THE FIRST COLLISION-FREE SORTIE (2026-10-17)
+============================================================================
+[_stage/flightAQ.sh: corridor 0.01 + corner 0.50 m radius / 0.80 m/s, max_vel 2.0]
+[_stage/flightAR.sh: the same + EGO_MAX_VEL/ACC 2.5]
+
+                          Flight AP (before)     Flight AQ (radius 0.5)   Flight AR (AQ + 2.5 m/s)
+    C2 minimum            -0.031 m               -0.029 m                 **+0.032 m**   <-- POSITIVE
+    % inside a body        0.17 %                 0.28 %                    **0.00 %**
+    % below 0.10 m         0.37 %                 1.39 %                    0.86 %
+    C2-ego                 NOT MET                NOT MET                   **MET**
+    A1 / A2                9.35 / 7.29 mm         9.71 / 7.00 mm            10.33 / 7.87 mm
+    B1 E / N               6.378 / 8.210          6.237 / 8.370             6.451 / 8.271
+    C1                     0.069 m                0.031 m                   0.061 m
+    legs under 6 s / max   3 of 8 / 9.89 s        2 of 8 / 8.83 s           **5 of 8 / 6.61 s**
+    |v_ref| p50 / p90      0.800 / 1.425          1.212 / 1.433             1.457 / 1.739
+    ACROSS the plan p90    0.331 m                0.274 m                   0.604 m
+
+FLIGHT AR's legs: 0.88 / 5.44 / 6.27 / 4.86 / 6.40 / 4.84 / 6.61 / 4.30 s.  The three over 6 s are the three 8 m
+edges (3, 5, 7) at 6.27 / 6.40 / 6.61; every 6 m edge is 4.30-5.44 s.
+
+WHY IT TOOK BOTH KNOBS: with the corner radius halved but the plan's ceiling still 2.0 m/s (AQ) the sortie is safe and
+SLOWER (max 8.83 s) -- |v_ref| p50 1.212 m/s shows the plan using the freedom the tighter zone gave it, but not much of
+it.  With the ceiling at 2.5 and the radius still 1.0 (AO) it is faster and less safe.  AR -- tighter zone AND the
+higher ceiling -- is both: |v_ref| p50 1.457 / p90 1.739 m/s, corner still braked to 0.80 m/s at the vertex, and the
+1200 Hz truth never closer than +0.032 m to a surface.  The governor's radius is the schedule: 8 corners x 2 x 1.0 m
+at 0.80 m/s is most of a 44 m route, so only after halving it does the plan's own ceiling become the binding term.
+
+THE ARM OF RECORD (the harness defaults should become this): corridor 0.01 m, no opening, EGO_CORNER_M 0.50,
+EGO_CORNER_MPS 0.80, EGO_MAX_VEL/ACC 2.5, everything else Flight AD's.
+The remaining gap to the owner's objective is TIME ONLY: 5 of 8 legs under 6 s, max 6.61 s, i.e. 0.27-0.61 s on each
+of the three 8 m edges -- Flights AS (max_vel/acc 3.0) and AT (corner 1.00 m/s) attack it separately.
