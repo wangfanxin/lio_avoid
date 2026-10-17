@@ -551,3 +551,56 @@ know the line (1), the plan does not hold the line (the A*/spline placement vari
 and the controller cannot hold it to 0.2 m at the speed the criterion needs (2).  A corridor clamp in the
 contract shell is the only place left that CAN express it, and its risk -- it fights a plan that legitimately
 leaves the line for a real obstacle -- has to be handled rather than ignored.
+
+## CORRECTION (2026-10-17): THE "NO MEMORY" IS UPSTREAM'S OWN CLOUD PATH, NOT OUR MODIFICATION
+
+The owner challenged the claim above -- "为什么没有记忆??你魔改了吗,原版的ego有记忆的!" -- and the challenge is
+CORRECT.  `git show HEAD:src/planner/plan_env/src/grid_map.cpp` (the pristine upstream, commit `23a8d5a`) shows
+`GridMap::cloudCallback()` calling
+
+    this->resetBuffer(md_.camera_pos_ - mp_.local_update_range_, md_.camera_pos_ + mp_.local_update_range_);
+
+at exactly the same place ours does, with the same `resetBuffer` body writing `occupancy_buffer_inflate_ = 0`
+over that box, and with `occupancy_buffer_inflate_[idx_inf] = 1` as the ONLY write a cloud point makes.  So:
+
+  * the single-scan shell is **upstream's cloud path**, taken because we have no depth camera.  Upstream's
+    INTENDED input is the depth image, and THAT path (`raycastProcess()` + `clearAndInflateLocalMap()`, which
+    maintain the log-odds `occupancy_buffer_`) is the one with memory -- rays clear what they pass through and
+    the odds accumulate.  We do not have a depth camera, so we are on the other path;
+  * **`grid_map.cpp` in this tree is changed by +79 lines, and they are printf instrumentation only** (the
+    `DIAG/1 cloud:` census and the `DIAG/2` occupancy slices the map instruments read).  No logic, upstream's.
+  * the relay's `--window` union in `cloud_relay.py` was therefore **our compensation for using the cloud path**
+    -- it re-supplies the memory the depth path would have had -- and its cost is exactly what rounds 3-4
+    measured: 3 s of union smeared the planner's obstacle from 0.380 m to 0.720 m from a pillar axis and closed
+    the corridor.  Memory bought at the price of thickness, because the memory is re-inserted as POINTS rather
+    than as cleared/occupied PROBABILITY.
+
+### AND THE OWNER'S OTHER HYPOTHESIS -- RAISE THE FLIGHT CONTROLLER'S LIMITS -- IS REFUTED BY MEASUREMENT
+
+`params/guided_limits_max.parm` (new): WP_ACC 9.5, ATC_ANGLE_MAX 45 deg (g*tan45 = 9.81 m/s2 against 8.23 at
+40), WP_SPD 8.0, PSC_NE_JERK 250 -- the top of the range, with the speed back at the 2.5 m/s the 6 s criterion
+needs.  Flight W: **the aircraft diverged**.  The supervisor aborted on its own GEOFENCE with the truth at
+**(+5.41, +6.61) m** -- 2.4 m outside the arena -- after two waypoints, with A1 (the LIO against the truth)
+at **173.82 mm rms** against the 20 mm the same instrument reads on every healthy sortie, and legs of 2.1 and
+1.9 s arrivals at |v| 2.12 and 1.88 m/s.  So the limits of Flight I's file (WP_ACC 8.0 / 45 deg / 100) were not
+the binding constraint on tracking; at the ceiling the loop is unstable, and 2.5 m/s stays refuted.
+
+### WHAT THIS TREE ACTUALLY CHANGES IN EGO -- and it is much less than the raw diff suggests
+
+`git diff --stat HEAD` reports 3743 changed lines in `bspline_optimizer.cpp`, which is **CRLF churn**: after
+`tr -d '\r'` on both sides the file differs by **21 lines, all of them DIAG/2 counters**.  Ignoring whitespace
+and line endings, the whole modification is:
+
+    <!-- 937 insertions, 19 deletions over 6 files -->
+    bspline_optimizer.cpp   +21   INSTRUMENTATION ONLY (DIAG/2 counters)
+    grid_map.cpp            +79   INSTRUMENTATION ONLY (DIAG/1 census, DIAG/2 slices)
+    traj_server.cpp          61   INSTRUMENTATION (NEW-SPLINE / TELEM)
+    ego_replan_fsm.h         48   the sequencer's members (PATCH 0007/0008/0010/0011/0012)
+    ego_replan_fsm.cpp     +610   the waypoint sequencer, arrival-is-the-vehicle, the loud stall diagnostics,
+                                  wp_index, the dwell, planNextWaypoint ordering, the vehicle-collision check
+    planner_manager.cpp     137   PATCH 0013 (anchor the committed spline) + PATCH RESOLUTION/1 (the A* pool)
+
+Three of the six files are instrumentation with no behaviour; the functional change is the FSM's mission
+sequencer (which is what the contract shell and the acceptance rows read) and two patches in the planner
+manager.  Nothing outside ego is modified except new knobs whose DEFAULTS preserve the old behaviour, which is
+what `tools/frozen-check.py` verifies for the 53 frozen mission-A artifacts.

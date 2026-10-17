@@ -1,0 +1,25 @@
+# GUIDED POSITION-CONTROLLER LIMITS AT THE GEOMETRIC CEILING -- the owner's hypothesis, tested at the top end.
+#
+# WHY THIS FILE EXISTS SEPARATELY FROM `guided_limits_fast.parm`.  The owner asked (2026-10-17): "为什么跟不上?
+# 是不是wp acc不够大,你把飞控侧的wp acc wpspeed都调成很大".  `guided_limits_fast.parm` has carried
+# WP_ACC 8.0 / WP_SPD 4.0 / PSC_NE_JERK 100 / ATC_ANGLE_MAX 40 since Flight I, and the tracking measured at
+# 2.5 m/s under it was p50 0.161 / p90 0.487 m (Flight L) -- which is what refuted 2.5 m/s and therefore what
+# keeps the mission slower than the owner's 6 s.  So the hypothesis deserves the top end of the range, not
+# another 15 %:
+#
+#     WP_ACC         8.0 -> 9.5    m/s2   (the tilt is the real limiter; this is a hair above it)
+#     ATC_ANGLE_MAX  40  -> 45     deg    g*tan(45) = 9.81 m/s2, against 8.23 at 40
+#     WP_SPD         4.0 -> 8.0    m/s
+#     PSC_NE_JERK    100 -> 250    m/s3   9.5 m/s2 in 38 ms instead of 95
+#
+# WHAT IT CANNOT DO, and the flight will say so rather than this file: the shaper's limit is not the only lag in
+# the chain.  The reference itself passes traj_server (100 Hz) -> the contract shell -> the bridge (50 Hz, i.e.
+# 20 ms of sample-and-hold = 0.05 m at 2.5 m/s) -> MAVLink -> the FCU, so a part of the measured 40 ms per m/s
+# is transport and cannot be tuned here at all.
+#
+# FLOWN WITH: EXTRA_PARM=params/guided_limits_max.parm   (run-mission.sh appends it LAST to --defaults, and the
+# path is printed in the revision block, so a sortie's own log names the arm it flew).
+WP_ACC 9.5
+ATC_ANGLE_MAX 45.0
+WP_SPD 8.0
+PSC_NE_JERK 250.0
