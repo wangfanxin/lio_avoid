@@ -2028,3 +2028,24 @@ r10  the same, with CMD_ARGS="--climb-guard-m 2.0" -- INVALID, and why:
   the flag is `supervisor.py --climb-guard-m` (default 1.0, `supervisor.py:717`), documented there to catch a
   DATUM runaway (the 9.6 m incident), not a 1 m climb.  NEXT: find the launcher's supervisor-argv pipe and pass
   --climb-guard-m 2.0 there (an order of magnitude below the failure it guards), then fly the vertical-first tour.
+
+============================================================================
+MISSION C, ROUND 6 -- SUP_ARGS IS THE PIPE; THE CLIMB IS UNBOUNDED (2026-10-17)
+============================================================================
+The supervisor's argv is built at run-mission.sh:859 with ${SUP_ARGS:-}; CMD_ARGS goes to the PLANNER (r10's failure).
+
+r11  SUP_ARGS="--climb-guard-m 2.0", vertical-first tour, environment as fixed in round 4, EGO_RESOLUTION 0.05:
+       banner:  "abort if the TRUTH passes 4.00 m (mission altitude 2.00 + climb guard 2.00)"
+       banner:  "the climb guard is 2.00 m above 2.00 m"                     <- the pipe works
+       19.98 s  ABORT: truth 4.08 m for a commanded 2.00 m (guard 2.00 m)    <- the excess grew with the guard
+       C2 +0.472 m, 0.00 % inside a body
+
+  guard 1.00 -> truth 3.06-3.17 m      (six flights)
+  guard 2.00 -> truth 4.08 m           (r11)
+
+READ: the aircraft climbs to (mission + guard) and no further -- an unbounded climb during the take-off window, not a
+fixed overshoot.  Raising the guard cannot fix it and would only move the ceiling.
+
+NEXT (single measurement, no flight needed): the wire's z.  setpoints.csv carries cmd_z, fcu_z and lio_z at 50 Hz and
+the supervisor's phase log gives the trigger instant -- compare the two seconds after the trigger to separate "the plan
+asks for the climb" from "the FCU's take-off executor keeps climbing".
