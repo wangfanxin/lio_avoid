@@ -117,6 +117,18 @@ clean, typical miss 2-3 cm).  **The defaults therefore stay on the safety-first 
 +0.020 / +0.057 / -0.011 m over three bare sorties with 6-7 of 8 legs), because "no collision" is the hard clause, and
 the both-clauses arm is recorded with its exact knobs rather than promoted on one favourable draw.
 
+### 3.4 The objective as a success rate (round 19, eleven more sorties)
+
+    fast arm (corner 1.10, gain 2.0), six sorties:   clean 3 of 6, 8-of-8-legs 3 of 6, **BOTH 2 of 6** (BU2, BZ2)
+    default arm (corner 1.00, gain 1.8), five:       clean 4 of 5,  8-of-8-legs 0 of 5, **BOTH 0 of 5**
+
+The two arms sit on opposite sides of the same 2 cm.  Every ceiling above 2.5 m/s is refuted (2.75 and 3.0, each with
+corners 0.80/1.00/1.10 and gains 1.5/1.8/2.0), the approach way does not change the outcome when combined with the fast
+arm (CA +0.032 with 7 of 8 legs, CA2 -0.200), and the residual is **not** the estimator: across all 90 sorties
+A1 <= 12 mm gives C2 p50 -0.042 m against -0.235 m for A1 > 12 mm, but inside the corridor era r = -0.127 and the worst
+fast-arm sortie has A1 9.91 mm with C2 -0.155 m.  What is left is the aircraft's cross-track excursion beside the pillar
+rows (0.14-0.36 m against the field's 0.200 m), which no shell knob has moved.
+
 Two shell fixes from the same round are on by default and cost nothing: **the first leg now has a previous point** (so
 the corridor and the corner governor act on it) and **`--approach-via`** exists for a grid-aligned first leg.  The
 reason is geometric and measured (`_stage/where-min.py`): the mission's first leg is the diagonal from the pad (0,0) to

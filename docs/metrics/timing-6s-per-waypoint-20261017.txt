@@ -1466,3 +1466,42 @@ its 2-3 cm rather than rediscovering it.
 A HARNESS BUG, FIXED: `--approach-via ""` (knob unset) lost its empty value in the word-split argv and the shell died at
 start-up with "argument --approach-via: expected one argument" -- three sorties lost (BP2, BQ/BQ2, BT/BT2) before the
 log was read instead of theorised about.  `run-mission.sh:301-303` now builds the argument only when it is set.
+
+============================================================================
+ROUND 19 -- THE TWO ARMS AS SUCCESS RATES, AND A1-vs-C2 (2026-10-17)
+============================================================================
+Eleven sorties this round.  Both criteria = every leg <= 6 s AND 0.00 % inside a body with a positive minimum.
+
+THE FAST ARM (corridor 0.01, corner 0.50 @ 1.10, ceiling 2.5, gain 2.0, emergency 0.0) -- six sorties:
+
+    flight   C2 minimum   % inside   legs under 6 s   both criteria
+    BU       -0.155 m     0.48 %     8 of 8           no
+    BU2      **+0.073 m** 0.00 %     **8 of 8**       **YES**
+    BV       -0.027 m     0.09 %     7 of 8           no
+    BV2      -0.002 m     0.06 %     7 of 8           no
+    BZ       **+0.066 m** 0.00 %     7 of 8           no (leg 3 6.45 s)
+    BZ2      **+0.006 m** 0.00 %     **8 of 8**       **YES**
+    -> clean 3 of 6, 8-of-8-legs 3 of 6, BOTH 2 of 6.
+
+THE DEFAULT ARM (corner 1.00, gain 1.8) -- five sorties:
+
+    BI  +0.020 (7/8)   BI2 +0.057 (7/8)   BO -0.011 (6/8)   BY +0.040 (7/8)   BY2 +0.028 (6/7)
+    -> clean 4 of 5, 8-of-8-legs 0 of 5.
+
+REFUTED THIS ROUND (all: corridor 0.01, emergency 0.0, gain 2.0):
+    ceiling 3.0 + corner 0.80   BW **-0.277**  BW2 **-0.033**
+    ceiling 2.75 + corner 1.10  BX **-0.144**  BX2 **-0.065**
+    fast arm + approach way     CA **+0.032** (7/8)   CA2 **-0.200** (6/8)
+
+`_stage/a1-vs-c2.py` -- A1 (LIO vs truth) beside C2, all 90 sorties with both:
+
+    Pearson r(A1, C2) = -0.047 overall;  A1 <= 12 mm: 65 sorties, C2 p50 **-0.042 m**
+                                         A1 >  12 mm: 25 sorties, C2 p50 **-0.235 m**
+    corridor-era subset (48 sorties): r = -0.127, and BU has A1 9.91 mm with C2 -0.155 m
+
+so the historic catastrophes were estimator events and the REMAINING misses are not: they are the aircraft's
+cross-track excursion (0.14-0.36 m against the field's 0.200 m), with the estimator, the map, the plan and the shell's
+own timing all measured clean.
+
+THE DEFAULTS stay on the safety-first arm (clean 4 of 5).  The fast arm is documented, with both knobs, as the one that
+has met the objective -- 2 of 6 sorties.
