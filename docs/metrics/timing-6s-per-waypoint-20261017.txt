@@ -1560,3 +1560,56 @@ THE OBJECTIVE AFTER ROUNDS 16-20: fast arm (corner 1.10 + gain 2.0) meets both c
 (BU2 +0.073 m / 8 of 8 legs, BZ2 +0.006 m / 8 of 8 legs); the safety-first default (corner 1.00 + gain 1.8) is clean in
 **4 of 5** with 6-7 of 8 legs.  The shell has no lever left that has not been flown; the residual is the aircraft's
 0.14-0.36 m cross-track excursion against a field that leaves 0.200 m.
+
+============================================================================
+ROUND 21 -- THE APPROACH WAY AS DEFAULT: FLOWN, MEASURED, REVERTED (2026-10-17)
+============================================================================
+The change: `EGO_APPROACH_VIA=0,-4` (pad -> (0,-4) -> the rectangle), on the fast arm (corner 1.10, gain 2.0), because
+round 20 found the pad-to-corner diagonal tangent to the (-1.5,-1.5) pillar and Flight CD2's only contact on it.
+
+SIX SORTIES WITH IT:
+    CA   +0.032 m   7 of 8 legs
+    CA2  -0.200 m   6 of 8
+    CE   -0.038 m   6 of 8    minimum at (-2.515,-4.239)
+    CE2  -0.028 m   **8 of 8**  minimum at (-2.467,-4.230)
+    CE3  -0.277 m   **8 of 8**  minimum at (-2.517,-4.484)
+    CE4  -0.180 m   6 of 8    minimum at (-1.478,-3.618)
+    -> clean 1 of 6, 8-of-8 legs 3 of 6, BOTH 0 of 6.
+
+SIX SORTIES WITHOUT IT (rounds 18-19, same arm):
+    BU -0.155 (8/8)   BU2 **+0.073 (8/8)**   BV -0.027 (7/8)   BV2 -0.002 (7/8)   BZ **+0.066** (7/8)   BZ2 **+0.006 (8/8)**
+    -> clean 3 of 6, 8-of-8 legs 3 of 6, BOTH 2 of 6.
+
+WHY IT IS WORSE, from the minima: with the approach leg every CE sortie's whole-flight minimum sits on the SOUTH EDGE in
+the half-metre before the SW corner -- the corner-exit excursion moved to the first corner the mission now has, and the
+mission paid one extra leg for it.  The diagonal's tangency is real, but removing it does not remove the contact.
+
+DECISION: `EGO_APPROACH_VIA` stays EMPTY by default; the knob, its purpose and this six-sortie comparison are documented
+beside it in `run-mission.sh`.
+
+STATE: the arm of record is the safety-first default (clean 4 of 5, 6-7 of 8 legs); the both-criteria arm is corner 1.10 +
+gain 2.0 (both clauses in 2 of 6).  The first leg's geometric tangency remains an OPEN defect of the mission itself.
+
+============================================================================
+ROUND 21b -- CLEANUP: THE REFUTED ADDITIONS DELETED (2026-10-17)
+============================================================================
+Removed from `src/planner/ego_contract_shim.py` and `src/tools/run-mission.sh`:
+
+    --xtrack-gain / --xtrack-max / --xtrack-tau   (six sorties: CB -0.276, CB2 -0.031, CC -0.031, CC2 -0.046,
+                                                   CD -0.030, CD2 -0.041 -- no clean run, longer legs)
+    --approach-via / EGO_APPROACH_VIA             (six fast-arm sorties with it: clean 1 of 6, both clauses 0 of 6,
+                                                   against clean 3 of 6 / both 2 of 6 without)
+    --corridor-end-m / --corridor-open-m          (refuted in Flight AL; end = open = 0 in every flown arm, i.e. dead)
+
+The shim's remaining argument surface, all of it "limits and continuity on the reference":
+    --corridor-m  --corner-m  --corner-mps  --ref-clamp-m  --ref-slew-mps  --ref-acc-max
+    --ref-z-clamp-m  --ref-z-floor-m   (+ the tour: --arrive-m/--arrive-z-m/--settle-mps/--hold-s, the leg watchdog,
+    --world/--calib-file/--odom-topic/--trace-csv, and --tour-source/--wp-index-topic)
+
+NO CONTROLLER, before or after: the only closed loops are ArduPilot's, and `PSC_NE_POS_P` is one of its parameters
+(1.8 in `params/guided_limits_fast.parm`, 2.0 in `params/guided_limits_gain20.parm` -- the both-criteria arm).
+
+VERIFIED AFTER THE DELETION: shim selftest PASSED (its corridor cases now assert the wall at the leg's END, where the
+removed taper used to open it); `bash -n run-mission.sh` clean; the harness's Route-B argv is
+`--world ... --arrive-m ... --corridor-m ... --ref-clamp-m ...` with no removed flag; `frozen-check` 53 of 53;
+`docs-budget` 5 of 5; `check-doc-citations` 147 of 147.

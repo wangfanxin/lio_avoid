@@ -129,57 +129,23 @@ A1 <= 12 mm gives C2 p50 -0.042 m against -0.235 m for A1 > 12 mm, but inside th
 fast-arm sortie has A1 9.91 mm with C2 -0.155 m.  What is left is the aircraft's cross-track excursion beside the pillar
 rows (0.14-0.36 m against the field's 0.200 m), which no shell knob has moved.
 
-### 3.5 The last shell-side idea, and why it does not work (round 20)
+### 3.5 The shell's argument surface, after the refuted ideas were removed
 
-`--xtrack-gain k` shifts the forwarded reference by `-k x e` (`e` = the aircraft's own offset from the leg, capped at
-`--xtrack-max` 0.10 m) to multiply the position loop's cross-track stiffness by (1 + k) without touching the flight
-controller.  Selftested on all three properties that matter, and **refuted in four sorties at k = 0.5**: default arm
--0.276 m (5 of 8 legs) and -0.031 m (6 of 7), fast arm -0.031 m (6 of 8) and -0.046 m (6 of 8) -- no clean sortie in
-four, with LONGER legs than the same arms without it.  The reason is mechanical: the bias is computed from the FCU's own
-odometry sample by sample, so it re-injects the estimator's noise into the reference, and a jittering target is harder
-for the position loop than a still one.  `EGO_XTRACK_GAIN` stays 0.0.
+Every addition that the measurements refuted has been **deleted**, not merely defaulted off, so the shell carries only
+what is flown (`src/planner/ego_contract_shim.py`, `src/tools/run-mission.sh`):
 
-**So every shell-side lever now has an evidence trail behind it**: corridor (adopted), emergency window (adopted),
-position gain 1.8/2.0 (adopted), corner speed and radius (1.10 / 0.50), plan ceiling (2.5), arrival and re-plan meters
-(0.30 / 1.0), the approach way (available, off), the cross-track feedback (off, refuted).  The objective is met by the
-fast arm in 2 of 6 sorties and the default is clean in 4 of 5; the remaining 2-3 cm is the aircraft's cross-track
-excursion, and nothing left in this shell moves it.
+| removed | evidence that killed it |
+|---|---|
+| `--xtrack-gain` / `--xtrack-max` / `--xtrack-tau` (rounds 20-20b) | six sorties at gain 0.5, raw and filtered: no clean run, longer legs; the bias re-injects odometry noise into the reference |
+| `--approach-via` + `EGO_APPROACH_VIA` (rounds 18/21) | six sorties of the fast arm with it: clean 1 of 6, both clauses 0 of 6, against 3 of 6 and 2 of 6 without -- the diagonal's tangency is real but the replacement leg carries the same corner defect |
+| `--corridor-end-m` / `--corridor-open-m` (round 17) | Flight AL: the reference used 0.454 m of the opening 0.9 m past a corner and the aircraft followed it in; the flown arm was always end = 0, open = 0, so the taper was dead code |
 
-Two shell fixes from the same round are on by default and cost nothing: **the first leg now has a previous point** (so
-the corridor and the corner governor act on it) and **`--approach-via`** exists for a grid-aligned first leg.  The
-reason is geometric and measured (`_stage/where-min.py`): the mission's first leg is the diagonal from the pad (0,0) to
-the first corner (-3,-4), and that line passes **0.300 m from the (-1.5,-1.5) pillar's axis** -- exactly its radius,
-i.e. tangent to its surface whatever the aircraft does.  A bare run's own console line now reads
-`shim: ROUTE CORRIDOR 0.010 m ... does NOT open at the ends`, `CORNER GOVERNOR 1.000 m/s within 0.500 m`, and
-`ACCELERATION FIELD clamped to 2.000 m/s2`.
-
-**Both criteria have been met, in different sorties, and the gap between them is one knob**: the arm of record
-(+0.039 / +0.048 / +0.056 m, 0 of ~2000 samples inside, 6-7 of 8 legs) and Flight AU (**8 of 8 legs at 3.55-5.30 s**,
-minimum -0.007 m) differ only in `EGO_MAX_VEL`/`ACC` (2.5 vs 3.0).  The default is the 2.5 side, because "0 samples
-inside a body" is this table's hard gate.  **What is NOT claimed**: that 0.00 % is unconditional -- one slow/jerky plan
-(AZ: |v_ref| p50 0.92 m/s, route 53.1 s) still produced -0.238 m with the reference on the line the whole time, and at
-2.75 the same arm reads -0.042 and -0.273 m (BG/BG2).  The planner's occasional slow run is now the single biggest
-risk, and it is characterised: route > 41 s, B1 N > 8.5, A1 > 11 mm.
-
-### 3.2 What round 16 measured on the aircraft side
-
-`_stage/corner-exit-audit2.py` (the offset from the CURRENT leg, projected ALONG it, so the corner neighbourhood --
-where the two legs' frames are meaningless -- is excluded) gives the number that now bounds this mission:
-
-| arm | interior cross-track p50 | max | C2 minimum |
-|---|---|---|---|
-| corner 0.50 @ 1.00, ceiling 2.5 (AT) | 0.132 m | 0.201 m | **+0.029 m** |
-| corner 0.50 @ 1.00, ceiling 3.0 (AU) | 0.164 m | 0.207 m | -0.007 m |
-| corner 0.50 @ 0.70, ceiling 3.0 (BC/BC2) | 0.199 m | 0.479 m | -0.079 / -0.205 m |
-| corner 1.00 @ 0.70, ceiling 3.0 (BD) | 0.128 m | 0.316 m | -0.102 m |
-
-**The aircraft's cross-track error is 0.12-0.20 m at p50 against a 0.200 m total budget**, and its tail on one bad leg
-is 0.3-0.65 m.  The corner knobs move that typical value by +-0.04 m in both directions and leave the tail alone, so
-they are refuted as the safety lever; the plan's ceiling is the only knob that has ever moved the outcome, and it moves
-the two criteria in opposite directions.  Two more refutations this round, each with its evidence in STATUS 201-203:
-`EGO_ARRIVE_M` 0.150 (the tour never advanced -- 20 s plan-silence on one run, an EKF-failsafe LAND on its retry) and
-`RECT_HOLD_S` 0.15 (clean on one run, -0.290 m on its repeat).  Also recorded, unexplained: `ego_planner_node` SIGSEGV
-(exit -11) one line after `Triggered! [TRIG]: from INIT to REPLAN_TRAJ` in Flight BD2 -- 1 in 24 corridor sorties.
+What the shell has left is one kind of thing: **limits and continuity on the reference** (`--corridor-m`,
+`--corner-m`/`--corner-mps`, `--ref-clamp-m`, `--ref-slew-mps`, `--ref-acc-max`, `--ref-z-clamp-m`,
+`--ref-z-floor-m`, `--arrive-m`/`--arrive-z-m`/`--settle-mps`/`--hold-s`, the leg watchdog, and the tour's
+`trajectory_id`/`trajectory_flag`).  There is no controller in it: the only closed loops are ArduPilot's own, and
+`PSC_NE_POS_P` 1.8 (or 2.0 in the both-criteria arm file) is one of ITS parameters.  The corridor's story and its
+numbers are in §3.1-3.4; the refutation of every other idea is row by row in `STATUS.md`.
 
 ## 4. The pipeline
 

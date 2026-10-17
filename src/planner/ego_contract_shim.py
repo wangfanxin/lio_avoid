@@ -70,8 +70,7 @@ class TourSequencer:
                  log=None, ego_driven=False, ref_clamp_m=0.0, leg_timeout_s=0.0, leg_abort_s=0.0,
                  arrive_z_m=1.00, start_alt_m=0.0, ref_z_clamp_m=0.0, ref_slew_mps=0.0,
                  corner_m=0.0, corner_mps=1.0, ref_z_floor_m=0.0, ref_acc_max=0.0,
-                 corridor_m=0.0, corridor_end_m=0.0, corridor_open_m=2.0,
-                 xtrack_gain=0.0, xtrack_max=0.10, xtrack_tau=0.0):
+                 corridor_m=0.0):
         self.targets = np.asarray(targets_l, dtype=float).reshape(-1, 3)
         self.arrive_m = float(arrive_m)
         self.hold_s = float(hold_s)
@@ -178,31 +177,9 @@ class TourSequencer:
         #: y = 2.5 is 0.13 m inside the (2.5,2.5) pillar.  So the reference is held inside this half-width of the
         #: CURRENT leg's centreline, which converts the error budget from "lateral snake" (which spends clearance)
         #: into "along-track lag" (which spends none).
-        self.corridor_m = float(corridor_m)        #: how far from the leg's ENDS the corridor opens back up (metres).  The corners are the safe places --
-        #: +0.407 m against the edges' +0.200 -- so the turn is left free rather than clamped into a 90 degree
-        #: kink; the clamp is full strength in the interior and ramps to `corridor_m + corridor_open_m` at the ends.
-        self.corridor_end_m = float(corridor_end_m)
-        self.corridor_open_m = float(corridor_open_m)
+        self.corridor_m = float(corridor_m)
         self.n_corridor = 0
         self.n_corridor_v = 0
-        #: THE CROSS-TRACK FEEDBACK (see `rewrite`; 0 = off = every sortie up to round 19).  The corridor holds the
-        #: REFERENCE on the line, but the AIRCRAFT still leaves it by 0.14-0.36 m against the 0.200 m this field
-        #: leaves (`_stage/corner-exit-audit2.py`), and that excursion is what the last 2-3 cm are made of.  This
-        #: shifts the forwarded reference AGAINST the aircraft's own measured offset -- a proportional term on the
-        #: reference, i.e. the position loop's cross-track stiffness multiplied by (1 + gain) -- capped so the
-        #: reference itself can never leave the corridor's safety band.
-        self.xtrack_gain = float(xtrack_gain)
-        self.xtrack_max = float(xtrack_max)
-        #: THE OFFSET'S OWN TIME CONSTANT (seconds; 0 = use the raw measurement).  MEASURED Flight CB/CC (round 20):
-        #: the raw signal re-injects the estimator's sample-to-sample noise into the reference, which is a harder target
-        #: for the position loop than a still one -- four sorties at gain 0.5 read -0.276 / -0.031 / -0.031 / -0.046 m
-        #: with longer legs than the same arms without the bias.  A first-order filter on `e` is the obvious repair and
-        #: is what `xtrack_tau` adds.
-        self.xtrack_tau = float(xtrack_tau)
-        self.e_filt = None
-        self.t_last_xtrack = None
-        self.n_xtrack = 0
-        self.xtrack_shift = 0.0
     # ---- inputs ---------------------------------------------------------------------------------------
     def on_odom(self, p_l, v_l=None, now=0.0):
         self.p = np.asarray(p_l, dtype=float).reshape(3)
@@ -494,13 +471,6 @@ class TourSequencer:
                 along = float(np.dot(q, u))
                 across = float(np.dot(q, n))
                 allow = self.corridor_m
-                if self.corridor_end_m > 1e-6:
-                    # ramp open at BOTH ends: full strength in the interior, `corridor_open_m` of freedom at the
-                    # corner, so the 90 degree turn is not clamped into a kink (the corners are where the field
-                    # leaves +0.407 m instead of the edges' +0.200, so this is also where the room is).
-                    w = min(1.0, max(0.0, min(along / self.corridor_end_m,
-                                                (seg_len - along) / self.corridor_end_m)))
-                    allow += (1.0 - w) * self.corridor_open_m
                 if 0.0 <= along <= seg_len and abs(across) > allow:
                     sign = 1.0 if across >= 0.0 else -1.0
                     q = u * along + n * (sign * allow)
@@ -517,42 +487,6 @@ class TourSequencer:
                     if abs(a_across) > 1e-9:
                         a_xy_acc = a_xy_acc - a_across * n
                         msg.acceleration.x, msg.acceleration.y = float(a_xy_acc[0]), float(a_xy_acc[1])
-        # ---- THE CROSS-TRACK FEEDBACK, added 2026-10-17 (round 20): push the reference AGAINST the aircraft's offset ----
-        # WHY, and why it is not the same thing as the corridor: the corridor removes the PLAN's own lateral error
-        # (Flight AK's reference was inside a pillar 10.18 % of the time; every corridor sortie reads 0.00 %), but the
-        # AIRCRAFT still leaves the line by 0.14-0.36 m against the 0.200 m this field leaves -- `corner-exit-audit2.py`
-        # measures interior |across| p50 0.092-0.199 m, and the misses of the fast arm are 2-3 cm of its tail.  Here the
-        # aircraft's own offset `e` is measured against the CURRENT leg and the forwarded point is shifted by `-k*e`
-        # (capped at `xtrack_max`), which multiplies the position loop's cross-track stiffness by (1 + k) WITHOUT
-        # touching the flight controller.  The cap is what keeps the reference inside the corridor's safety band: the
-        # reference may lead the aircraft back, never into a pillar row.
-        if self.xtrack_gain > 0.0 and self.p is not None and self.prev_target is not None:
-            a_xy = np.asarray(self.prev_target[:2], dtype=float)
-            b_xy = np.asarray(self.target[:2], dtype=float)
-            seg = b_xy - a_xy
-            seg_len = float(np.linalg.norm(seg))
-            if seg_len > 1e-6:
-                u = seg / seg_len
-                n = np.array([-u[1], u[0]])
-                q = np.asarray(self.p[:2], dtype=float) - a_xy
-                along = float(np.dot(q, u))
-                across = float(np.dot(q, n))
-                if 0.0 <= along <= seg_len and abs(across) > 1e-3:
-                    # THE FILTER (optional): a first-order lag on the measured offset, because the raw signal carries
-                    # the estimator's sample-to-sample noise straight into the reference (Flight CB/CC, round 20).
-                    e = across
-                    if self.xtrack_tau > 0.0:
-                        dt = now - self.t_last_xtrack if self.t_last_xtrack is not None else 1e-3
-                        dt = min(max(dt, 1e-3), 0.5)
-                        alpha = dt / (self.xtrack_tau + dt)
-                        self.e_filt = e if self.e_filt is None else (1.0 - alpha) * self.e_filt + alpha * e
-                        e = self.e_filt
-                    self.t_last_xtrack = now
-                    bias = float(np.clip(-self.xtrack_gain * e, -self.xtrack_max, self.xtrack_max))
-                    msg.position.x = float(msg.position.x) + bias * float(n[0])
-                    msg.position.y = float(msg.position.y) + bias * float(n[1])
-                    self.xtrack_shift = bias
-                    self.n_xtrack += 1
         # ---- THE REFERENCE'S OWN SPEED LIMIT, last, so it sees exactly what would have gone out ----
         if self.ref_slew_mps > 0.0:
             p = np.array([float(msg.position.x), float(msg.position.y), float(msg.position.z)])
@@ -1023,7 +957,7 @@ def _selftest() -> int:
     # surface, the corners are +0.407 m, and the plan snakes about the line by +-0.4-0.5 m.  The clamp is the thing
     # that spends the 0.200 m on along-track lag instead of on the snake.
     rc = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None, arrive_m=0.35, hold_s=0.0,
-                       settle_mps=0.0, corridor_m=0.15, corridor_end_m=1.20, corridor_open_m=2.0)
+                       settle_mps=0.0, corridor_m=0.15)
     rc.on_odom([0.05, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0)             # arrive at waypoint 1 (0,0,2)
     rc.on_odom([0.05, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0 + 0.1)       # hold 0 -> advance: the leg is now y = 0
     advanced = (rc.i_goal == 1 and rc.prev_target is not None)
@@ -1055,16 +989,19 @@ def _selftest() -> int:
     if abs(float(mr2.position.y) + 0.150) > 1e-9:
         bad.append("the route corridor is one-sided (y = -0.500 went out at %.3f) -- the centrelines are the "
                    "maximum-clearance paths, so both sides are equally expensive" % float(mr2.position.y))
-    # ... AND IT MUST OPEN AT THE CORNERS, which is where the field leaves twice the room (0.407 m against 0.200):
+    # ... AND IT HOLDS AT FULL STRENGTH RIGHT UP TO THE LEG'S END: the corridor has ONE half-width now.  The end taper
+    # that used to open it at the corners (`--corridor-end-m`/`--corridor-open-m`) is GONE, because Flight AL measured
+    # the opening to be the defect -- the reference used 0.454 m of it 0.9 m past a corner and the aircraft followed it
+    # in -- and the flown arm has always been end = 0, open = 0.
     mr3 = M()
     mr3.position.x, mr3.position.y, mr3.position.z = 4.60, 0.50, 2.0    # 0.40 m from the leg's END
     mr3.velocity.x = 1.00
     rc.rewrite(mr3, now=t0 + 0.4)
     print("   route corridor: 0.40 m from the corner the same 0.500 m offset was forwarded at y = %.3f "
           "(%d clamp(s) total)" % (float(mr3.position.y), rc.n_corridor))
-    if abs(float(mr3.position.y) - 0.50) > 1e-9:
-        bad.append("the route corridor stayed at full strength at the leg's END (y = 0.500 -> %.3f) -- the turn "
-                   "would be clamped into a 90 degree kink at the one place with room to take it"
+    if abs(float(mr3.position.y) - 0.150) > 1e-9:
+        bad.append("the route corridor is not at full strength near the leg's END (y = 0.500 -> %.3f, expected the "
+                   "0.150 wall): the taper that opened it was refuted in Flight AL and must not come back"
                    % float(mr3.position.y))
     rc0 = TourSequencer([[0.0, 0.0, 2.0], [5.0, 0.0, 2.0]], log=lambda s: None, arrive_m=0.35, hold_s=0.0,
                         settle_mps=0.0)                                  # the knob at 0 = the flown behaviour
@@ -1099,40 +1036,6 @@ def _selftest() -> int:
     elif abs(float(mf0.position.x) - (0.02 + 0.15)) > 0.02 or f0.n_corridor != 1:
         bad.append("the corridor did not act on the FIRST leg (x = %.3f against the wall at 0.020+0.150, %d clamp(s))"
                    % (float(mf0.position.x), f0.n_corridor))
-
-    # ---- THE CROSS-TRACK FEEDBACK: the reference must move AGAINST the aircraft's own offset, and be capped ----
-    xg = TourSequencer([[0.0, -5.0, 2.0], [-5.0, -5.0, 2.0]], log=lambda s: None, settle_mps=0.0,
-                       xtrack_gain=0.5, xtrack_max=0.10)
-    xg.on_odom([0.0, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0)       # the pad: this is also the first leg's start
-    xg.goal_to_send(now=t0 + 0.05)
-    xg.on_odom([0.20, -2.0, 2.0], [0.0, 0.0, 0.0], now=t0 + 0.1)   # AIRCRAFT 0.20 m off a leg that runs along -y
-    mx = M()
-    mx.position.x, mx.position.y, mx.position.z = 0.0, -2.0, 2.0   # the reference itself is ON the line
-    xg.rewrite(mx, now=t0 + 0.2)
-    print("   cross-track feedback 0.5 (cap 0.10): the aircraft 0.200 m off the line moved the reference to "
-          "x = %.3f m (%d shift(s))" % (float(mx.position.x), xg.n_xtrack))
-    if abs(float(mx.position.x) + 0.10) > 1e-9 or xg.n_xtrack != 1:
-        bad.append("the cross-track feedback did not move the reference 0.5 x 0.200 = 0.100 m against the aircraft's "
-                   "offset (got %.3f m, %d shift(s))" % (float(mx.position.x), xg.n_xtrack))
-    mx2 = M()
-    mx2.position.x, mx2.position.y, mx2.position.z = 0.0, -2.0, 2.0
-    xg.on_odom([0.50, -2.0, 2.0], [0.0, 0.0, 0.0], now=t0 + 0.3)   # 0.50 m off: the shift must CAP at 0.10
-    xg.rewrite(mx2, now=t0 + 0.4)
-    print("   cross-track feedback: with the aircraft 0.500 m off, the same reference moved to x = %.3f m (cap %.2f)"
-          % (float(mx2.position.x), -0.10))
-    if abs(float(mx2.position.x) + 0.10) > 1e-9:
-        bad.append("the cross-track feedback ran past its cap (0.500 m offset -> %.3f m, expected -0.100)"
-                   % float(mx2.position.x))
-    xg0 = TourSequencer([[0.0, -5.0, 2.0], [-5.0, -5.0, 2.0]], log=lambda s: None, settle_mps=0.0)
-    xg0.on_odom([0.0, 0.0, 2.0], [0.0, 0.0, 0.0], now=t0)
-    xg0.goal_to_send(now=t0 + 0.05)
-    xg0.on_odom([0.20, -2.0, 2.0], [0.0, 0.0, 0.0], now=t0 + 0.1)
-    mx3 = M()
-    mx3.position.x, mx3.position.y, mx3.position.z = 0.0, -2.0, 2.0
-    xg0.rewrite(mx3, now=t0 + 0.2)
-    if abs(float(mx3.position.x)) > 1e-12 or xg0.n_xtrack:
-        bad.append("with the gain at 0 the reference was moved (x = %.3f, %d shift(s)) -- the flown behaviour must "
-                   "stay byte-identical when the knob is 0" % (float(mx3.position.x), xg0.n_xtrack))
 
     if bad:
         print("\nCONTRACT SHIM SELFTEST FAILED (%d problem(s)):" % len(bad))
@@ -1216,26 +1119,6 @@ def _parser() -> "argparse.ArgumentParser":
                          "`--wp-index-topic` drives the id and the COMPLETED transition, and no goal is sent.")
     ap.add_argument("--wp-index-topic", default="/wp_index",
                     help="`std_msgs/Int32`, published by PATCH 0011: the current waypoint, -1 when finished")
-    ap.add_argument("--approach-via", default="",
-                    help="an extra FIRST target, \"x,y\" in the WORLD frame, inserted before the world's own tour.  "
-                         "MEASURED reason (round 18): the mission's first leg is the diagonal from the pad (0,0) to "
-                         "the first corner (-3,-4), and that line passes 0.300 m from the (-1.5,-1.5) pillar's axis "
-                         "-- tangentially through its surface by geometry, which is where several sorties' whole-"
-                         "flight minimum sits.  A grid-aligned approach keeps every leg at the field's standard "
-                         "+0.200 m so the corridor can hold the entire flight")
-    ap.add_argument("--xtrack-gain", type=float, default=0.0,
-                    help="THE CROSS-TRACK FEEDBACK (0 = off): the forwarded reference is shifted by -gain x the "
-                         "AIRCRAFT's own offset from the current leg's centreline, capped by --xtrack-max.  MEASURED "
-                         "reason: the corridor holds the REFERENCE on the line (0.00 %% inside a pillar since Flight "
-                         "AN), but the aircraft still leaves it by 0.14-0.36 m against the 0.200 m this field leaves, "
-                         "and that tail is what the fast arm's 2-3 cm misses are made of")
-    ap.add_argument("--xtrack-max", type=float, default=0.10,
-                    help="the cap on that shift (metres).  It is a SAFETY parameter: the reference may lead the "
-                         "aircraft back toward the line, but never far enough to enter a pillar row itself")
-    ap.add_argument("--xtrack-tau", type=float, default=0.0,
-                    help="the cross-track offset's own TIME CONSTANT (seconds; 0 = raw).  Flights CB/CC measured that "
-                         "the raw bias re-injects the odometry's noise into the reference and makes the legs longer; "
-                         "a first-order lag on the offset is the repair, and this is it")
     ap.add_argument("--corridor-m", type=float, default=0.0,
                     help="THE ROUTE CORRIDOR (0 = off): the forwarded horizontal reference is held within this "
                          "distance of the CURRENT leg's centreline, and the across-the-line component of the "
@@ -1243,18 +1126,6 @@ def _parser() -> "argparse.ArgumentParser":
                          "(`_stage/leg-clearance.py`): all four route edges are exactly +0.200 m from the nearest "
                          "pillar surface -- they are the field's maximum-clearance paths -- while the plan snakes "
                          "about them by +-0.4-0.5 m, which is the entire collision deficit")
-    ap.add_argument("--corridor-end-m", type=float, default=0.0,
-                    help="how far from each leg's ends the corridor opens back up (metres; needs --corridor-m).  "
-                         "The corners are the safe places -- +0.407 m of clearance against the edges' +0.200 -- so "
-                         "the turn is left free instead of being clamped into a 90 degree kink")
-    ap.add_argument("--corridor-open-m", type=float, default=0.0,
-                    help="how much freedom (metres) the corridor gives at the very ends of a leg; the allowance "
-                         "ramps from --corridor-m in the interior to corridor-m + this at the ends.  DEFAULT 0.0 "
-                         "because the measurement said so: Flight AL flew 2.0 m of opening, the reference used 0.454 "
-                         "m of it 0.9 m past a corner, the aircraft followed it in, and when the clamp withdrew the "
-                         "lead the aircraft was still 0.47 m inside the line -- at (-1.51,-3.53), 0.03 m from the "
-                         "(-1.5,-3.5) pillar's axis.  The pillar rows are 0.5 m from EVERY edge of this route, "
-                         "corners included, so there is nowhere a lateral lead is affordable here")
     ap.add_argument("--ref-clamp-m", type=float, default=0.0,
                     help="CONTINUITY AT THE SOURCE: never forward a reference point more than this far from the "
                          "vehicle (0 = off, the behaviour every sortie before 2026-10-16 flew).  A position "
@@ -1308,23 +1179,6 @@ def main() -> int:
     d = json.load(open(args.calib_file))
     calib = frames.Calib(R_WL=np.array(d["R_WL"], dtype=float), t_WL=np.array(d["t_WL"], dtype=float))
     targets_l = _targets_from_world(args.world, calib, args.z)
-    # THE APPROACH WAY (round 18, `--approach-via`): an extra first target in WORLD coordinates, inserted before the
-    # world's own tour.  WHY IT EXISTS, measured: the mission's first leg is the DIAGONAL from the pad (0,0) to the
-    # first corner (-3,-4), and that line passes **0.300 m from the (-1.5,-1.5) pillar's axis** -- tangentially through
-    # its surface, by geometry, whatever the aircraft does (`_stage/where-min.py` finds several sorties' whole-flight
-    # minimum at (-1.27,-1.67), which is on that diagonal).  A grid-aligned approach -- pad -> (0,-4) along x = 0, then
-    # the rectangle's south edge -- keeps every leg at the field's standard +0.200 m, so the corridor can hold the whole
-    # flight instead of all but its first leg.
-    if args.approach_via:
-        try:
-            ax, ay = [float(v) for v in args.approach_via.replace(" ", "").split(",")[:2]]
-        except Exception:                                                        # noqa: BLE001
-            raise SystemExit("--approach-via wants \"x,y\" in the WORLD frame, got %r" % args.approach_via)
-        tw = np.array([[ax, ay, float(targets_l[0][2])]])
-        t_l = (calib.R_WL.T @ (tw - calib.t_WL).T).T
-        targets_l = np.vstack([t_l, targets_l])
-        print("shim: APPROACH WAY %.2f,%.2f (W) inserted before the tour -> %d waypoint(s) in L"
-              % (ax, ay, len(targets_l)))
     try:
         from rclpy.signals import SignalHandlerOptions
         rclpy.init(args=[], signal_handler_options=SignalHandlerOptions.NO)
@@ -1347,10 +1201,7 @@ def main() -> int:
                         ref_z_clamp_m=args.ref_z_clamp_m, ref_slew_mps=args.ref_slew_mps,
                         corner_m=args.corner_m, corner_mps=args.corner_mps,
                         ref_z_floor_m=args.ref_z_floor_m, ref_acc_max=args.ref_acc_max,
-                        corridor_m=args.corridor_m, corridor_end_m=args.corridor_end_m,
-                        corridor_open_m=args.corridor_open_m,
-                        xtrack_gain=args.xtrack_gain, xtrack_max=args.xtrack_max,
-                        xtrack_tau=args.xtrack_tau)
+                        corridor_m=args.corridor_m)
     print("shim: %d waypoint(s) in L from %s" % (len(targets_l), args.world))
     for i, t in enumerate(targets_l):
         print("shim: waypoint %d -> %s (L)" % (i + 1, np.round(t, 3)))
@@ -1365,20 +1216,11 @@ def main() -> int:
     if args.corridor_m > 0.0:
         print("shim: ROUTE CORRIDOR %.3f m -- the forwarded reference is held on the current leg's centreline"
               % args.corridor_m, flush=True)
-        if args.corridor_open_m > 0.0:
-            print("shim:   ... opening by %.3f m over the last %.3f m of each leg"
-                  % (args.corridor_open_m, args.corridor_end_m), flush=True)
-        else:
-            print("shim:   ... and it does NOT open at the ends: the corners are as tight as the straights",
-                  flush=True)
     else:
         print("shim: ROUTE CORRIDOR OFF -- the reference follows the plan's own lateral placement", flush=True)
     if args.corner_m > 0.0:
         print("shim: CORNER GOVERNOR %.3f m/s within %.3f m of a corner (the velocity field is capped with it)"
               % (args.corner_mps, args.corner_m), flush=True)
-    if args.xtrack_gain > 0.0:
-        print("shim: CROSS-TRACK FEEDBACK gain %.2f, cap %.3f m, offset filter tau %.2f s -- the reference is shifted "
-              "against the aircraft's own offset" % (args.xtrack_gain, args.xtrack_max, args.xtrack_tau), flush=True)
     if args.ref_acc_max > 0.0:
         print("shim: ACCELERATION FIELD clamped to %.3f m/s2" % args.ref_acc_max, flush=True)
 

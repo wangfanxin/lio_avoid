@@ -554,10 +554,10 @@ leaves the line for a real obstacle -- has to be handled rather than ignored.
 
 ### IMPLEMENTED 2026-10-17: THE CORRIDOR CLAMP, AND WHAT IT MEASURED
 
-`ego_contract_shim.py --corridor-m R` (with `--corridor-end-m`, `--corridor-open-m`, and
-`EGO_CORRIDOR_M/_END_M/_OPEN_M` in `run-mission.sh`, default 0.0 = OFF = byte-identical to every earlier
-sortie) holds the forwarded horizontal reference inside `R` of the CURRENT leg's centreline and removes the
-across-the-line components of the velocity and acceleration fields with it.  The geometry that justifies it is
+`ego_contract_shim.py --corridor-m R` (`EGO_CORRIDOR_M` in `run-mission.sh`, default 0.0 = OFF = byte-identical to
+every earlier sortie) holds the forwarded horizontal reference inside `R` of the CURRENT leg's centreline -- to the
+leg's very ends, with no taper, because the tapered version was measured and removed (Flight AL; see PLAN §3.5) -- and
+removes the across-the-line components of the velocity and acceleration fields with it.  The geometry that justifies it is
 measured, not assumed (`_stage/leg-clearance.py`): the 46 pillars are r = 0.30 on a 1.0 m staggered
 checkerboard, so **all four route edges are exactly +0.200 m from the nearest pillar surface over their whole
 interior** -- the centrelines ARE the maximum-clearance paths of this field, and no offset from them leaves
