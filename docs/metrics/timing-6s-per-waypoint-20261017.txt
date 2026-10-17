@@ -1894,3 +1894,36 @@ THE FIRST BARE ATTEMPT FAILED, and it is recorded because it is this arm's failu
 
 REPRODUCING THE OLDER ARMS, now that the defaults moved: `RECT_HOLD_S=0 EGO_SETTLE_MPS=0` + the same world for the
 fly-through numbers, and `WORLD=worlds/pillars.yaml PLANNER=rectangle` for the frozen Mission A.
+
+============================================================================
+ROUND 32 -- A 5 s CORNER HOVER, AND WHY THESE FLIGHTS GO BADLY (2026-10-17)
+============================================================================
+Owner: "为什么飞不好？你测试点悬停5s".
+
+FLIGHTHOLD5-maxjitter (bare: EXTRA_PARM + RECT_HOLD_S=5.0, the same environment as FLIGHTBARE-defaults, so the
+2 s / 5 s comparison is one variable):
+  tour            TOUR COMPLETE 9 of 9; every corner hovered at |v| 0.08-0.10 m/s for 5.0 s
+  arrivals        0.251 / 0.065 / 0.099 / 0.163 / 0.168 / 0.003 / 0.057 / 0.063 / 0.226 m
+  A1 / B1 / C1    17.27 mm / E 7.108 N 8.551 / 0.120 m PASS
+  C2              **-0.005 m over the whole flight** (the dense re-sample finds one 30-sample episode at -0.059 m,
+                  (-2.52,-4.26), 0.54 m from a corner)
+  legs            6.96-16.28 s, 0 of 9 under 6.0 s, route 93.2 s
+
+  hover length vs the contact (same field, same environment):
+     fly through   -0.090 m   7 of 8 legs <6 s   max 6.55 s    route 37.3 s
+     hover 2.0 s   -0.060 m   1 of 9             max 13.15 s   route ~74 s
+     hover 5.0 s   -0.005 m   0 of 9             max 16.28 s   route 93.2 s
+
+WHY THE FLIGHTS GO BADLY -- read off the recordings, not argued:
+  (a) THE BUDGET IS SMALLER THAN THE ERROR.  On the maximally random forest the tour's legs clear the pillar
+      surfaces by 0.020-0.259 m.  The aircraft's tracking has a 0.06-0.25 m tail.  On the completed 2 s flight
+      the two contacts were MID-EDGE: 0.14 m outside the north line at 2.72 m from a corner (-0.060 m) and
+      0.044 m at 3.67 m from a corner -- a straight-line bulge, not a corner cut.
+  (b) THE HOVER IS FRAGILE.  FLIGHTBAREHOVER: ego stops planning ("the drone is in obstacle"), the reference
+      freezes, and the aircraft ends up hovering INSIDE a pillar at (-4.42,-3.71), 1.45 m off the route
+      (p50 distance to the route 0.434 m over the recording), for 553 s: 31.8 % of samples inside a body in 7 s
+      stretches, until the 560 s watchdog ended the sortie.  A 2 s stop next to a 0.020 m leg is long enough for
+      ego's map to mark the vehicle itself.
+
+So the hover buys the corner (arrivals 0.003-0.25 m, contacts no longer at corners) and cannot buy margin; past
+2 s it buys only time.

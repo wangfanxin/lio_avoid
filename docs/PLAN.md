@@ -266,6 +266,23 @@ hover -- which is the price the owner chose for the collision clause.  **Fragili
 attempt with these settings hung on `the drone is in obstacle` and ended with 31.8 % of samples inside a body; the
 2 s dwell gives the map time to mark the vehicle itself, so this arm fails in a way the fly-through arm did not.
 
+### 3.12 The hover length, and why these flights go badly (round 32)
+
+| arm (bare, same environment, same field) | C2 minimum | legs < 6 s | max leg | route |
+|---|---|---|---|---|
+| fly through | -0.090 m | 7 of 8 | 6.55 s | 37.3 s |
+| hover 2.0 s | -0.060 m | 1 of 9 | 13.15 s | ~74 s |
+| **hover 5.0 s** | **-0.005 m** | **0 of 9** | 16.28 s | 93.2 s |
+
+The contact disappears as the hover lengthens, because a longer settled hover lets the aircraft converge on the
+corner point and leave from rest -- and nothing else improves.  **Why the flights go badly, from the recordings**:
+(a) the field's tour clears the pillars by 0.020-0.259 m while the aircraft's tracking tail is 0.06-0.25 m, so on
+the completed 2 s flight the two contacts were **mid-edge** (0.14 m outside the north line at 2.72 m from a
+corner), a straight-line bulge; (b) the hover is FRAGILE -- on FLIGHTBAREHOVER ego stopped planning ("the drone is
+in obstacle"), the reference froze and the aircraft sat **inside a pillar** 1.45 m off the route for 553 s (31.8 %
+of samples in a body), because a stop next to a 0.020 m leg gives the map time to mark the vehicle itself.  The
+hover buys the corner; it cannot buy margin.
+
 ## 4. The pipeline
 
 ```
