@@ -1,0 +1,359 @@
+# MISSION B'S RVIZ VIEW -- the laser-lidar stack's own sortie (6 x 8 m rectangle, two laps, 46 pillars).
+#
+# HOW TO START IT, and the ONE thing that has to be running beside it:
+#
+#     ros2 run tf2_ros static_transform_publisher --x -0.00080 --y -0.00409 --z 0.11557 --yaw 1.5716650 \
+#            --frame-id world_w --child-frame-id world &
+#     rviz2 -d rviz/mission_b.rviz
+#
+# WHY THE TRANSFORM IS NEEDED.  There is no TF in this stack by design (planner/ego_on_lio.launch.py:40-42): every
+# consumer already speaks one frame and none of them transforms anything.  The frames on the wire are THREE LABELS
+# FOR TWO SETS OF NUMBERS:
+#
+#     world_w    the mission frame -- the world file's pillars, the truth tap.        numeric frame: W
+#     world      what Super-LIO (and ego) label their odometry and clouds:           numeric frame: L
+#     lio_world  what our own nodes (fcu_pose_feed, ego's grid map) label L:         numeric frame: L
+#
+# L and W are related by the calibration in `_stage/calib.json` (yaw +90.049771 deg, t = (-0.00080, -0.00409,
+# +0.11557) m, rms 17.7 mm); the command above is that transform and nothing else.  It was VERIFIED against a real
+# recording (`_stage/verify-rviz-tf.py`, flights REP1/REP4): L->W lands on the truth tap to p50 16-17 mm, p90
+# 31-34 mm, while the same comparison WITHOUT the transform is 4.6-4.9 m out -- i.e. a viewer that forgets it sees
+# the L-frame items a quarter turn and half the field away from the pillars.
+#
+# IF THE TRANSFORM IS NOT RUNNING, the displays whose frame is not the fixed frame simply stay empty and say
+# "No transform from [world] to [world_w]" in their status: nothing is drawn in the wrong place.
+#
+# THE PILLARS ARE NOT PUBLISHED BY THE SORTIE.  `run-mission.sh` does not start `sim/world_markers.py`; start it
+# yourself if you want the cylinders:  python3 src/sim/world_markers.py --world worlds/rect68.yaml
+Panels:
+  - Class: rviz_common/Displays
+    Help Height: 78
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /TF1
+        - /Pillars (world_w)1
+      Splitter Ratio: 0.5
+    Tree Height: 760
+  - Class: rviz_common/Views
+    Expanded:
+      - /Current View1
+    Name: Views
+    Splitter Ratio: 0.5
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.5
+      Cell Size: 1
+      Class: rviz_default_plugins/Grid
+      Color: 160; 160; 164
+      Enabled: true
+      Line Style:
+        Line Width: 0.03
+        Value: Lines
+      Name: Grid
+      Normal Cell Count: 0
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Plane: XY
+      Plane Cell Count: 26
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Enabled: false
+      Frame Timeout: 15
+      Frames:
+        All Enabled: true
+      Marker Scale: 0.6
+      Name: TF
+      Show Arrows: false
+      Show Axes: true
+      Show Names: true
+      Tree:
+        {}
+      Update Interval: 0
+      Value: false
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Pillars (world_w)
+      Namespaces:
+        {}
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /sim/world/markers
+      Value: true
+    - Class: rviz_default_plugins/Odometry
+      Angle Tolerance: 0.1
+      Covariance:
+        Orientation:
+          Alpha: 0.5
+          Color: 255; 255; 127
+          Color Style: Unique
+          Frame: Local
+          Offset: 1
+          Scale: 1
+          Value: false
+        Position:
+          Alpha: 0.3
+          Color: 204; 51; 204
+          Scale: 1
+          Value: false
+      Enabled: true
+      Keep: 1
+      Name: Truth (tap, world_w)
+      Position Tolerance: 0.05
+      Shape:
+        Alpha: 1
+        Axes Length: 0.7
+        Axes Radius: 0.05
+        Color: 255; 120; 0
+        Head Length: 0.14
+        Head Radius: 0.06
+        Shaft Length: 0.3
+        Shaft Radius: 0.03
+        Value: Axes
+      Topic:
+        Depth: 50
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /sim/truth/odom
+      Value: true
+    - Class: rviz_default_plugins/Odometry
+      Angle Tolerance: 0.1
+      Covariance:
+        Orientation:
+          Alpha: 0.5
+          Color: 255; 255; 127
+          Color Style: Unique
+          Frame: Local
+          Offset: 1
+          Scale: 1
+          Value: false
+        Position:
+          Alpha: 0.3
+          Color: 204; 51; 204
+          Scale: 1
+          Value: false
+      Enabled: true
+      Keep: 1
+      Name: LIO odom (L, labelled world)
+      Position Tolerance: 0.05
+      Shape:
+        Alpha: 1
+        Axes Length: 0.7
+        Axes Radius: 0.05
+        Color: 0; 170; 255
+        Head Length: 0.14
+        Head Radius: 0.06
+        Shaft Length: 0.3
+        Shaft Radius: 0.03
+        Value: Axes
+      Topic:
+        Depth: 50
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /lio/robo/odom
+      Value: true
+    - Class: rviz_default_plugins/Odometry
+      Angle Tolerance: 0.1
+      Covariance:
+        Orientation:
+          Alpha: 0.5
+          Color: 255; 255; 127
+          Color Style: Unique
+          Frame: Local
+          Offset: 1
+          Scale: 1
+          Value: false
+        Position:
+          Alpha: 0.3
+          Color: 204; 51; 204
+          Scale: 1
+          Value: false
+      Enabled: true
+      Keep: 1
+      Name: FCU estimate (L, labelled lio_world)
+      Position Tolerance: 0.05
+      Shape:
+        Alpha: 1
+        Axes Length: 0.7
+        Axes Radius: 0.05
+        Color: 60; 220; 60
+        Head Length: 0.14
+        Head Radius: 0.06
+        Shaft Length: 0.3
+        Shaft Radius: 0.03
+        Value: Axes
+      Topic:
+        Depth: 50
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /ego/odom_fcu
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Axis: Z
+      Color Transformer: AxisColor
+      Enabled: true
+      Name: Registered scan (L)
+      Position Transformer: XYZ
+      Queue Size: 5
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.05
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /lio/cloud_world
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Axis: Z
+      Color Transformer: AxisColor
+      Enabled: true
+      Name: ego cloud input (L)
+      Position Transformer: XYZ
+      Queue Size: 5
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.05
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /ego/cloud
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Axis: Z
+      Color Transformer: AxisColor
+      Enabled: false
+      Name: ego occupancy (inflated)
+      Position Transformer: XYZ
+      Queue Size: 5
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.1
+      Style: Boxes
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: drone_0_grid/grid_map/occupancy_inflate
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: false
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: ego optimal trajectory
+      Namespaces:
+        {}
+      Topic:
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: drone_0_plan_vis/optimal_list
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: ego A* reference
+      Namespaces:
+        {}
+      Topic:
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: drone_0_plan_vis/a_star_list
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: ego goal
+      Namespaces:
+        {}
+      Topic:
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: drone_0_plan_vis/goal_point
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Axis: Z
+      Color Transformer: AxisColor
+      Enabled: false
+      Name: Livox cloud (sensor frame; needs the body pose)
+      Position Transformer: XYZ
+      Queue Size: 5
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.01
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /livox/lidar
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: false
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: world_w
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 19
+      Enable Stereo Rendering:
+        Stereo Eye Separation: 0.06
+        Stereo Focal Distance: 1
+        Swap Stereo Eyes: false
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 1.5707
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+      Yaw: 0
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1500
