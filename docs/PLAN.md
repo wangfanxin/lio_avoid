@@ -212,6 +212,26 @@ once (`FLIGHTRAND2-maxjitter`): TOUR COMPLETE, **7 of 8 legs under 6 s** (leg 8 
 that the **reference itself** now sits inside the 0.10 m standoff for 3.4 % of samples (never inside a body): at
 maximum randomness the plan's own margin is 2 cm, so the aircraft has nothing left to spend.
 
+### 3.9 Can the corner be slowed, and the arrival speed taken to zero? (round 29)
+
+Asked by the owner; flown three ways on the maximally random forest, everything else the committed default.
+
+| arm | C2 minimum | legs < 6 s | max leg | route |
+|---|---|---|---|---|
+| **default**: corner cap 1.10 m/s, fly through | **-0.090 m** | **7 of 8** | 6.55 s | 37.3 s |
+| `EGO_CORNER_MPS` 0.50 (half the corner speed) | -0.168 m | 7 of 8 | 6.05 s | 39.7 s |
+| `EGO_SETTLE_MPS` 0.10 (arrive at < 0.10 m/s = stop) | -0.105 m | 2 of 9 | 15.92 s | 64.2 s |
+| stop + `EGO_ARRIVE_M` 0.30 -> 0.20 m | -0.089 m | 3 of 9 | 22.51 s | 52.8 s |
+
+Both knobs are real -- the corner governor caps the *reference* within 0.50 m of the corner, and the settle test is
+the arrival gate's speed clause (its default 0 = fly through) -- and both were exercised.  **Neither improves the
+clearance, and both cost time**; the default remains the best of the four on both clauses.  The reason is that the
+arrival rule is RADIAL: the tour advances when the vehicle is within the gate of the corner *point*, so the turn
+starts that far inside the corner, and the planner refuses to plan closer than 0.20 m of its goal.  The cut is
+therefore geometric, not kinetic -- slowing down or stopping does not remove it, which is what three flights now
+show.  What would address it is a different turn rule (arrive on the incoming line, then turn in place) or a field
+with more room at the corners; neither is a parameter of this arm.
+
 ## 4. The pipeline
 
 ```

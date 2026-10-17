@@ -1817,3 +1817,28 @@ THE SORTIE -- FLIGHTRAND2-maxjitter (bare arm, only WORLD changed):
 
 VERDICT: maximal randomness is a property of the field, and the flight pays for it: the plan's own margin at the
 worst leg is 0.020 m, so the aircraft's 10-25 cm tracking tail has nothing to spend.  The contact is again a corner.
+
+============================================================================
+ROUND 29 -- CAN THE CORNER BE SLOWED, AND THE ARRIVAL SPEED TAKEN TO ZERO? (2026-10-17)
+============================================================================
+Field: worlds/rect68_random.yaml (the maximally random forest).  Arm: the committed default except as stated.
+Question (owner): "到角点不能减速吗，可以设置角点到达速度为0吗".
+
+  arm                                                     C2 min    legs<6 s   max leg   route
+  default: EGO_CORNER_MPS 1.10, EGO_SETTLE_MPS 0 (through)  -0.090 m   7 of 8     6.55 s   37.3 s
+  FLIGHTCRN050:  EGO_CORNER_MPS 0.50                        -0.168 m   7 of 8     6.05 s   39.7 s
+  FLIGHTSET010:  EGO_SETTLE_MPS 0.10 (stop at each corner)  -0.105 m   2 of 9    15.92 s   64.2 s
+  FLIGHTARR020:  the same stop + EGO_ARRIVE_M 0.30 -> 0.20  -0.089 m   3 of 9    22.51 s   52.8 s
+
+  FLIGHTCRN050 also:  B1 E 6.464 / N 8.308, C1 0.063, contact (-1.49,-3.56) 1.55 m from a corner, 67 % of
+                      inside-body samples within 0.6 m of one
+  FLIGHTSET010 also:  B1 E 6.788 / N 8.637, C1 0.126, contact (-2.52,-4.30) 0.56 m from a corner, 56 % within 0.6 m
+  FLIGHTARR020 also:  B1 E 6.404 / N 8.882, C1 0.129, contact (-0.44,-4.21) 0.49 m from a corner, 100 % within 0.6 m
+
+THE MECHANISM, measured rather than assumed: the arrival rule is RADIAL (within EGO_ARRIVE_M of the corner POINT),
+so the tour advances while the vehicle is still up to the gate's distance short of the corner, and the turn then
+starts that far INSIDE it.  The planner refuses to plan within 0.20 m of its goal (planner_manager.cpp:55), so the
+gate cannot be tightened further (0.20 was flown).  Slowing the corner cap makes the plan slower and the tracking
+worse (-0.168 m, the same slow-plan effect as STATUS 200/231); stopping at the corner costs 1.7-2x the mission time
+and does not remove the contact.  The corner cut is geometric, not kinetic.  The default remains the best arm of the
+four on both clauses.
