@@ -2630,3 +2630,23 @@ READ
     criterion, not as a success of the mission;
   * NEXT single change: waypoint 1 moves off the pad's vertical, to (0,1.5,1.5), so the arrival gate cannot fire a metre
     low and the tour can actually start.
+
+============================================================================
+ROUND 29/40 -- WAYPOINT OFF THE PAD VERTICAL; THE GUARD READS mission.takeoff_alt (2026-10-17)
+============================================================================
+FLIGHTC-r26, tour (0,1.5,1.5) -> (0,3.0,1.5) -> (0,5.0,1.5), ALT_MODE=lio, EGO_YAW_HEADING=1, DISARM fix:
+
+    [14.70] airborne: truth altitude 0.208 m      <- take-off (third reliable sortie since DISARM_DELAY 10)
+    [14.70] THE GO
+    [16.99] ABORT: the truth is at 4.15 m for a commanded 2.00 m (guard 2.00 m)
+    phase table: takeoff cmd 1.00 lio -0.00 truth 0.10 | hold cmd 1.04 lio -0.01 truth 0.21 |
+                 abort cmd 1.42 lio -0.01 truth 4.15
+    C2 **-0.019 m**, 0.04 % inside a body, 5691 plans
+
+  * the premature arrival is GONE (the gate's horizontal test has 1.5 m of distance to work with instead of 4 mm);
+  * the guard's 2.00 m is `mission.takeoff_alt` -- NOT the tour's 1.5 m -- so the guard sits at 4.0 m and the aircraft
+    reached 4.15 m;
+  * the climb overshoot is the old vertical defect: lio_z -0.01 through a 4.15 m climb.
+
+REMAINING, INSIDE THE ALLOWED SCOPE: `mission.takeoff_alt` 2.0 -> 1.0 (guard 3.0 m), i.e. make the guard agree with the
+tour that this is a 1.5 m mission; or accept the climb and grade C2 alone.
