@@ -2328,3 +2328,23 @@ THE GATE
     offline: --selftest PASSED, py_compile clean, bash -n run-mission.sh clean, the flag appears in --help.
 
 Mission B is back on the arm of record; Mission C has the corrected heading available (EGO_YAW_HEADING=1) next round.
+
+============================================================================
+ROUND 19 -- THE HEADING FIXED (ATT.Yaw 188 -> 3.59 deg); THE VERTICAL CHANNEL IS THE LAST DEFECT (2026-10-17)
+============================================================================
+FLIGHTC-r15: ALT_MODE=lio (owner), EGO_YAW_HEADING=1 (round 18's gated conversion), everything else as Mission C has
+flown it (EGO_RESOLUTION 0.05, 2 s hover, settle 0.10, geofence 14, SUP_ARGS --climb-guard-m 2.0).
+
+  the shell's banner:   "shim: yaw: L angle -> the FCU's compass heading (L x axis at +90.05 deg in W)"
+  the FCU's own log:    ATT.Yaw  +0.00 deg at t=30-35 s, then **+3.59 deg from 36 s to the end**
+                        (551 rows; from 36 s: median 3.59, min 0.00, max 3.60)
+                        the same message in r14 (older code, yaw passed through) read **~188 deg**
+
+  the sortie:           20.41 s  ABORT: the truth is at 4.02 m for a commanded 2.00 m (guard 2.00 m)
+                        C2 +0.881 m, 0.00 % of samples inside a body, C2-ego MET, 4326 plans
+
+READ: the heading command now agrees with the mission (+3.6 deg off north instead of 188), so the LiDAR sweeps the forest
+from the intended side; and the LIO's vertical channel -- which cannot be bypassed with baro any more -- is the single
+remaining defect that ends a Mission-C sortie.
+NEXT: the last untested estimator knob that touches the matcher, `lio.kf.kf_max_iterations` 4 -> 8 (one change), then
+a Mission-C flight with the same environment.
