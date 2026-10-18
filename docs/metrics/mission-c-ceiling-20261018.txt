@@ -1,0 +1,65 @@
+MISSION C, ROUND 34 -- THE OWNER'S FLOOR AND CEILING: ceiling 10.5 -> 6.0 m (floor was already 0.0)
+=====================================================================================================
+owner (2026-10-18): "你加地板和天花板行吗？天花板6m高，地板在0m"
+
+1. WHAT WAS ALREADY THERE, read out of the world file before touching it
+-----------------------------------------------------------------------
+    worlds/forest_north.yaml   arena: floor_z 0.0, ceiling_z 10.5, walls x [-6,6] y [-2,20]
+    src/sim/raycast.py         World.load reads both, cast() intersects both planes,
+                               an infinite plane each, clipped to floor_z <= z <= ceiling_z
+
+So both planes existed and both were already being hit.  The change the owner asked for is the
+ceiling's HEIGHT (10.5 -> 6.0); the floor was already at 0 m.
+
+2. THE CHANGE, IN THE GENERATOR (the world file is generated, not hand-edited)
+-----------------------------------------------------------------------------
+    src/tools/make-forest-north.py   CEIL = 10.5  ->  CEIL = 6.0
+    regenerated: python3 src/tools/make-forest-north.py
+    diff against the previous file: exactly two lines
+        # ... pillars 3.0 m tall, arena ceiling 10.5 m.  ->  6.0 m
+          ceiling_z: 10.5                                ->  6.0
+    732 pillars, nearest neighbour 0.269 m centre / 0.029 m surface, tour unchanged, every pillar
+    position byte-identical.
+
+3. WHAT THAT DOES TO THE SCAN (src/sim/raycast.py --summary, 20 000 rays, at the pad (0,0))
+--------------------------------------------------------------------------------------------
+    sensor z   floor   ceiling 6.0 m   pillars/walls     (ceiling 10.5 m, for comparison)
+     0.6 m     13.8 %      13.2 %          73.1 %             10.0 %
+     1.6 m      3.2 %      21.3 %          75.4 %             14.6 %
+     3.0 m      0.7 %      36.8 %          62.5 %             21.4 %
+
+    Also measured: the ceiling's farthest hit falls from 20.3 m to 11.7 m at 1.6 m altitude, and
+    the scan's median range is unchanged at 2.15 m (20000 of 20000 rays return in every case).
+    READ THE COLUMN: the ceiling's share now grows about TWICE AS FAST with altitude
+    (+24 points over 0.6 -> 3.0 m, against +11), i.e. the vertical constraint is stronger AND
+    steeper -- the best case for an estimator that has to notice a climb.
+
+4. THE FLIGHT: FLIGHTC-r30-ceil6 (ALT_MODE=lio, tour 1.5 m, guard 2.0, the r22/r23 configuration
+   with the ceiling as the only variable; 100 s wall clock, 83.2 s of truth)
+--------------------------------------------------------------------------------------------
+    takeoff   0.202 m truth at 19.11 s (threshold 0.10 m)             -- the arm fix holds
+    abort     20.48 s: "the truth is at 3.03 m for a commanded 1.00 m (guard 2.00 m)"
+    phase log (one clock, same file):
+        takeoff   sim 33.5  cmd_z 0.78   lio_z -0.0042   truth_z 0.10
+        hold      sim 36.6  cmd_z 1.01   lio_z -0.0039   truth_z 0.20
+        abort     sim 38.0  cmd_z 1.31   lio_z -0.0037   truth_z 3.03
+        done      sim 83.0  cmd_z 2.10   lio_z 13.21     truth_z 297.73
+    metrics: "FAIL: no leg and no traj phases in the log -- the vehicle never flew a route"
+    C2: min +0.129 m, 0.00 % of samples inside a body (4787 plan points) -- it climbed at the pad.
+
+5. WHAT THIS SETTLES
+--------------------
+    * The vertical channel did not move: -0.0037 m against a truth of 3.0275 m, the same number
+      every earlier world produced (-0.00 r18, -0.01 r22/r23, with ceilings of 5.0 and 10.5 m).
+    * The vertical INFORMATION was in the data: 21.3 % of the scan was ceiling at the mission
+      altitude and 36.8 % at the abort altitude.  So "the LiDAR has nothing vertical to see" is
+      now refuted by construction -- the defect is inside the estimator's vertical state.
+    * The arena ceiling does NOT bound the vehicle: arena.ceiling_z clips ray hits only, it is
+      not a collider, and the post-abort runaway reached 297.73 m through it.
+
+6. ARTEFACTS
+------------
+    _stage/mission-c-r30-ceil6.sh        the sortie, single variable documented in its header
+    _stage/ceil6-composition.sh          the composition table above, reproducible offline
+    _stage/figures/topview-C-r30.png     the plan/track, 4787 plan points
+    logs/missionA-FLIGHTC-r30-ceil6/     the recording (outside the repository)

@@ -5,7 +5,7 @@
 #
 # THE RULE: a 0.6 m lattice over x in (-6.0, 6.0), y in (-2.0, 20.0); one pillar of radius 0.12 m per cell at a
 # RANDOM position anywhere in it (jitter = the whole half-cell, 0.18 m); nothing within 0.8 m of the start point's
-# surface; pillars 3.0 m tall, arena ceiling 10.5 m.  MEASURED: 732 pillars, nearest neighbour 0.269 m centre /
+# surface; pillars 3.0 m tall, arena ceiling 6.0 m.  MEASURED: 732 pillars, nearest neighbour 0.269 m centre /
 # 0.029 m surface.  The mission block is copied: the tour is unchanged.
 pillars:
 - {x: -5.763, y: -1.826, r: 0.12, z0: 0.0, z1: 3.0}
@@ -744,7 +744,7 @@ spawn: {x: 0.0, y: 0.0, z: 0.205, yaw_deg: 0.0}
 pad: {x: 0.0, y: 0.0, radius: 0.35, height: 0.205}
 arena:
   floor_z: 0.0
-  ceiling_z: 10.5
+  ceiling_z: 6.0
   walls:
     x: [-6.0, 6.0]
     y: [-2.0, 20.0]

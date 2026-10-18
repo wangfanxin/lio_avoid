@@ -9,9 +9,13 @@
     (0.6 - 0.24)/2 = 0.18 m) -- the owner's standing "maximise the randomness";
   * a clearing round the start point (nothing within 0.8 m of the pad's surface), kept because the pad has to be able
     to sit and land;
-  * pillars 3 m tall (the owner's earlier instruction), arena ceiling 10.5 m -- the 5 m ceiling of the last version made
-    33 % of the scan ceiling returns at 2 m altitude (STATUS 264), which is a sensor artefact, not the scene the owner
-    asked for;
+  * pillars 3 m tall (the owner's earlier instruction); **floor z = 0.0 and ceiling z = 6.0 m** -- the owner's
+    instruction of 2026-10-18: "你加地板和天花板行吗？天花板6m高，地板在0m".  Both planes already existed (floor 0.0,
+    ceiling 10.5) and the scan already hit both; what this changes is the ceiling's SHARE of the returns and how
+    close it is.  MEASURED at the mission pose (0, 0, 1.6), 20 000 rays, 10.5 -> 6.0 m: ceiling hits 14.6 % ->
+    21.3 %, the ceiling's farthest hit 20.3 -> 11.7 m, floor 3.2 % unchanged, pillars/walls the balance.  The
+    previous 5.0 m ceiling put 33.5 % of the returns on the ceiling at 2 m altitude (STATUS 264) and 10.5 m was
+    chosen to avoid that; 6.0 m is the owner's number, and it also bounds a runaway climb in truth;
   * z 0 -> 3 m.
 
 usage: src/tools/make-forest-north.py     (writes worlds/forest_north.yaml)
@@ -27,7 +31,7 @@ CELL, R, SEED = 0.6, 0.12, 7
 X0, X1, Y0, Y1 = -6.0, 6.0, -2.0, 20.0
 PAD_FREE = 0.80
 Z0, Z1 = 0.0, 3.0
-CEIL = 10.5
+CEIL = 6.0
 
 rng = random.Random(SEED)
 nx = int(round((X1 - X0) / CELL))
