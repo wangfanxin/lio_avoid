@@ -2608,3 +2608,25 @@ FLIGHTC-r24: 26.02 s  ABORT: never left the ground (truth 0.100 m after 12.0 s, 
 
 BOTH ARE ARITHMETIC ABOUT 0.8 m AND DISAPPEAR ONE STEP UP: z = 1.5 m gives |dz| = 1.4 m > the 1.0 m gate tolerance, and
 requires a 1.3 m climb to be called airborne.  NEXT: z = 1.5 m (one number).
+
+============================================================================
+ROUND 28/40 -- TOUR AT 1.5 m: FIRST C2 PASS; TWO MECHANISMS NAMED (2026-10-17)
+============================================================================
+FLIGHTC-r25 (tour z = 1.5 m, ALT_MODE=lio, EGO_YAW_HEADING=1, DISARM fix in place):
+    [16.71] airborne: truth altitude 0.204 m             <- take-off works
+    [16.71] THE GO
+    shim: ARRIVED at waypoint 1 of 4 (0.004 m horizontal, **-0.956 m vertical**, |v| 0.05 m/s)
+             -> waypoint 1 is DIRECTLY ABOVE the pad, so d_xy = 4 mm during the whole climb and the gate's 1.0 m vertical
+                tolerance opens the tour a metre below it.  A gate interaction, not a flight.
+    phase table: takeoff cmd 0.33 lio -0.00 truth 0.10 | hold cmd 0.30 lio -0.01 truth 0.20 |
+                 leg2  cmd 1.81 lio -0.00 truth **3.50** | abort cmd 1.92 lio -0.01 truth **7.21** (geofence y = 24.01)
+    C2 **+0.388 m, 0 of 5995 samples inside the 0.20 m footprint -- a PASS, the first of Mission C**
+    B1 E 0.318 / N 22.623 (the aircraft left the mission north), C1 124 m from the commanded point
+
+READ
+  * the vertical runaway does NOT depend on the mission altitude: 2.0 m and 1.5 m behave identically, and the post-abort
+    run reached 142 m;
+  * the first C2 PASS came from the flight leaving the field rather than cutting through it -- recorded as a PASS of the
+    criterion, not as a success of the mission;
+  * NEXT single change: waypoint 1 moves off the pad's vertical, to (0,1.5,1.5), so the arrival gate cannot fire a metre
+    low and the tour can actually start.

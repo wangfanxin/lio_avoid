@@ -761,10 +761,10 @@ mission:
   takeoff_alt: 2.0
   hold_s: 5.0
   corners:
-  - [0.0, 0.0, 0.8]
-  - [0.0, 1.5, 0.8]
-  - [0.0, 3.0, 0.8]
-  - [0.0, 5.0, 0.8]
+  - [0.0, 0.0, 1.5]
+  - [0.0, 1.5, 1.5]
+  - [0.0, 3.0, 1.5]
+  - [0.0, 5.0, 1.5]
   name: forest_north
   square: [-0.6, 0.0, 0.6, 5.0]
   note: 'MISSION C (owner, 2026-10-17 second revision): the forest fills x (-6, 6), y (-2, 20) on a 0.6 m lattice
