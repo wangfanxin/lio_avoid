@@ -2372,3 +2372,19 @@ The scene's own defect: when the forest was placed only where y > 0 the arena go
 
 NEXT (one change): walls.y = [-3, 12], so the pad has free space behind it; then the same Mission-C flight with
 ALT_MODE=lio and EGO_YAW_HEADING=1.
+
+============================================================================
+ROUND 21 -- SOUTH WALL MOVED BEHIND THE PAD; THE TEST FLIGHT WAS REFUSED AT TAKE-OFF (2026-10-17)
+============================================================================
+CHANGE (worlds/forest_north.yaml, one line):
+    arena.walls.y    [0.0, 10.0]  ->  [-3.0, 12.0]
+    reason: the pad at (0,0) lay exactly ON the south wall, the worst possible input for a 45 deg-down LiDAR 0.1 m
+    above it, and the only world edit ever made for this mission that was never questioned.
+
+FLIGHT FLIGHTC-r17: 13.52 s  ABORT: takeoff refused: EKF3 IMU0 origin set | Field Elevation Set: 584m |
+                              Initialising ArduPilot | Arming motors
+    phase table: takeoff sim 33.6 cmd 1.39 lio -0.00 truth 0.10; abort at the same instant; never airborne
+    ATT.Yaw: 73 rows, all 0.00 deg      C2 +1.125 m, 0.00 % inside a body, 1788 plans
+
+RESULT: UNTESTED.  The take-off was refused by the FCU (a start-up flake of a class this stack has seen), so the wall
+move was never exercised.  NEXT: re-fly the same configuration with no new change.
