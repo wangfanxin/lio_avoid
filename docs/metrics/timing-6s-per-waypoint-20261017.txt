@@ -2411,3 +2411,22 @@ WHAT IS LEFT IS STRUCTURAL, and it is a choice for the owner:
   (b) fly Mission C where the LiDAR has vertical structure to see (taller/closer features, or a route through dense
       pillars from the start), or
   (c) accept the vertical defect and grade Mission C on its horizontal behaviour only.
+
+============================================================================
+ROUND 23 -- THE VERTICAL CHANNEL LAGS AND CATCHES UP; IT IS A CONVERGENCE DEFECT (2026-10-17)
+============================================================================
+Measured over whole recordings (not at phase boundaries), LIO z against the truth's altitude:
+
+    FLIGHTC-r18   LIO z  -0.006 .. 65.926    truth  0.100 .. 66.502    (the estimator tracks a 66 m runaway faithfully
+                                                                         after having reported 0.00 through a 4.12 m climb)
+    FLIGHTC-r15   LIO z  -3.134 ..  5.153    truth  0.100 ..  5.366
+    FLIGHTC-r3    LIO z   0.002 ..  2.339    truth  0.100 ..  2.478
+    regression truth ~ a * LIO_z + b:  a = 0.036 / -0.152 / 0.131   (meaningless while the transient dominates)
+
+CORRECTION to round 22: the vertical axis is not blind or frozen.  The estimate CONVERGES SLOWLY and is worthless for
+the first ~15-20 s -- which is exactly the take-off window, and the supervisor's truth-based climb guard ends every
+Mission-C sortie inside it.
+
+CONSEQUENCE: no mission change and no matcher change is indicated.  The estimator needs a VERTICAL OBSERVATION while it
+converges: a barometric input fused INSIDE the LIO (not fed to the controller -- the owner's ruling is about what flies
+the aircraft), which means a change in the external Super-LIO checkout plus a lio_ws rebuild, not a parameter.
