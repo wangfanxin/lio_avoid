@@ -2430,3 +2430,25 @@ Mission-C sortie inside it.
 CONSEQUENCE: no mission change and no matcher change is indicated.  The estimator needs a VERTICAL OBSERVATION while it
 converges: a barometric input fused INSIDE the LIO (not fed to the controller -- the owner's ruling is about what flies
 the aircraft), which means a change in the external Super-LIO checkout plus a lio_ws rebuild, not a parameter.
+
+============================================================================
+ROUND 24 -- MISSION C: CLOSING STATEMENT (2026-10-17)
+============================================================================
+CLOSED
+  tour consistency      the world's (0,2) publishes as L (2.004,-0.003,1.884); 2/3 likewise
+  heading command       ATT.Yaw 188 deg -> 0.97-3.59 deg; conversion tested at four cardinals; gated for Mission B
+  collision clause      C2 +0.881 / +1.017 / +0.565 / +0.077 m, 0.00 % of samples inside a body, every field flight
+  horizontal tracking   14 mm at an arrival (r12), 71 mm (r14)
+  estimator bracket     map 0.25/0.10, decimation 0.20/0.05, KF iters 4/8 -- all fail identically
+  the scene             pad-on-the-wall found, fixed (round 21), shown not to be the cause (round 22)
+
+OPEN (ONE THING)
+  the LIO's vertical channel converges too slowly in the first 15-20 s: lio_z 0.00 through a climb to 4.12 m, while the
+  same estimator tracks a 66 m runaway faithfully later in the same recording.  Every sortie ends inside that window
+  because the supervisor's truth-based climb guard fires there.
+
+NEXT SESSION, IN ORDER
+  1. a barometric input FUSED INSIDE the LIO (external Super-LIO checkout + lio_ws rebuild) -- not fed to the controller
+  2. the global gate on the REFERENCE (the shell's corridor/clamp are per leg and end with the leg: round 12 sent a
+     100 m target to the aircraft)
+  3. only then the (0,8) and (0,20) runs
