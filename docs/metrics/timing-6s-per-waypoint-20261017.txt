@@ -2235,3 +2235,27 @@ aircraft is flown pointing SOUTH while the mission goes NORTH, which is precisel
 
 NEXT: locate the sign/frame error between the plan's L yaw and the FCU heading so that ATT.Yaw is near 0 deg for a
 northward tour; verify on ATT.Yaw after the trigger; then fly Mission C with ALT_MODE=lio.
+
+============================================================================
+ROUND 15 -- THE MISSING YAW CONVERSION, LOCATED IN CODE (2026-10-17)
+============================================================================
+src/bridge/mavlink_impl.py, send_cmd:
+    p_f  = frames.l_to_wire(cmd_l.p, calib)                      <- the position IS converted
+    yaw  = float(cmd_l.yaw if yaw_rad is None else yaw_rad)      <- the yaw is NOT
+    ... set_position_target_local_ned_send(..., yaw, 0.0)        <- whose yaw is a COMPASS heading
+
+the contract states its own sense (`planner/cmd_stream.py:83-89`): yaw is the FCU's heading, 0 = North, +90 deg = East.
+The plan's yaw is an L-frame angle.  The wire therefore needs
+    theta_W = theta_L + yaw_calib            (the calibration's +90.05 deg)
+    psi     = pi/2 - theta_W                 (ENU angle -> compass heading)
+and neither operation is present.
+
+The same defect was already found and fixed for the ODOMETRY quaternion in this same file ("sending q_f unconverted
+made the FCU believe a North-facing vehicle faced EAST", send_external_nav docstring, 2026-10-13).
+
+WHAT r14's ATT.Yaw = 188 deg ACTUALLY WAS: the plan's own yaw ~ -pi (its trajectory was leaving the world southward),
+passed through as compass -180 deg = south.  The aircraft faithfully held the heading of a bad plan; the yaw chain did
+not add the error, the plan pointed the wrong way.
+
+NEXT: implement the two operations in send_cmd, add the unit test where the difference is unambiguous (theta_L = +-90
+deg), run the offline contract tests, then fly Mission C with ALT_MODE=lio and check ATT.Yaw ~ 0 deg for a north tour.
