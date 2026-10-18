@@ -2588,3 +2588,23 @@ THE VERTICAL STATE HAS NOW SURVIVED, without the forbidden architecture change:
 NEXT, INSIDE THE ALLOWED SCOPE: fly where the climb is small -- mission altitude z 2.0 -> **0.8 m**, with the 3 m pillars
 towering over the flight and the climb guard then at 2.8 m instead of 4.0.  A tour/world parameter, not an architecture
 change.
+
+============================================================================
+ROUND 27/40 -- 0.8 m MISSION: TWO GATE INTERACTIONS, NOT THE ESTIMATOR (2026-10-17)
+============================================================================
+Change: the tour's z 2.0 -> 0.8 m (all four waypoints).
+
+FLIGHTC-r24: 26.02 s  ABORT: never left the ground (truth 0.100 m after 12.0 s, threshold 0.10 m above 0.100 m)
+             and the shell logged: ARRIVED at waypoint 1 of 4 (0.006 m horizontal, **-0.688 m vertical**, |v| 0.00 m/s)
+             while the aircraft sat on the pad.
+
+  (1) the take-off detector needs the truth above 0.10 m + the pad's own 0.100 m; at a 0.8 m mission with a 0.2 m
+      take-off command the 12 s window expired first.
+  (2) the arrival gate's `--arrive-z-m` is 1.0 m, and at z = 0.8 a vehicle at 0.10 m is inside it -- a 0.8 m waypoint is
+      'reachable' from the ground, so the tour advanced on the pad.
+
+  phase table: takeoff cmd 0.65 lio -0.01 truth 0.10 | abort cmd 0.64 lio -0.01 truth 0.10 (never airborne)
+  C2 +0.900 m, 0.00 % inside a body, C2-ego MET
+
+BOTH ARE ARITHMETIC ABOUT 0.8 m AND DISAPPEAR ONE STEP UP: z = 1.5 m gives |dz| = 1.4 m > the 1.0 m gate tolerance, and
+requires a 1.3 m climb to be called airborne.  NEXT: z = 1.5 m (one number).
