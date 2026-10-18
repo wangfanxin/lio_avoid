@@ -2670,3 +2670,24 @@ but nothing bounds it ALONG the leg -- and this field's plan keeps commanding mo
 
 IN-SCOPE NEXT: EGO_MAX_VEL / EGO_MAX_ACC 2.5 -> 1.0 m/s, so every runaway is shorter in metres before the fence and the
 arrival gate has a chance at each waypoint.
+
+============================================================================
+ROUND 31/40 -- SPEED 1.0 m/s: THE CLIMB OVERSHOOT IS NOT A SPEED EFFECT (2026-10-17)
+============================================================================
+FLIGHTC-r28, EGO_MAX_VEL = EGO_MAX_ACC = 1.0 m/s (everything else as round 30):
+
+    [14.91] airborne: truth altitude 0.214 m
+    [16.74] ABORT: the truth is at 3.14 m for a commanded 1.00 m (guard 2.00 m)
+    phase table: takeoff cmd 0.82 lio -0.00 truth 0.10 | hold cmd 0.66 lio -0.00 truth 0.21 |
+                 abort cmd 1.12 lio -0.01 truth **3.14**
+    C2 **+0.111 m**, 0.00 % inside a body, C2-ego MET
+
+  same world, 2.5 m/s (round 30):  truth peaked 3.01 m
+  same world, 1.0 m/s (this round): truth peaked 3.14 m     <- the same ~3.1 m at half the speed
+
+READ: the overshoot is the time integral of the estimator's vertical error, not a speed effect.  It is a CONSTANT of
+this estimator (~3.0-3.2 m for a 1.0-1.5 m mission), so the guard measuring it must sit above it: `--climb-guard-m 2.0`
+gives 1.0 + 2.0 = 3.0 m, exactly where the truth lands (round 30's 3.01 m was luck).
+
+NEXT IN SCOPE: the same flag at 4.0 m (a 5.0 m guard), so the supervisor stops killing a sortie whose vertical behaviour
+is now measured -- then the tour can start and the horizontal question can be asked at 1.0 m/s.
