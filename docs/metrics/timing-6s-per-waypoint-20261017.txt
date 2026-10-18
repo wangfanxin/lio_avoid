@@ -2473,3 +2473,26 @@ a property of the estimator's vertical state DURING INITIALISATION, not of what 
 
 The world keeps the owner's 3 m pillars.  The next change must be inside the estimator: a barometric observation fused
 there (not fed to the controller, which the owner's ruling covers).
+
+============================================================================
+WHY MISSION B WORKS AND MISSION C DOES NOT -- THE SCAN'S COMPOSITION AT THE PAD (2026-10-17)
+============================================================================
+`src/sim/raycast.py --pos 0,0,<z> --summary` on both worlds (20 000 rays, the sim's own mount: 45 deg down, rosette):
+
+  world            z (m)   hits        floor    ceiling   pillars/walls   median range
+  rect68_random    0.20    20000/20000  25.9 %    2.6 %      **71.6 %**      1.97 m
+  rect68_random    2.00    20000/20000   3.0 %    3.9 %      **93.2 %**      2.49 m
+  forest_north     0.20    20000/20000  27.1 %   16.2 %       **56.7 %      2.83 m
+  forest_north     2.00    20000/20000   6.6 %   **33.5 %      59.9 %        3.46 m
+
+  both worlds return every ray -- this is NOT starvation.  It is COMPOSITION:
+    B  a textured 3-D field at every azimuth, structure within ~2 m of the pad -- the vertical state has something to
+       hold on to;
+    C  two large parallel planes (floor + ceiling) and thin poles on ONE side (1.1 m start clearing, forest only where
+       y > 0, and the owner's 3 m pillars came with a 5.0 m ceiling that now fills a third of the scan at 2 m altitude).
+
+  same estimator, same config file, two different degeneracy classes -- which is why every Mission-C flight loses its
+  vertical state in the first 15-20 s and no Mission-B flight ever has.
+
+FIRST TEST THAT NEEDS NO ARCHITECTURE CHANGE: the start clearing 1.1 m -> 0.5 m, so pillars stand within a metre of the
+pad at every azimuth -- moving C's scan toward B's composition.
