@@ -2691,3 +2691,32 @@ gives 1.0 + 2.0 = 3.0 m, exactly where the truth lands (round 30's 3.01 m was lu
 
 NEXT IN SCOPE: the same flag at 4.0 m (a 5.0 m guard), so the supervisor stops killing a sortie whose vertical behaviour
 is now measured -- then the tour can start and the horizontal question can be asked at 1.0 m/s.
+
+============================================================================
+ROUND 32/40 -- THE CLIMB SCALES WITH THE GUARD: UNBOUNDED, AND MISSION C IS BLOCKED IN SCOPE (2026-10-17)
+============================================================================
+FLIGHTC-r29, --climb-guard-m 4.0, plan 1.0 m/s:
+    [16.06] airborne: truth 0.211 m; the climb guard is 4.00 m above 1.00 m
+    [18.74] ABORT: the truth is at **5.08 m** for a commanded 1.00 m (guard 4.00 m)
+    C2 -0.039 m, 0.09 % inside a body
+
+  guard 2.0, plan 2.5 m/s   ->  truth 3.01 m   (round 30)
+  guard 2.0, plan 1.0 m/s   ->  truth 3.14 m   (round 31)
+  guard 4.0, plan 1.0 m/s   ->  truth 5.08 m   (this round)
+  and in the post-abort runs the same flight reached 24 / 66 / 142 / 259 m.
+
+READ: the climb FOLLOWS THE GUARD.  It is not an overshoot that settles; with lio_z pinned near 0 the FCU never sees the
+rise it is asked for, so the aircraft climbs until something external stops it.
+
+WHY THIS IS A BLOCKER RATHER THAN ANOTHER ROUND
+  (a) the vertical estimate is the defect, and it has survived every world, ceiling, gravity, map, decimation and KF
+      setting this project can reach without the forbidden changes (status rows 245-247, 261, 268, 273);
+  (b) the two real fixes are both ruled out by the owner: a barometric observation fused inside the estimator (ruling 1
+      requires LIO to fly the aircraft) and any edit to the Super-LIO checkout (ruling 2, no architecture change);
+  (c) no guard placement works, because the climb follows the guard up;
+  (d) plan speed, the last in-scope lever, does not touch it (rows 273, 274).
+
+  The minimum relaxation that would unblock Mission C is ONE of:
+    * allow a barometric observation INSIDE the estimator (baro stays out of the controller); or
+    * ban is lifted enough to edit lio/config or the Super-LIO checkout; or
+    * accept the climb and grade Mission C on C2 alone, with the aircraft flying above the forest.
