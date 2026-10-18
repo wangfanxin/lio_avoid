@@ -2196,3 +2196,22 @@ MISSION C -- OWNER'S RULING: LIO IS MANDATORY; AND THE INITIAL-YAW CHECK (2026-1
 
   Note for the estimator work: the pattern never saw the forest from a second heading, which is exactly the kind of
   constraint a yaw-rotating scan would add over a degenerate (large-floor, thin-pillar) scene.
+
+============================================================================
+ROUND 13 -- THE YAW MISMATCH IS STACK-WIDE; THE FCU NEVER ADOPTS THE HEADING (2026-10-17)
+============================================================================
+Test: reference heading in W (atan2 of the L reference increment, rotated +90.05 deg) against yaw_cmd on the wire.
+  Mission C, r14                   yaw - heading_W   median -152.9 deg  (p10 -177.9, p90 +173.6)
+  Mission B, FLIGHTBARE-defaults   yaw - heading_W   median -103.3 deg  (p10 -178.1, p90 +179.0)
+  Mission B, FLIGHTHOLD2-maxjitter yaw - heading_W   median  +19.9 deg  (p10 -178.4, p90 +179.4)
+
+  the truth's yaw in the recordings: +0.0 deg for the WHOLE flight in r14 and r3 -- the FCU never adopts the heading.
+
+READ
+  * the wire's yaw does not encode the reference's heading in ANY mission of this stack; Mission B has always lived
+    with the same inconsistency, so it is not a Mission-C defect and not the cause of its instability;
+  * a multirotor's position loop is yaw-independent: fixing the yaw CANNOT change the path;
+  * the only thing a heading change can buy is a different scan geometry, and that requires the FCU to actually hold
+    the commanded yaw, which it currently does not (truth yaw constant).
+NEXT: check what the bridge writes into the MAVLink yaw field against ATT.Yaw in flight.BIN; only after the FCU holds
+the heading is "let it turn so the LiDAR sees more" a testable idea.
