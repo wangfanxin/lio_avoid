@@ -2516,3 +2516,27 @@ THE FLIGHT (FLIGHTC-r20): 24.54 s  ABORT: never left the ground (truth 0.100 m a
 
 SECOND start-up refusal in four rounds (round 21: "takeoff refused").  The scene change is UNTESTED; the retry is owed,
 and that flake is now worth a round of its own because it costs whole flights.
+
+============================================================================
+ROUND 28 -- THE TAKE-OFF FLAKE MECHANISM: ARM, THEN DISARM 2 s LATER (2026-10-17)
+============================================================================
+FLIGHTC-r21, the new scene's retry, hit the flake.  The supervisor's own sequence:
+
+    [ 8.86] FCU: armed=False mode=STABILIZE pos=[-0.001 -0.005 +0.085] alt AMSL 584.2 m gps_fix=0
+    [ 8.91] bridge/mavlink: mode -> GUIDED
+    [12.52] armed; landed_state=1
+    [12.52] phase -> takeoff
+    [12.52] bridge/mavlink: takeoff 0.20 m above the pad sent VERBATIM as packet.z
+    [12.57] ABORT: takeoff refused
+    [12.62] bridge/mavlink: mode -> LAND
+
+    the FCU's statustexts, in order:  EKF3 IMU0 origin set | Field Elevation Set: 584m | Initialising ArduPilot |
+                                      Arming motors | **Disarming motors**        <- two seconds after Arming motors
+
+READ: the ARM DID NOT STICK.  The takeoff refusal, the mode -> LAND and "never airborne" all follow from the FCU
+disarming.  Same signature in rounds 21 and 25, in three different worlds, so it is a start-up RACE (the harness arms
+while the FCU is still initialising -- "Initialising ArduPilot" is 1.6 s before "Arming motors"), not a scene or aircraft
+problem.
+
+NEXT (no architecture change): test the FCU's own auto-disarm timer -- `DISARM_DELAY`, one line via EXTRA_PARM; if it is
+not that, then `ARMING_CHECK`.  The new scene is still owed its first real flight.
