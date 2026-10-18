@@ -2496,3 +2496,23 @@ WHY MISSION B WORKS AND MISSION C DOES NOT -- THE SCAN'S COMPOSITION AT THE PAD 
 
 FIRST TEST THAT NEEDS NO ARCHITECTURE CHANGE: the start clearing 1.1 m -> 0.5 m, so pillars stand within a metre of the
 pad at every azimuth -- moving C's scan toward B's composition.
+
+============================================================================
+OWNER'S NEW MISSION-C DEFAULT SCENE -- BUILT AND MEASURED; FLIGHT ABORTED BEFORE TAKE-OFF (2026-10-17)
+============================================================================
+SCENE (src/tools/make-forest-north.py, third revision -> worlds/forest_north.yaml)
+    x (-6, 6), y (-2, 20); 0.6 m lattice; one pillar of r = 0.12 m per cell at a RANDOM position anywhere in it
+    (jitter = the whole half-cell = 0.180 m); 732 pillars; 3 m tall; arena ceiling 10.5 m; 0.8 m clearing at the start
+    (8 cells dropped); nearest neighbour 0.269 m centre / 0.029 m surface.  The tour is unchanged.
+
+WHAT THE CHANGE BUYS (the simulator's own ray-caster at the pad, 20 000 rays):
+    new scene, z = 2.00 m   80.5 % pillars/walls, median range 2.33 m, floor 1.9 %, ceiling 17.6 %
+    previous scene, z=2.00  59.9 % pillars/walls, median range 3.46 m, floor 6.6 %, ceiling 33.5 %
+    Mission B, z = 2.00 m   93.2 % pillars/walls, median range 2.49 m, floor 3.0 %, ceiling 3.9 %
+    -> the new field's scan COMPOSITION is now the same class as the mission that works.
+
+THE FLIGHT (FLIGHTC-r20): 24.54 s  ABORT: never left the ground (truth 0.100 m after 12.0 s)
+    cmd_z 0.00 at every phase; ATT.Yaw 193 rows all 0.00 deg; the plan never started.
+
+SECOND start-up refusal in four rounds (round 21: "takeoff refused").  The scene change is UNTESTED; the retry is owed,
+and that flake is now worth a round of its own because it costs whole flights.
