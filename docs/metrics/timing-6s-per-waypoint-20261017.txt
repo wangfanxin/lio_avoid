@@ -2215,3 +2215,23 @@ READ
     the commanded yaw, which it currently does not (truth yaw constant).
 NEXT: check what the bridge writes into the MAVLink yaw field against ATT.Yaw in flight.BIN; only after the FCU holds
 the heading is "let it turn so the LiDAR sees more" a testable idea.
+
+============================================================================
+ROUND 14 -- THE FCU TURNS THE AIRCRAFT TO 188 deg (SOUTH) AND HOLDS IT (2026-10-17)
+============================================================================
+flight.BIN of r14, message ATT.Yaw (centi-degrees, 0..36000):
+    t  31.37 s   4.9 cd      =   0.05 deg   (on the pad, before arming)
+    t  36.17 s   18 288.2 cd = 182.88 deg   <- after take-off the aircraft turns SOUTH
+    t  40.97 s   15 266.7 cd = 152.67 deg
+    t  45.77 s .. 88.97 s   ~18 845-18 885  = ~188 deg, held
+
+  bridge yaw path: `send_cmd` passes `cmd_l.yaw` through (`mavlink_impl.py:453`) with the mask
+  POS_VEL_ACC_YAW = IGNORE_YAW_RATE (`:57`), i.e. the yaw is NOT ignored by the FCU.
+
+CORRECTION: round 13's claim "the FCU never adopts the heading; the truth yaw is +0.0 deg the whole flight" was based
+on my own extraction of the tap quaternion and is WRONG -- the FCU's log shows the aircraft turning to ~188 deg and
+holding it.  The withdrawn conclusion was "fixing yaw cannot change the path"; what the logs actually say is that the
+aircraft is flown pointing SOUTH while the mission goes NORTH, which is precisely the condition the owner asked to check.
+
+NEXT: locate the sign/frame error between the plan's L yaw and the FCU heading so that ATT.Yaw is near 0 deg for a
+northward tour; verify on ATT.Yaw after the trigger; then fly Mission C with ALT_MODE=lio.
