@@ -2540,3 +2540,29 @@ problem.
 
 NEXT (no architecture change): test the FCU's own auto-disarm timer -- `DISARM_DELAY`, one line via EXTRA_PARM; if it is
 not that, then `ARMING_CHECK`.  The new scene is still owed its first real flight.
+
+============================================================================
+ROUND 25/40 -- TAKE-OFF FLAKE FIXED BY A PARAMETER; VERTICAL CHANNEL UNCHANGED (2026-10-17)
+============================================================================
+ROOT CAUSE of the take-off flake: params/sitl_basics.parm:34  **DISARM_DELAY 0** -- a zero delay disarms the aircraft
+as soon as the FCU sees it on the ground, inside the arm-to-takeoff window.
+
+FIX (no code, no architecture change): the arm file + `DISARM_DELAY 10` in one file, passed through the existing
+EXTRA_PARM channel.
+
+FLIGHTC-r22 (owner's new scene, ALT_MODE=lio, EGO_YAW_HEADING=1):
+    [12.86] armed; landed_state=1
+    [12.86] takeoff 0.20 m above the pad sent VERBATIM
+    [15.59] **airborne: truth altitude 0.209 m**          <- the arm stuck, the flake is closed
+    [15.59] THE GO: /plan/trigger published
+    phase table: takeoff cmd 0.78 lio -0.01 truth 0.10 | hold cmd 1.14 lio -0.01 truth 0.21 |
+                 abort  cmd 1.50 lio -0.01 truth 4.16 (climb guard) | done lio 0.02 truth 0.10
+    C2 **+0.001 m**, 0.00 % inside a body, 10.76 % below the 0.10 m standoff, C2-ego NOT MET
+
+READ: the new scene's scan composition (80.5 % pillars, 2.33 m median range -- statistically Mission B's class) does NOT
+change the vertical failure: lio_z sits at -0.01 m through a 4.16 m climb.  Composition is not the cause.
+
+SURVIVOR HYPOTHESIS, one line to test: src/lio/config/livox_360.yaml flies `lio.sensor.gravity_norm: 9.80665` while this
+world's IMU declares `gravity_norm: 9.7946` -- a 0.12 % mismatch whose integral over a 15 s climb is ~1.4 m.
+
+NEW: C2 +0.001 m -- a 1 mm approach during the climb, because the new forest stands 0.8 m from the pad with 0.12 m pillars.
