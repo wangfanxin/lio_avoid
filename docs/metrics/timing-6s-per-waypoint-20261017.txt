@@ -2259,3 +2259,26 @@ not add the error, the plan pointed the wrong way.
 
 NEXT: implement the two operations in send_cmd, add the unit test where the difference is unambiguous (theta_L = +-90
 deg), run the offline contract tests, then fly Mission C with ALT_MODE=lio and check ATT.Yaw ~ 0 deg for a north tour.
+
+============================================================================
+ROUND 16 -- THE YAW CONVERSION, WRITTEN AND PROVED; THE BUG IS 180 deg ON EAST/WEST (2026-10-17)
+============================================================================
+src/tools/test-yaw-heading.py, on the measured calibration (L->W yaw +90.050 deg, rms 0.0177 m):
+
+    heading = pi/2 - (yaw_L + yaw(R_WL))
+
+    theta_L    +0.0 deg  ->  heading   -0.05 deg   (want   0.0)   OK
+    theta_L   +90.0 deg  ->  heading  -90.05 deg   (want -90.0)   OK
+    theta_L  +180.0 deg  ->  heading +179.95 deg   (want 180.0)   OK
+    theta_L   -90.0 deg  ->  heading  +89.95 deg   (want +90.0)   OK
+    -> exact to 0.06 deg, i.e. to the calibration's own 0.05 deg
+
+    what the bridge does today (yaw passed through), same points:
+    theta_L    +0.0  ->    +0.0   (right by coincidence)
+    theta_L   +90.0  ->   +90.0   where it should be -90.0   ** 180 deg wrong **
+    theta_L  +180.0  ->  +180.0   (right by coincidence)
+    theta_L   -90.0  ->   -90.0   where it should be +90.0   ** 180 deg wrong **
+
+READ: the defect is invisible on north/south headings -- which is every Mission-B leg -- and half a turn wrong on
+east/west.  Not wired in yet on purpose: the bridge is shared, so the integration comes with the offline contract tests,
+a Mission-B regression flight, and only then a Mission-C flight with ALT_MODE=lio checking ATT.Yaw.
