@@ -1,4 +1,4 @@
-# ARCHITECTURE — boxes, links, topics, frames, interfaces, safety
+﻿# ARCHITECTURE — boxes, links, topics, frames, interfaces, safety
 
 One of the project's four living documents (budget in `PLAN.md` §7).  Everything here is a contract: rates,
 frames and interfaces come from measurements or from the firmware source, and each conversion has a test
@@ -761,6 +761,22 @@ What is NOT true, and matters for honesty: **the closest analogue also makes the
 4. **Nobody has a z-sanity check.**  No repository has a height-source cross-check, a variance test or a fallback on estimate loss; the remedy is a message timeout (0.5-0.6 s) or a human on the sticks.  Our truth tap and supervisor are strictly better instrumentation -- which is why we can see this defect at all, and why the reference stacks' silence about it is not evidence that they are immune.
 
 That is the answer to "别人的成功案例为什么行": they are not solving the problem we are failing at.  Either the vertical is a thrust loop with no integrator and a second number to watch, or the barometer is the height source, or the world gives the LiDAR something to see in z.  We built the one combination that has none of the three.
+
+### 7.6a And what their SCENES actually are (asked afterwards: "他们场景是rviz的吗，他们场景是什么？")
+
+**rviz is only the viewer in all four, and in ours too.**  What sits behind it is one of three things, and none of them is a physical world with our geometry:
+
+| repository | the scene | the sensor that plans | where the state estimate comes from |
+|---|---|---|---|
+| `Deploy_Ego_Planner`, **simulation** | **a procedurally generated point cloud with no physics at all**: `map_generator/random_forest` publishes a 26 x 20 x 3 m field with 100 obstacles of radius 0.5-0.7 m and height 0-3 m, at 1 Hz (`Deploy_Ego_Planner/src/planner/plan_manage/launch/single_run_in_sim.launch:12-29`), and the planner's own map is only 2 m tall (`:8`) | a **synthetic depth camera** rendered from that cloud: `pcl_render_node`, 640x480, fx/fy 387 (`Deploy_Ego_Planner/src/planner/plan_manage/launch/single_run_in_sim.launch:45-48`) | **perfect** -- `odom_topic = visual_slam/odom` (`...:9`), the drone simulator's own state.  There is no estimator, no FCU, no gravity and no LiDAR in this scene |
+| `Deploy_Ego_Planner`, real flight | a real room | RealSense D435 depth | VINS-Fusion |
+| `px4_gazebo_EgoPlanner_sim` | **Gazebo 11 + PX4 SITL, and the world is one the author built by hand out of pillars** -- the README says so in the step that starts it: "这个 world 是我自己拉柱子生成的，可以自己画一个 world" (`px4_gazebo_EgoPlanner_sim/README.md:91`) | the Gazebo ray sensor of the `iris_mid360` model, fed to FAST-LIO2 as `/scan` + `/mavros/imu/data` (`px4_gazebo_EgoPlanner_sim/FASTLIO/config/mid360.yaml:4-5`) | FAST-LIO2, with the LiDAR mounted **level**: `extrinsic_R = [1,0,0, 0,1,0, 0,0,1]` (`px4_gazebo_EgoPlanner_sim/FASTLIO/config/mid360.yaml:24-26`) -- against our 45 deg pitch (`src/lio/config/livox_360.yaml`'s `odom_robo`) |
+| `ego-px4ctrl-new` | **a 40 x 40 x 5 m closed Gazebo room with NO ROOF**, checkerboard floor, brick walls, and 15-40 wooden pillars of radius 0.2-0.5 m and 3 m height with designed corridors at y = +-0.9 m (`ego-px4ctrl-new/assets/world_generate/scripts/generate_forest_layout.py:10-20`; room in `ego-px4ctrl-new/assets/world_generate/scripts/generate_swarm_benchmark_forest_phase1.py:18-23`) | a depth camera in simulation, VINS-Fusion on hardware | **Gazebo ground truth** in simulation (`truth_odom_adapter.py`); in the same tree the FCU flies barometric height (`ego-px4ctrl-new/etc/init.d-posix/rcS:130-137`) |
+| `ego_planner_for_px4_with_vins_fusion` | no simulator at all: a real-flight module dump | RealSense depth | VINS-Fusion |
+
+Their design brief is the mirror image of ours, and it says why: `ego-px4ctrl-new/assets/world_generate/swarm_benchmark_forest_protocol.md:5` makes the FIRST priority of the simulation "视觉纹理丰富" -- rich visual texture -- with a checkerboard floor, brick walls, wooden pillars, and a small wooden box 2 m in front of every drone as a **visual initialisation anchor** (`...:26`).  That is what a CAMERA needs.  Ours is a bare 0.12 m cylinder field scanned by a LiDAR: no texture, no features, and 732 pillars against their 15-40.
+
+**What this closes**: the scene cannot be the answer in either direction.  Their worlds are *less* structured vertically than ours -- repo 3 has no roof at all and repo 2 has no physics at all -- so "our scene is too poor vertically" is refuted a second time, independently of r30 (which made our vertical constraint *stronger* and moved the estimate by nothing, §7.4).  And the one world that is genuinely closest to ours (Gazebo + pillars + FAST-LIO) differs in two things a scene cannot explain: the sensor is mounted **level** rather than pitched 45 deg, and the loop is closed by `AttitudeTarget` from PX4's own fused estimate, not by a position setpoint into an integrator.  Our scene is not exotic; it is merely harder for a LiDAR and easier for a camera, and neither property explains a z that reads `-0.0037 m` through a 3 m climb.
 
 ### 7.7 The answer, in one paragraph
 
