@@ -27,9 +27,10 @@ documents change: a name in a history section should be preceded by "deleted", a
 looks current should resolve.
 
 WHERE IT LOOKS.  The repository, `<repo>/src`, the external trees the docs quote (ArduPilot, Super-LIO,
-ego-planner-swarm, whose line numbers are the LIVE WORKING TREE of that checkout and not its HEAD), and
-`_stage`.  **A root that does not exist is REPORTED, never silently skipped**: a gate that goes quiet when
-its input is missing is worse than no gate.
+ego-planner-swarm, whose line numbers are the LIVE WORKING TREE of that checkout and not its HEAD), `_stage`,
+and `_refs` -- the four public PX4+ego integrations surveyed in `docs/ARCHITECTURE.md` 7.6, downloaded rather
+than cloned because the git port is blocked on this host.  **A root that does not exist is REPORTED, never
+silently skipped**: a gate that goes quiet when its input is missing is worse than no gate.
 
 usage: tools/check-doc-citations.py [--doc docs/PLANNERS.md ...] [--show N]
 """
@@ -53,7 +54,17 @@ ROOTS = (
     "/home/fanxin/lio_avoid/src/ego-planner-swarm",
     "/home/fanxin/lio_avoid/src/ego-planner-swarm/src",
     "/mnt/d/distill_self/_stage",
+    # the four public PX4+ego integrations surveyed in ARCHITECTURE.md 7.6, downloaded (not cloned: the
+    # git port is blocked on this host) into `_refs/<repo>/`.  Added when 7.6 started quoting them, so that
+    # every one of those quotes is checked by this gate rather than by trust.
+    "/mnt/d/distill_self/_refs",
 )
+
+#: roots that answer a FULL PATH but never a basename.  `_refs` holds four independent copies of the same
+#: packages (`ego_replan_fsm.cpp`, `controller.cpp`, `README.md`, ...), so letting it answer bare basenames
+#: would make every existing citation ambiguous -- and a bare citation means THIS project's tree.  A quote
+#: from a reference repository must therefore carry its repository name, which is also what makes it readable.
+PATH_ONLY_ROOTS = ("/mnt/d/distill_self/_refs",)
 
 #: `path/to/thing.ext:12` or `:12-34`, inside backticks.  The extension list is explicit so that a prose
 #: `12:30` (a clock time) or a chapter reference is not mistaken for a citation.
@@ -94,6 +105,8 @@ def by_basename(name: str) -> list:
     hits = []
     for root in ROOTS:
         if not os.path.isdir(root):
+            continue
+        if root in PATH_ONLY_ROOTS:
             continue
         if root not in _INDEX:
             _INDEX[root] = index_basenames(root)

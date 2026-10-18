@@ -1,4 +1,4 @@
-# ARCHITECTURE — boxes, links, topics, frames, interfaces, safety
+﻿# ARCHITECTURE — boxes, links, topics, frames, interfaces, safety
 
 One of the project's four living documents (budget in `PLAN.md` §7).  Everything here is a contract: rates,
 frames and interfaces come from measurements or from the firmware source, and each conversion has a test
@@ -671,3 +671,106 @@ tree's call sites; the negative control needs a deliberate rewrite, not an ancho
 **Outside the repository**: `_stage/` holds the instruments (temporary scripts and one-off measurement programs).  It is
 2 385 files and is deliberately not part of the repository; nothing in `src/` imports it, and every number in
 `docs/metrics/` names the script that produced it.
+
+## 7. THE DIAGNOSIS (2026-10-18): why this stack still flies badly
+
+Asked: *"你阅读ego plannar原文，分析我们现在的代码，然后去git找一些别人的成功px4+ego案例，分析为什么我们现在的代码还是跑不好？是场景问题吗？还是别的问题（比如跟踪/或者别的）"*.  This round was read-only: nothing was flown and no parameter was changed.  Four candidate causes were examined -- the scene, the tracking, the planner, and the vertical observation that BOTH the planner and the flight controller read -- and exactly one survives.
+
+### 7.1 Ego's own text, read from the pristine upstream
+
+Two ego trees sit side by side on the runtime side and are not the same tree: `~/lio_avoid/ref/ego-official-ros2` (pristine upstream, ROS 2) and `~/lio_avoid/ref/ego-lidar-ros2` (the LiDAR fork this project vendored).  Read from the first:
+
+| `file:line` | what it says |
+|---|---|
+| `src/planner/plan_manage/src/ego_replan_fsm.cpp:251-253` | `odom_pos_(0..2) = msg->pose.pose.position.{x,y,z}` -- the pose is copied **verbatim, z included**; ego has no height sensor and no height filter of its own |
+| `src/planner/plan_manage/src/ego_replan_fsm.cpp:189` (`planNextWaypoint`) | `planGlobalTraj(odom_pos_, odom_vel_, 0, next_wp, 0, 0)` -- the plan's **start** is the odometry, z included, so a wrong z is the origin of every plan |
+| `src/planner/plan_manage/src/ego_replan_fsm.cpp:270-282` (`waypointCallback`) | `if (msg->pose.position.z < -0.1) return;` then `Eigen::Vector3d end_wp(x, y, 1.0)` -- **the goal's z is IGNORED and hardcoded to 1.0 m**; the field's only other use is that negative sentinel |
+| `src/planner/plan_manage/src/traj_server.cpp:96` | yaw = `atan2(dir(1), dir(0))` of the spline tangent, in the **odometry** frame |
+
+So upstream ego is a **relative** planner: *"fly to this (x, y) at one metre in whatever frame the odometry calls zero"*.  That is safe upstream for exactly one reason -- the flight controller owns altitude, and the number 1.0 m means the same thing to the map and to the FCU only because the FCU's height comes from the barometer.  **Nothing inside ego can detect a vertical error in its own odometry**, and the plan inherits it silently.
+
+### 7.2 What this tree changes in ego -- and it is not the altitude
+
+`diff -rq` pristine -> LiDAR fork: **7 files** (`bspline_optimizer.cpp`, `grid_map.h`, `grid_map.cpp`, `ego_replan_fsm.h`, `ego_replan_fsm.cpp`, `planner_manager.cpp`, `traj_server.cpp`).  LiDAR fork -> our vendored copy: **2 of ego's own sources** carry our patches (`ego_replan_fsm.cpp` = PATCH I's 1 Hz goal-repeat guard and the mission sequencer, `planner_manager.cpp` = PATCH 0013 + RESOLUTION/1), plus `ego_on_lio.launch.py`; the rest of that diff is `uav_simulator/*` build files and three `.pre-*` backups.
+
+The one fork change that matters for this mission is the goal z policy.  Upstream: a constant `1.0`.  Fork: `node_->declare_parameter("fsm/manual_goal_z", 1.5)` plus `const double goal_z = position.z > 0.05 ? position.z : manual_goal_z_;` -- so our tour's 1.5 m / 2.0 m does reach the plan, where upstream would have flown 1.0 m whatever we asked for.
+
+So the audit's verdict (§6) stands: **ego is still ego.**  But ego is not the component that decides the aircraft's altitude; it is the component that *trusts* whoever does.  That trust is where the failure is.
+
+### 7.3 The component that does decide it -- read out of the EKF3 in this tree
+
+`src/tools/run-mission.sh:49-52`: `ALT_MODE` (default **`baro`**) selects `params/phase_a_posz_baro.parm` (`POSZ 1`) or `params/phase_a_posz_lio.parm` (`POSZ 6`).  `params/apm_lio_only.parm` sets all three source lanes to ExternalNav for `POSXY / VELXY / YAW`, and Mission C overrode the altitude lane with `ALT_MODE=lio`:
+
+    EK3_SRC1/2/3_POSZ 6        EK3_SRC1/2/3_VELZ 6        # ExternalNav only
+
+In `src/ardupilot/libraries/AP_NavEKF3/AP_NavEKF3_PosVelFusion.cpp:1214-1275` (`selectHeightForFusion`) the consequence is explicit:
+
+    } else if ((frontend->sources.getPosZSource(core_index) == AP_NavEKF_Source::SourceZ::EXTNAV) && extNavDataIsFresh) {
+        activeHgtSource = AP_NavEKF_Source::SourceZ::EXTNAV;
+    ...
+    if (baroDataToFuse) {
+        ...
+        if (activeHgtSource != AP_NavEKF_Source::SourceZ::BARO) { calcFiltBaroOffset(); }
+
+One `activeHgtSource` per core.  With `POSZ 6` the barometer is kept only as a **fallback for stale external nav** (`lostExtNavHgt` -> `fallback_to_baro`, > 500 ms) -- which never happens at 200 Hz.
+
+**With our 200 Hz feed the barometer is never used for height.**  This is not a tuning preference, it is the construction of the height source, and ArduPilot fuses only one of them.
+
+What the stream is declared to be worth is in `params/ekf_trust_lio_measured.parm`: **`VISO_POS_M_NSE 0.01`** (the external position is 1 cm-accurate) and **`FS_EKF_THRESH 30.0`** (the innovation gate is 30 sigma, i.e. it cannot reject what the LIO sends).  Together:
+
+**The only vertical observation in the entire navigation chain -- the one the flight controller's altitude loop and the planner's z both come from -- is the LIO's z.**
+
+### 7.4 What that observation actually did (24 Mission-C sorties, measured)
+
+| sortie | at take-off / the abort | message | consequence |
+|---|---|---|---|
+| r12 / r13 (map 0.10 m, decimation 0.05) | `lio_z` 1.80 then 0.54 against a truth of 4.05 / 4.08 | the estimate lags the climb by 2-3.5 m | the same flight logs `ARRIVED waypoint 1 (**0.014 m horizontal**)` -- the horizontal channel is the best instrument in the stack |
+| r11, r20 | at `done`: `lio_z` **-197.3 / -499.7 m** while the aircraft is back on the pad at 0.10 m | the vertical channel does not merely lag, it diverges downwards without bound | the FCU, told it is sinking, climbs: post-abort runaways of 24 / 66 / 142 / 259 m |
+| r18 / r22 / r23 (+ 3 m pillars, gravity, ceilings) | `lio_z` **-0.00 / -0.01 / -0.01 m** at take-off, at the hold and at the abort, truth 4.12 / 4.16 / 4.01 m | the first 15-20 s of every sortie are worthless vertically | the truth-based climb guard ends every sortie inside that window |
+| r15 (`ALT_MODE=baro`) | `cmd_z 2.02` vs truth **2.17** at leg 1, **2.04** at leg 2 | the vertical loop holds 2.0 m to 4 cm when its observation is physical | `ARRIVED (0.071 m horizontal, 0.189 m vertical)`, the best Mission-C arrival |
+| r26 / r27 / r28 / r29 (tour 1.5 m, guard 2.0 -> 4.0 m) | truth at the abort **4.15 / 3.01 / 3.14 / 5.08 m** against commands of 1.0-2.0 m | the climb **follows the guard up** -- it is unbounded, not an overshoot | no in-scope guard placement lets the tour start |
+
+Two footnotes that keep this honest.  (i) Round 23's whole-recording spans show the channel is a **transient, not a scale error** (`r18`: LIO z -0.006..65.926 against truth 0.100..66.502, i.e. it tracks a 66 m runaway faithfully *afterwards*).  (ii) Mission C's `C2` numbers -- `+0.881 / +1.017 / +0.388 / +0.111 m`, 0 % of samples inside a body -- are **not** evidence of good avoidance: the aircraft spent those sorties climbing at the pad (row 257 says so explicitly), and one flight read **`+0.001 m`**, i.e. one millimetre from a pillar while doing it.
+
+### 7.5 The four candidates, judged
+
+| candidate | verdict | the measurement |
+|---|---|---|
+| **the scene** | **REFUTED as the variable, EXPLAINED as the class** | Six scene dimensions were varied, each with its own sortie, and none moved the vertical channel: pillar height 10 / 3 m, ceiling 5 / 10.5 m, start clearing 1.1 / 0.8 m, arena ±5 / ±6 m and `y` 0..10 / -2..20, pad on and off the wall, mission 2.0 / 1.5 / 0.8 m -- and the pad scan's composition (80.5 % pillars at 2.33 m median) matched the mission that works (93.2 % at 2.49 m).  What the scene class DOES do is remove the vertical constraint from the LiDAR: with the 45 deg nose-down mount the fan returns **29.6 % floor / 16.8 % ceiling / 44.9 % pillars** (§2), and a single ground plane cannot separate *"the sensor rose"* from *"the sensor pitched"*, while vertical cylinders are translation-invariant in z.  So the scene is why the estimate is vertically weak -- and changing numbers inside that class never helps |
+| **horizontal tracking** | **REFUTED** | arrivals of **14 mm** (r12) and **71 mm** (r14); A1 (LIO against truth) **3.2-3.4 mm** on the promoted arm; the heading fix verified in the FCU's own log (`ATT.Yaw` 188 deg -> **0.97-3.59 deg**); A4 7.68-8.04 mm on the frozen Mission-A arm.  The horizontal chain -- LiDAR, LIO, relay, ego, shell, bridge, FCU -- is the part that is measured and works |
+| **the planner (ego)** | **REFUTED as a cause, CONFIRMED as the carrier** | §7.1-7.2: 7 files from upstream, 2 of them ours, no altitude logic in either direction.  Its own two defects are separate and already localised: the single-scan shell (§6 correction) and the per-leg corridor/clamp that let a **98.3 m** target reach the aircraft in r14 |
+| **the vertical observation** | **CONFIRMED, and it is the only candidate that explains everything** | §7.3-7.4: unbounded climb, climb-follows-guard, post-abort runaways, `C2` passing because the aircraft was above the pillars, and the one flight that held altitude doing so with the barometer |
+
+### 7.6 Four public PX4 + ego stacks, and the one parameter that separates them from us
+
+Cloned (read-only) into `D:\distill_self\_refs\` and read for the same four questions this project asks of itself: how odometry is fed, how ego's output reaches the FCU, how frames/yaw are handled, and **what the vertical channel is built on**.  GitHub's git port is blocked on this host, so the trees came down as `codeload.github.com` tarballs; the full survey with per-line quotes is `_refs/EGO_PX4_SURVEY.md`.
+
+| repository (stars) | stack | how ego's command reaches the FCU | what the vertical channel is built on |
+|---|---|---|---|
+| `qiurongcan/px4_gazebo_EgoPlanner_sim` (10) -- Mid360 + FAST-LIO2 + ego + PX4 v1.14 + `se3_controller`, the closest analogue of this project | FAST-LIO2 -> ego -> PX4 SITL, Gazebo | `px4_gazebo_EgoPlanner_sim/controller/se3_controller/src/se3_ctrl.cpp:22` publishes `mavros_msgs::AttitudeTarget` on `/mavros/setpoint_raw/attitude`, mask = the three rate bits (attitude + collective thrust); **acceleration feed-forward is explicitly zeroed** (`px4_gazebo_EgoPlanner_sim/controller/se3_controller/src/se3_ctrl.cpp:318`) | **the LIO's z, verbatim** -- `px4_gazebo_EgoPlanner_sim/camera_pose_node/src/vision_pose.cpp:116` copies FAST-LIO's `/Odometry` unchanged (no axis, no offset) and `:196` republishes it to `mavros/vision_pose/pose`, with PX4 told `EKF2_HGT_REF Vision`, `EKF2_EV_CTRL 15` (`px4_gazebo_EgoPlanner_sim/README.md:208-210`).  The barometer is not switched off, and its world has a floor |
+| `gwxie2/ego-px4ctrl-new` (2) | ego v1+v2 + `px4ctrl` + VINS + PX4 SITL, 6 UAV, the largest doc set | `ego-px4ctrl-new/src/px4ctrl/src/px4ctrl_node.cpp:80`, attitude mask `ego-px4ctrl-new/src/px4ctrl/src/PX4CtrlFSM.cpp:583-585` | **the split this project should adopt**: its PX4 startup script flies `EKF2_AID_MASK 1` and `EKF2_HGT_MODE 0` (baro), with the vision variants commented out beside them (`ego-px4ctrl-new/etc/init.d-posix/rcS:130-137`), while VINS supplies xy and yaw.  It is also the only one that breaks the estimate on purpose (`ego-px4ctrl-new/src/clean_uav_core/launch/phase3_vins_pipeline_corrupted.launch:9`, "the corrupted extrinsics create controlled drift") |
+| `HuangTH96/Deploy_Ego_Planner` (2) -- the Fast-Drone-250 course tree, real drone | VINS-Fusion + ego + `px4ctrl` | `Deploy_Ego_Planner/src/realflight_modules/px4ctrl/src/px4ctrl_node.cpp:79`, mask `Deploy_Ego_Planner/src/realflight_modules/px4ctrl/src/PX4CtrlFSM.cpp:566-568`, **velocity and acceleration feed-forward** (`Deploy_Ego_Planner/src/realflight_modules/px4ctrl/src/controller.cpp:33`) | nothing pins PX4's height source anywhere in the tree; a bad VINS z is answered **by hand** -- "case 2: VINS positioning inaccurately ... fast ascent or rapid descent ... turn channel 5 back to the middle position" (`Deploy_Ego_Planner/readme_en.md:216`) |
+| `xdu-aero-association/ego_planner_for_px4_with_vins_fusion` (13) | VINS-Fusion + ego + an older `px4ctrl` | `ego_planner_for_px4_with_vins_fusion/real_flight_modules/px4ctrl/src/px4ctrl_node.cpp:75`, angles -> quaternion (`ego_planner_for_px4_with_vins_fusion/real_flight_modules/px4ctrl/src/controller.cpp:203-204`), acceleration as a **force** term (`ego_planner_for_px4_with_vins_fusion/real_flight_modules/px4ctrl/src/controller.cpp:103-104`) | no PX4 estimator configuration at all, and no z check: a drifting z can only surface as thrust saturation (`ego_planner_for_px4_with_vins_fusion/real_flight_modules/px4ctrl/src/controller.cpp:106-117`, a 0.5 g / 2 g band) |
+
+What is NOT true, and matters for honesty: **the closest analogue also makes the LIO's z the EKF's height reference**, so "everyone else uses the barometer" would be a false simplification.  What separates them from us is four things:
+
+1. **They close two loops on two different vertical numbers.**  Their controller reads its state back from `/mavros/local_position/odom` -- PX4's own fused estimate (`px4_gazebo_EgoPlanner_sim/controller/se3_controller/src/se3_ctrl.cpp:31`) -- while ego reads the LIO directly, and `camera_pose_node` prints `estimatedPose / vrpnPose / px4Pose` z side by side, live (`px4_gazebo_EgoPlanner_sim/camera_pose_node/src/vision_pose.cpp:198-204`), which is exactly how a height contract gets noticed.  In our stack the FCU's vertical state IS the LIO's z (§7.3), so there is no second number anywhere to disagree.  The reference that flies the recommended split outright -- baro height, vision xy -- is repo 3.
+2. **The interface is attitude + collective thrust, not position.**  All four send `mavros_msgs::AttitudeTarget`; **none of them uses `/mavros/setpoint_raw/local`** (verified by grep over all four trees).  We send `SET_POSITION_TARGET_LOCAL_NED` position setpoints at 50 Hz into ArduPilot's position controller, whose vertical integrator accumulates the error the estimator fails to report.  A thrust command has no such state.
+3. **Their odometry is never from a vertical-cylinder forest.**  Gazebo with a floor and walls, a depth camera, or VINS; the LiDAR fork we vendored ships only `single_run_in_sim.launch.py` against `fake_drone/poscmd_2_odom` -- **odometry built from the position command itself**, i.e. a perfect estimate with a perfect z.  None of these stacks has ever had to estimate altitude over vertical poles.
+4. **Nobody has a z-sanity check.**  No repository has a height-source cross-check, a variance test or a fallback on estimate loss; the remedy is a message timeout (0.5-0.6 s) or a human on the sticks.  Our truth tap and supervisor are strictly better instrumentation -- which is why we can see this defect at all, and why the reference stacks' silence about it is not evidence that they are immune.
+
+That is the answer to "别人的成功案例为什么行": they are not solving the problem we are failing at.  Either the vertical is a thrust loop with no integrator and a second number to watch, or the barometer is the height source, or the world gives the LiDAR something to see in z.  We built the one combination that has none of the three.
+
+### 7.7 The answer, in one paragraph
+
+It is **not the scene, not the tracking, not ego, not the frames or the MAVLink contract**.  It is the **vertical observation in the navigation chain**: `ALT_MODE=lio` makes the LIO's z the *only* height source in EKF3 (code in §7.3), the EKF is told it is accurate to 1 cm with a 30-sigma gate, and that estimate reads `-0.01 m` for the first 15-20 s of every sortie while the aircraft climbs.  The flight controller therefore never sees itself arrive, the position loop keeps climbing (3.01 / 3.14 / 4.12 / 4.15 / 4.18 / 5.08 m, and 24 / 66 / 142 / 259 m after an abort), and the only thing that ends a sortie is the truth-based guard.  Everything downstream is *self-consistent* -- the map, ego's plan and the FCU's belief are all built in the same wrong frame -- which is why no internal check has ever flagged it and why the failure looks like "the mission is bad" rather than "the height is wrong".
+
+### 7.8 The two in-scope moves, and the one that is not
+
+* **`ALT_MODE=baro` -- exists, already the launcher's DEFAULT, and measured**: r14 held 2.0 m to 4 cm through two legs and arrived at 0.071 m.  The LIO stays the horizontal and yaw source, so the aircraft is still flown on the LIO's position; only the altitude lane returns to the barometer, which is ArduPilot's standard indoor split (`EK3_SRC1_POSXY 6 / POSZ 1`).  Whether that satisfies rule (1) is the owner's call, because rule (1) names the altitude channel.
+* **the reference's per-leg corridor/clamp** -- already implemented and flown (`EGO_CORRIDOR_M`); r14 shows what happens without a global bound on the reference, and round 12 localised it: the clamp ends with the leg, so a 98.3 m target reaches the aircraft.  This is the second defect and it is independent of the first.
+* **NOT in scope**: fusing a barometric or rangefinder observation *inside* Super-LIO (an edit to the external checkout plus a `lio_ws` rebuild), which is the structurally correct fix and is forbidden by rule (2).
+
+### 7.9 What must not be tried again
+
+Refuted by measurement in this mission, each with its sortie: map resolution 0.25 / 0.10 m, matcher decimation 0.20 / 0.05 m, `kf_max_iterations` 4 / 8, `gravity_norm` 9.80665 / 9.7946, ceiling 5 / 10.5 m, start clearing 1.1 / 0.8 m, pillar height 10 / 3 m, arena bounds and the pad on or off a wall, mission altitude 2.0 / 1.5 / 0.8 m, plan speed 2.5 / 1.0 m/s, climb guard 2.0 / 4.0 m, `EGO_REF_Z_CLAMP_M`, `EGO_CORRIDOR_*`, corner speed, `EGO_ARRIVE_M` -- **none touches the vertical channel** (§7.4).  The scene line is closed by six dimensions; the estimator line is closed by six settings; what remains is the choice of what the vertical loop reads.
