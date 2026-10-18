@@ -2388,3 +2388,26 @@ FLIGHT FLIGHTC-r17: 13.52 s  ABORT: takeoff refused: EKF3 IMU0 origin set | Fiel
 
 RESULT: UNTESTED.  The take-off was refused by the FCU (a start-up flake of a class this stack has seen), so the wall
 move was never exercised.  NEXT: re-fly the same configuration with no new change.
+
+============================================================================
+ROUND 22 -- THE WALL MOVE TESTED; THE LIO'S z IS FLAT AT ZERO (2026-10-17)
+============================================================================
+FLIGHTC-r18, walls y -3..12, ALT_MODE=lio, EGO_YAW_HEADING=1, everything else as Mission C has flown it:
+
+    preflight  sim  0.0   cmd_z 0.00   lio_z  0.00   truth 0.00
+    takeoff    sim 33.0   cmd_z 1.42   lio_z -0.00   truth 0.10
+    hold       sim 35.1   cmd_z 1.12   lio_z -0.00   truth 0.21
+    abort      sim 36.8   cmd_z 1.58   lio_z -0.00   truth 4.12     <- 16.73 s, climb guard
+    ATT.Yaw: 360 rows, median 0.97 deg (heading fix holds)
+    C2 +1.017 m, 0.00 % inside a body, C2-ego MET, 4005 plans
+
+READ: the LIO's vertical state does not integrate the climb at all -- it holds the value it started with.  That is the
+signature of an UNOBSERVABLE vertical direction (a 45 deg-down LiDAR over a floor plane with thin pillars), not of a
+mistuned matcher.  Every knob in the matcher/map family has now been tried and none moved it.
+
+WHAT IS LEFT IS STRUCTURAL, and it is a choice for the owner:
+  (a) give the LIO a vertical reference of its own -- a barometric input fused INSIDE the estimator.  The owner's ruling
+      is about what FLIES the aircraft (ALT_MODE=lio), not about what the estimator may observe; or
+  (b) fly Mission C where the LiDAR has vertical structure to see (taller/closer features, or a route through dense
+      pillars from the start), or
+  (c) accept the vertical defect and grade Mission C on its horizontal behaviour only.
