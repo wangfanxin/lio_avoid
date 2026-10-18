@@ -1,0 +1,65 @@
+MISSION A RE-FLOWN ON THE CURRENT TREE -- 2026-10-18
+=====================================================
+owner: "missionA现在还能飞吗？你飞一遍mission A，画xyz-t图和俯视图"
+
+ANSWER: yes.  A1/A2/A3/A4, B2, B3, B4, C1, C2 all pass, the four corners each hover >= 5 s, nothing
+aborts, and B1 fails by exactly the amount the frozen release records (E 2.126 against a 2.10 bound;
+2.113 on RECT46).  The gap between the two sorties is 0.3 % on A1, 3 % on A2, 0.2 % on C2.
+
+1. THE CONFIGURATION (the frozen rect46 one, unchanged)
+-------------------------------------------------------
+    WORLD=worlds/pillars.yaml                46 pillars, r 0.30, arena +-5 m, 0-4.2 m tall
+    MISSION_PARM=params/phase_a_mission_fast.parm
+    EKF_PARM=params/ekf_trust_lio_measured.parm     VISO_POS_M_NSE 0.010 / VISO_VEL_M_NSE 0.069
+    ALT_MODE=lio  NAV_SOURCE=lio
+    GEOFENCE_M=6.60  TAKEOFF_COMMAND_M=0.2  VERTICAL_FIRST=1  VERTICAL_HOLD_S=3.0
+
+2. TWO HARNESS DEFAULTS CHANGED SINCE rect46, AND BOTH HAD TO BE NAMED
+---------------------------------------------------------------------
+    PLANNER=       now defaults to `ego` (Mission B)              -> passed PLANNER=rectangle
+    RECT_HOLD_S=   now defaults to 0.0 (fly-through arm)          -> passed RECT_HOLD_S=5.0
+
+    The first re-flight of this round (RECT50-recheck) was flown WITHOUT them and therefore was not
+    Mission A: route 15.6 s, "CORNERS HOVERED >= 5.0 s: 0 of 4", B2 leg 5 at 161.4 mm (a corner cut
+    through a fly-through bend).  Its numbers are kept in the record as the fly-through arm, not as a
+    regression.  The value 5.0 s is not a guess: the frozen release's OWN recording, audited with the
+    same tool, shows 8.97 / 9.42 / 6.34 / 7.49 s holds and "4 of 4 HOLD-OK".
+
+3. THE ROWS, FROZEN REFERENCE AGAINST THIS SORTIE
+-------------------------------------------------
+    row                        RECT46 (frozen)        RECT51 (2026-10-18)     verdict
+    A1 route horizontal rms    3.37 mm                3.28 mm                 PASS (<= 20)
+    A2 route vertical rms      1.86 mm                1.80 mm                 PASS (<= 50)
+    A3 delivered odometry      PASS                   PASS, 200.1 Hz,         PASS
+                                                       wander E 0.511 / N 0.498 / U 0.316 mm
+    A4 FCU estimate vs truth   PASS (residual 109.4)   PASS (residual 109.9)   PASS
+    B1 truth box extents       E 2.113 / N 1.248      E 2.126 / N 1.248       FAIL on E, as recorded
+    B2 worst perpendicular     7.3 3.4 12.3 16.4       5.0 3.2 14.4 22.8       PASS 6 of 6 (<= 50)
+                               19.7 24.5 mm           30.8 14.7 mm
+    B3 corner arrivals         --                     2.0 / 0.2 / 5.2 / 7.7 /  PASS 5 of 5 (<= 100)
+                                                       2.0 mm
+    B4 landing                 yes                    yes                     PASS
+    C2 obstacle clearance      0.569 m, 0 of 60336    0.570 m, 0 of 60466     PASS
+    C1 final point             0.010 m                0.020 m                 PASS
+    dwell per corner           4 of 4 (6.3-9.4 s)     4 of 4 (6.36 / 7.45 s   PASS
+                                                       audited at c3 / c4)
+
+    B1 was already an honest FAIL in the frozen release (STATUS rows 60/61): the truth's east extent
+    is 2.113-2.130 m against a 2.100 m bound on every arm, i.e. the estimate moves and the flight does
+    not.  This sortie reproduces it to 0.013 m.
+
+4. THE FIGURES (the two the owner asked for)
+--------------------------------------------
+    docs/figures/mission-a-recheck-20261018-xyzt.png   x, y, z against time: truth (1200 Hz), the LIO
+                                                        in W, and the FCU's own EKF; the commanded z
+                                                        drawn dashed over the take-off hold
+    docs/figures/mission-a-recheck-20261018-xy.png     top view over the 46-pillar world, whole flight
+                                                        plus the 2.0 x 1.2 m square zoomed
+    both produced by src/tools/plot-run.py from the recording, with `--bin` for the FCU curve
+
+5. ARTEFACTS
+------------
+    _stage/mission-a-recheck.sh                  the sortie (single file, both defaults named)
+    logs/missionA-RECT51-recheck-hold5/          the recording (outside the repository)
+    logs/missionA-RECT50-recheck/                the fly-through arm, kept for the record
+    frozen-check after the flights: 53 of 53 files unchanged
