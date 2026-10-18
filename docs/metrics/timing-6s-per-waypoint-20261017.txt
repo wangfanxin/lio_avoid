@@ -2348,3 +2348,27 @@ from the intended side; and the LIO's vertical channel -- which cannot be bypass
 remaining defect that ends a Mission-C sortie.
 NEXT: the last untested estimator knob that touches the matcher, `lio.kf.kf_max_iterations` 4 -> 8 (one change), then
 a Mission-C flight with the same environment.
+
+============================================================================
+ROUND 20 -- kf_max_iterations 8 FAILS TOO; FOUR ESTIMATOR SETTINGS BRACKETED (2026-10-17)
+============================================================================
+Change: src/lio/config/livox_360.yaml  lio.kf.kf_max_iterations  4 -> 8   (patched, flown, RESTORED to HEAD)
+
+  r16   takeoff sim 32.6  cmd 0.89  lio 0.01   truth 0.10
+        hold    sim 35.6  cmd 0.89  lio 0.04   truth 0.21
+        abort   sim 37.6  cmd 2.07  lio 0.49   truth 4.09    <- 3.60 m gap
+        done    sim 82.6  cmd 2.19  lio -499.67 truth 2.56   <- the runaway grew again
+  ATT.Yaw: 521 rows, median 3.25 deg (min 0.00, max 3.58) -- the heading fix survives every flight.
+
+THE BRACKET, all on the same world and the same sortie shape:
+    map 0.25 + filter 0.20 + kf 4   (r11)   lio 1.99   truth 4.08   gap 2.09
+    map 0.10 + filter 0.20 + kf 4   (r12)   lio 1.80   truth 4.05   gap 2.25
+    map 0.25 + filter 0.05 + kf 4   (r13)   lio 0.54   truth 4.08   gap 3.54
+    map 0.25 + filter 0.20 + kf 8   (r16)   lio 0.49   truth 4.09   gap 3.60
+
+READ: four settings, one failure.  That is no longer a tuning problem, and the one thing they share is the SCENE.
+The scene's own defect: when the forest was placed only where y > 0 the arena got `walls.y = [0, 10]`, so the pad at
+(0,0) sits exactly ON the south wall -- a 45 deg-down LiDAR 0.1 m above the pad, with a wall through its own position.
+
+NEXT (one change): walls.y = [-3, 12], so the pad has free space behind it; then the same Mission-C flight with
+ALT_MODE=lio and EGO_YAW_HEADING=1.
