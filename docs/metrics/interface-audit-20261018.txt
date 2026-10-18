@@ -1,0 +1,306 @@
+INTERFACE AUDIT -- 2026-10-18
+=============================
+Asked: "你先审计，我们的接口层有没有问题，尤其是那个薄层接驳的"
+
+SCOPE (read-only; nothing flown, nothing changed)
+  src/bridge/base.py  src/bridge/bridge_node.py  src/bridge/mavlink_impl.py
+  src/planner/ego_contract_shim.py                 <- "the thin layer"
+  src/planner/cmd_stream.py  src/planner/cloud_relay.py  src/planner/fcu_pose_feed.py
+  src/supervisor/supervisor.py
+
+METHOD
+  1. read the code, every claim below carries path:line;
+  2. ran all 13 interface-facing self-tests and recorded their TRUE exit codes;
+  3. read the wire.csv of two recordings (RECT51 = the frozen Mission-A arm, FLIGHTC-r30 = the ego
+     arm) and the shim_trace.csv of the ego arm, and measured what actually went to the FCU.
+
+------------------------------------------------------------------------------
+1. WHAT IS PROVEN BY MEASUREMENT (the layer is correct where it is simple)
+------------------------------------------------------------------------------
+1.1 THE BYTES MATCH THE CONTRACT.  From the recordings' own wire.csv:
+      RECT51  type_mask 2552 over 2338 samples = IGNORE vx,vy,vz,afx,afy,afz,yaw_rate = POS_YAW;
+              v and a are LITERAL 0.000 in all 2338 samples; rate 50.0 Hz (median dt 0.0200, max gap
+              0.022 s); z_ned == -p_w_z with residual 0.000e+00 m; flags [1] only.
+      r30     type_mask 2048 = IGNORE yaw_rate only = pos+vel+acc+yaw; v and a nonzero in all 69
+              samples; same 50.0 Hz.
+    So the ENU->NED mapping, the mask selection and the 50 Hz wire are exactly what the code says.
+1.2 TEN SELF-TESTS PASS, AND THE IMPORTANT ONES HAVE REAL NEGATIVE CONTROLS:
+      src/common/frames.py --selftest ........................ PASS (spawn-North/East, lever arm, q_from_R)
+      ego_contract_shim.py --selftest ........................ PASS (corridor on/off, first leg, id/COMPLETED)
+      tools/test-cmd-stream.py ............................... PASS (mutant that arms a vertical leg on the pad FAILS)
+      tools/test-planner-swap.py ............................. PASS (3 producers, one consumer, ids monotone)
+      tools/test-supervisor-authority.py ..................... PASS (pasting MAV_FRAME_LOCAL_NED into the supervisor FAILS)
+      tools/test-stall-gate.py ............................... PASS (silence aborts while flying; NOT while ending)
+      tools/test-s4-l-to-wire.py ............................. PASS (15000 cases; the pre-fix conversion FAILS)
+      tools/selftest-bridge.py ............................... PASS (4 mutations, incl. "no attitude conversion")
+      tools/test-bridge-contract.py .......................... PASS
+      tools/test-yaw-heading.py .............................. PASS (4 cardinal cases < 1 deg; the naive
+                                                               pass-through is shown to be 180 deg wrong)
+1.3 THREE DESIGN PROPERTIES ARE KEPT, and they are the ones that make a planner swap possible:
+      the relay REFUSES an unknown header.frame_id instead of guessing (bridge_node.py:119-133);
+      the WIRE rate (50 Hz) is independent of the publisher's rate (bridge_node.py:181-205);
+      silence becomes a NAMED abort, not a completion (bridge_node.py:216-243, supervisor.py:293).
+1.4 fcu_pose_feed.py converts W->L correctly and deliberately does NOT translate a velocity
+    (fcu_pose_feed.py:44-58), and it feeds the FCU's OWN estimate rather than the truth tap
+    (its header records the round-79 correction).
+
+------------------------------------------------------------------------------
+2. DEFECTS
+------------------------------------------------------------------------------
+P1  BLOCKER -- THE CONTRACT TYPES LIVE INSIDE THE PLANNER, SO "planner 留空" BREAKS THE INTERFACE
+    bridge/bridge_node.py:51  from planner.cmd_stream import (CmdSample, FRAME_L, TRAJECTORY_STATUS_*)
+    supervisor/supervisor.py:50  from planner.cmd_stream import TRAJECTORY_STATUS_COMPLETED
+    The two components that must be INHERITED cannot even import if `planner/` is emptied.  Also
+    mavlink_impl.py:449 documents taking "anything with p, v, a, yaw" from that same module.
+    FIX  move the contract to `src/contract/cmd.py` (the dataclass + FRAME_L + the three status
+    constants, ~40 lines), have bridge/supervisor/tools import from there, and let `planner/` be free.
+    This must happen BEFORE the new tree is laid out, otherwise M0 cannot pass its gates.
+
+P2  BLOCKER -- THE "THIN LAYER" IS NOT THIN AS FLOWN: IT IS A NINE-GOVERNOR CASCADE, AND ITS OWN
+    DOCSTRING SAYS THE OPPOSITE
+    The docstring (ego_contract_shim.py:28-38) claims: "IT DOES NOT SAMPLE, FILTER, RATE-LIMIT OR
+    PREDICT ANYTHING -- before COMPLETED.  If the numbers on the wire differ from ego's own there,
+    that is a bug in this file".  What the launcher actually arms for the ego arm
+    (src/tools/run-mission.sh:247-373) is nine governors, all default-ON:
+        EGO_ARRIVE_Z_M 1.00   EGO_REF_Z_CLAMP_M 0.60   EGO_REF_Z_FLOOR_M 0.60
+        EGO_REF_ACC_MAX 2.0   EGO_REF_SLEW_MPS 6.0     EGO_CORNER_M 0.50 / MPS 1.10
+        EGO_CORRIDOR_M 0.01   EGO_REF_CLAMP_M 1.20
+    and rewrite() applies them in a fixed order to the planner's position, velocity AND acceleration
+    (ego_contract_shim.py:362-553).
+    MEASURED CONSEQUENCE, from the ego arm's own logs and trace:
+        "REFERENCE CLAMPED -- the plan asked for a point 2.099 m from the vehicle; forwarded 1.200 m"
+        fires on 30.3 / 35.8 / 36.7 % of the stream (FLIGHTC-r30, its four logged percentages);
+        the acceleration field's |a| has median 1.246 and p99 = max = 2.000 m/s2, i.e. it is
+        SATURATED AT THE CLAMP in the tail (EGO_REF_ACC_MAX);
+        the pre-clamp behaviour is in missionA-DIAG33's trace: |a| median 2.26, p99 6.51, max 22.22.
+    So on roughly a third of the messages the FCU receives a point the planner did not ask for.
+    FIX  the interface must be VERBATIM by default (position, velocity, acceleration, yaw untouched).
+    Move every governor into a separate, explicitly-named module (`refshaping.py`) that is (a) not
+    part of the interface, (b) default-OFF, (c) prints which governor fired into the trace.
+
+P3  BLOCKER -- NOTHING VALIDATES THE PRODUCER'S NUMBERS.  NO NaN TEST, NO PLAUSIBILITY BOUND.
+    bridge_node.py:119-147 builds a CmdSample and forwards it; mavlink_impl.py:449-475 writes it to
+    message 84; supervisor.py reads the same topic only for "talking?" and "COMPLETED?".  grep for
+    isfinite/isnan/clamp over all three: zero hits on the plan stream.  The only bounds in the stack
+    are the supervisor's five flight-level reasons (geofence, FCU mode, estimator feed, plan silence,
+    stall -- supervisor.py:277-300), i.e. they act AFTER the aircraft has flown.
+    Two realities this admits: (i) a producer can emit NaN (rectangle_source.py:399 itself does
+    `return float("nan")` on a bad input) and it goes to the FCU verbatim; (ii) Mission C's 98.3 m
+    reference reached the aircraft and was flown -- measured, round 12.
+    FIX  in the relay, before the CmdSample is accepted: every field finite; |p| and |v| and |a| within
+    named bounds; on failure the sample is REFUSED, counted, logged once per second and (after N s)
+    reported to the supervisor as a named stall.  A test with a NaN and a 100 m sample as negative
+    controls.
+
+M1  MAJOR -- THE YAW IS WRONG BY DEFAULT, AND WHEN CORRECTED IT WRAPS
+    ego_contract_shim.py:363-369: `--yaw-heading` is OFF by default, so the FCU receives the plan's
+    L-frame angle as its COMPASS HEADING; in this calibration L's x axis is +90.05 deg in W, so the
+    command is 90 deg wrong.  Mission C measured the consequence in the FCU's own log: ATT.Yaw
+    188 deg -> 3.59 deg when the flag was turned on.  When ON, the same block wraps the result into
+    (-pi, pi], so consecutive messages can step by ~2*pi: measured max yaw step 6.2525 rad in
+    FLIGHTC-r30's trace.  The FCU wraps the yaw error itself and the yaw-rate bit is masked off, so
+    the wrap is currently harmless -- but the trace cannot be read as a heading, and nothing tests
+    the STREAM's continuity, only the static function (tools/test-yaw-heading.py).
+    FIX  the conversion belongs in one place and must be the DEFAULT, unwrapped across messages
+    (accumulate, do not wrap), with a stream-level test (successive samples must not jump > 0.2 rad).
+
+M2  MAJOR -- THE ARRIVAL GATE'S VERTICAL TOLERANCE IS 1.00 m BY DEFAULT
+    ego_contract_shim.py:1105 `--arrive-z-m 1.00`; run-mission.sh:266 keeps it at 1.00.  An arrival
+    can therefore fire a metre BELOW the waypoint -- Mission C did exactly that: "ARRIVED at waypoint
+    1 of 4 (0.004 m horizontal, -0.956 m vertical)".  For a new scene and a new altitude this is a
+    silent trap.
+    FIX  make it a REQUIRED argument (no default), or default it to the horizontal gate's fraction.
+
+M3  MAJOR -- THE ALTITUDE CLAMPS ARE KEYED TO THE LAST WAYPOINT, NOT THE CURRENT LEG
+    ego_contract_shim.py:466-499: both the ceiling and the floor use `self.targets[-1][2]`.  A tour
+    whose legs fly at different altitudes is clamped against the FINAL altitude, which is wrong at
+    the start (Mission A's own tour climbs to 2.50 m and flies the square at 2.00 m).
+    FIX  use the current leg's z (targets[i_goal][2]); the clamps are off by default in the frozen
+    arm, which is why this never bit Mission A -- it will bite the first tour with two altitudes.
+
+M4  MAJOR -- ONE KNOB IS SILENTLY INERT: `--corner-m/--corner-mps` DO NOTHING WITHOUT `--ref-slew-mps`
+    The corner governor lives INSIDE the `if self.ref_slew_mps > 0.0:` branch
+    (ego_contract_shim.py:507-534).  A user who arms the corner governor alone gets no warning and
+    no effect.  The launcher happens to set both, so no sortie was affected.
+    FIX  reject the combination at start-up (or move the governor out of the slew branch).
+
+M5  MAJOR -- THE GATE THAT CHECKS THE INTERFACE'S WIRING IS RED, AND IT IS NOT WIRED INTO ANY GATE
+    `python3 src/tools/test-planner-knob.py` exits 1 with 6 failing expectations.  Its cause is
+    STALENESS, not the launcher: it assumes `PLANNER` unset selects `planner/rectangle_source.py`,
+    but run-mission.sh:196 now defaults `PLANNER="${PLANNER:-ego}"`, so the unset cases exercise the
+    EGO arm and every assertion about "rectangle keeps pos" / "--vertical-first-m 2.50" /
+    "ego defaults to posvel" fails.  It is referenced by no gate (grep over test-layout.py,
+    run-convention-tests.sh, run-fcu-link-test.sh: zero hits), so nothing noticed.
+    FIX  pass PLANNER explicitly in each case, and add it to the commit-time gate set.
+
+M6  MAJOR -- TWO TOUR-OWNERSHIP MODELS IN ONE PROCESS
+    `--tour-source shell|ego` (ego_contract_shim.py:1131-1136): the shell sends the goals and counts
+    waypoints, OR ego's own sequencer owns the tour and `--wp-index-topic` (PATCH 0011, `/wp_index`)
+    drives the id.  Two interfaces in one file; the second depends on a patch to ego that the new
+    repository may not carry.
+    FIX  in the new tree the planner owns its own progress; the adapter owns none.  If a
+    `wp_index`-based mode is kept, it must be a separate file with its own tests.
+
+m1  MINOR -- THE PROOF THAT THE LAYER REWROTE THINGS IS LOST ON EVERY ABORT
+    The governor counters (n_clamped, n_corridor, n_slewed, n_corner_capped, n_acc_clamped,
+    n_z_clamped, n_z_floored) are printed only in `summary()` at exit (ego_contract_shim.py:555-570).
+    Every aborted sortie is SIGTERM'd, so the numbers that would let one audit the layer are gone;
+    shim_trace.csv records only the forwarded values (columns: t_wall,wp,flag,px..az,yaw,jump_m,frame)
+    and not WHICH governor fired.
+    FIX  per-governor boolean columns in the trace, and flush the counters once a second.
+
+m2  MINOR -- `trajectory_id` IS FABRICATED BY THE ADAPTER
+    ego_contract_shim.py:381 `msg.trajectory_id = int(self.i_goal) + 1` destroys ego's own id and
+    defines the contract's id as "waypoint index".  That is a decision, not a bug, but it means the
+    documented semantic ("a change of id is a claim the mission moved on") is enforced by the
+    adapter, not by the planner.  A new planner that publishes correct ids would have them
+    overwritten.
+
+m3  MINOR -- THE POST-COMPLETED HOLD CANNOT EXPRESS A FINAL DESCENT
+    ego_contract_shim.py:388-401 pins the position to the LAST WAYPOINT, zeroes v and a and latches
+    the yaw.  A planner whose last leg is a landing descent cannot say so.
+
+m4  MINOR -- TWO TOOLS IN src/tools NEED A LIVE FCU AND ARE NOT OFFLINE GATES
+    test-takeoff-contract.py exits 2 without --variant; test-second-endpoint.py exits 1 with
+    ConnectionRefused when no FCU is listening.  Both are correct as bench tools; they must not be
+    mistaken for gates (nothing currently runs them).
+
+------------------------------------------------------------------------------
+3. THE THREE THINGS TO FIX BEFORE INHERITING THIS LAYER
+------------------------------------------------------------------------------
+  F1  move the contract out of `planner/` (P1).  Without it the new tree cannot even start.
+  F2  make the interface VERBATIM and move the nine governors to a default-OFF shaping module (P2).
+      The new planner's acceleration continuity problem (measured: 22.2 m/s2 steps pre-clamp,
+      shim_trace of DIAG33) must be fixed IN THE SAMPLER, not by clamping here.
+  F3  add the finite/plausibility gate with a NaN and a 100 m negative control (P3).  This is the
+      only defect in the list that can put a wrong number into the flight controller with no host
+      -side witness at all.
+
+AFTER THOSE, the residual risk is the yaw default (M1) and the arrival tolerance (M2); both are
+one-line changes but they change what flies, so they belong to the new tree's INTERFACE.md with a
+test each.
+
+------------------------------------------------------------------------------
+4. SECOND PASS: THE BRIDGE AND THE SUPERVISOR AS THEY WOULD BE INHERITED
+------------------------------------------------------------------------------
+(A second, independent read of bridge/ and supervisor/ was made and its findings were spot-checked
+against the files; the ones marked VERIFIED were re-read here.)
+
+B1  BLOCKER (VERIFIED) -- THE MISSION HAS NO UPPER TIME BOUND.
+    supervisor.py:557 `while True:` with only two exits: a gate set `abort_reason`, or
+    `self.plan["flag"] == TRAJECTORY_STATUS_COMPLETED` (:561-565).  There is no `--max-route-s`
+    argument in main() (:688-753).  A producer that keeps talking at 100 Hz and flies inside the
+    geofence never ends the route and never lands; the bridge keeps streaming the last point.  ego
+    never writes COMPLETED by itself (PLANNERS.md:162 -- the adapter had to synthesise it), so this
+    is the FIRST thing a swapped planner will meet.
+    FIX  `--max-route-s`, named abort.
+
+B2  BLOCKER (VERIFIED) -- ONLY FLAG = 3 IS EVER COMPARED.
+    bridge_node.py:209 `... == TRAJECTORY_STATUS_COMPLETED`, supervisor.py:177 stores it and :561-562
+    tests it.  EMPTY=0, ABORT=4, ILLEGAL_START=5, ILLEGAL_FINAL=6, IMPOSSIBLE=7 (the vendored
+    PositionCommand.msg) are all relayed as ordinary targets.  Measured consequence of the "relay
+    everything" rule in the logs: the relay forwards every accepted sample whatever its flag.
+    A producer idling with flag 0 at (0,0,0) commands the pad origin; one that sets 3 per leg ends
+    the tour at leg 1; one that raises 7 (ego's EMERGENCY_STOP) is ignored.
+    FIX  accept only 1 as "fly"; hold + named reason on 0/4-7; require one READY before honouring 3.
+
+B3  MAJOR (VERIFIED from the recordings) -- "MISSION OVER" HAS TWO OWNERS.
+    bridge_node.py:595-596 disables the relay the instant flag == 3 -- visible in Mission A's own log:
+    "bridge/relay: DISABLED after 2338 setpoints (the plan declared the tour COMPLETE) -- nothing of
+    the plan reaches the FCU".  PLANNERS.md:40/44 says COMPLETED is a STATEMENT and the aircraft is
+    meant to hold there, and the bridge docstring itself says the end of a mission is a field and the
+    producer must keep publishing.  With `posvel`/`posvelacc` the velocity stream then stops
+    altogether (velocity setpoints DO time out), and `Supervisor.land()`/`route()` have already
+    decided the same thing.  FIX  delete the disable; LAND stays the supervisor's.
+
+B4  MAJOR (VERIFIED) -- THE BRIDGE DOES NOT CONVERT YAW, AND A TEST ASSERTS THAT.
+    bridge_node.py:193 forwards the plan's yaw untouched; mavlink_impl.py:453/473 write it into
+    LOCAL_NED; selftest-bridge.py:118 asserts the pass-through is correct.  For the ego line the yaw
+    is an L-frame atan2, so east/west is 180 deg wrong (test-yaw-heading.py:4-11 documents it).
+    Rectangle hid it by publishing yaw 0.0 (run-mission.sh:844-848).  This is the SAME defect as M1
+    seen from the other end of the pipe: the conversion exists, is tested, and is called by nothing.
+    FIX  convert inside `send_cmd` (the expression already exists in the yaw test) and invert the
+    selftest's assertion in the same commit.
+
+B5  MAJOR (VERIFIED) -- `tick()` RE-SENDS A DEAD PRODUCER'S LAST SAMPLE FOREVER, AND THE STALL
+    IMPLEMENTATION THE BRIDGE CLAIMS HAS NO CALLER.
+    bridge_node.py:192 re-sends `newest` with no age test; `never_reason` (:216) and
+    `stalled_reason` (:228) are called only from tools/test-planner-swap.py.  `plan_age` is published
+    (:499) and never parsed.  So the bridge's own liveness rule is dead code while the supervisor
+    implements a second, different one.
+    FIX  call it in `tick()` (disable + a `stall` token in /bridge/status), or delete it and stop
+    documenting two implementations.
+
+B6  MAJOR -- THE ESTIMATOR-FEED GATE CAN NEVER FIRE IF THE BRIDGE DIES.
+    supervisor.py:195-214 parses the bridge's free-text status and records its freshness (:214) but
+    never checks it; :283-288 then gates on `nav_hz`.  A dead bridge leaves `relay=1`/`nav_hz=48`
+    frozen and the gate silent; a renamed key disables it silently.
+    FIX  age-gate `bridge_status["last_wall"]` (> 2 s -> abort naming the bridge).
+
+B7  MAJOR (VERIFIED) -- THE MODE GATE TESTS ONE STRING.
+    supervisor.py:278 `if st.armed and st.mode == "LAND" and self.phase not in ("land","done")`.
+    RTL / LOITER / ALT_HOLD / any GCS change is invisible, and the supervisor then waits for a
+    COMPLETED that will never come (B1).  bridge_node.py:593 already uses the right test.
+    FIX  abort on any `mode != "GUIDED"` while armed.
+
+B8  MAJOR -- THE NORMAL LANDING PUMPS WITH THE GATES ARMED.
+    `gates_armed` is cleared only in `finish()`'s abort branch (supervisor.py:567-587 vs :604,:628),
+    and `pump` returns as soon as a gate fires (:253-254), so the settle and the 40 s disarm wait can
+    be skipped, `land()` can return "still armed after LAND", and a completed mission is then logged
+    as an abort and landed twice.
+    FIX  clear `gates_armed` at the top of `land()`.
+
+B9  MAJOR (VERIFIED) -- THE AIRBORNE TEST AND THE CLIMB GUARD READ THE TRUTH TAP.
+    supervisor.py:465-485,:516 read /sim/truth/odom, although ARCHITECTURE.md:233 says only the
+    geofence gate and the metrics read truth.  In a deployment with no truth tap this aborts "never
+    left the ground" 12 s after a good take-off; the FCU's own landed_state/alt_rel_m are parsed
+    (mavlink_impl.py:135-140) and unused.
+    FIX  airborne from the FCU's state; keep the geofence on the tap.
+
+B10 MAJOR (VERIFIED) -- A MISSING CALIBRATION FILE FALLS BACK TO A PREDICTED ONE, SILENTLY.
+    bridge_node.py:327-331 `Calib.predicted(spawn_heading_deg=0.0, world_axes="body")`, while
+    frames.py:239-248 documents the Super-LIO prediction as `world_axes="sensor"` -- so the fallback
+    folds a 45 deg sensor pitch into every command, and it only logs.
+    FIX  refuse to stream without a calibration (non-zero exit at start-up).
+
+B11 MINOR (VERIFIED) -- `--geofence-m` DEFAULTS TO 4.60 (supervisor.py:733) while the documented
+    value for this stack is 6.60 (docs/PLANNERS.md:266); the harness always overrides it
+    (run-mission.sh), so it is latent -- but it is a hard-coded geometry constant in the safety
+    layer, which the one-geometry-source rule forbids.
+
+B12 MINOR -- NO FINITE CHECK, and `ids_seen` is a SET, so a reused trajectory_id creates no new leg
+    (a producer that numbers per segment loses the leg phases and metrics windows the route as one).
+
+B13 MINOR (VERIFIED, dead code that lies): `calibrate_gyros` returns `_command(...) is not None`
+    (always true, no caller); ATTITUDE is requested at 50 Hz (mavlink_impl.py:94) and never parsed,
+    so /fcu/odom carries a FABRICATED identity attitude (bridge_node.py:461) -- a planner fed that
+    topic reads yaw 0 whatever the aircraft does; `ekf_ok` is a precedence accident and never read.
+
+B14 PORTABILITY (VERIFIED) -- 22 files under src/tools hard-code `/mnt/d/distill_self/lio_avoid`
+    (e.g. bin-lag.py:21, bin-leg-trace.py:28), and four of them cannot even import from another
+    path (selftest-bridge.py:23, test-fcu-link.py:23, test-second-endpoint.py:42,
+    test-takeoff-contract.py:42).  The new repository therefore cannot copy `src/tools` as-is: every
+    path must become relative to the two roots the layout gate already defines.
+
+WHAT IS *NOT* COVERED BY ANY TEST (the honest coverage list): BridgeProcess (never constructed by
+any test), Supervisor.run/preflight/takeoff/route/land/finish, flags 0/4-7, the relay's COMPLETED
+cut, the mode-left-GUIDED gate, the /bridge/status freshness, the geofence default, the calibration
+fallback, NaN, trajectory_id reuse, the yaw wiring, and the mask actually sent.  What IS covered:
+the frame maths (bit-exact), the shim's own semantics, the relay's frame refusal, the stall gate's
+pure logic, and the one-writer split at SOURCE level only.
+
+------------------------------------------------------------------------------
+5. THE FIX LIST BEFORE INHERITING (final)
+------------------------------------------------------------------------------
+  F1  move the contract out of `planner/`                                  (P1)  [new tree cannot start]
+  F2  verbatim interface; governors into a default-OFF shaping module      (P2)
+  F3  finite + plausibility gate on the plan stream, with NaN and 100 m controls (P3)
+  F4  the completion/liveness machine: max-route time, flag semantics    (B1,B2,B3,B5)
+  F5  yaw: convert in `send_cmd`, default-correct, stream test, invert the
+      selftest that asserts the pass-through                              (M1,B4)
+  F6  fail-closed supervision: bridge-status freshness, mode != GUIDED,
+      gates off during landing, refuse a missing calibration              (B6-B10)
+  F7  de-hardcode the 22 absolute paths so `src/tools` can move         (B14) [M0 scope]
+
+Each of F1-F7 is small (a few lines to ~40 lines).  None of them changes the ArduPilot wire; all of
+them change who is allowed to decide what.
