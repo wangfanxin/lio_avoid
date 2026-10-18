@@ -2282,3 +2282,27 @@ src/tools/test-yaw-heading.py, on the measured calibration (L->W yaw +90.050 deg
 READ: the defect is invisible on north/south headings -- which is every Mission-B leg -- and half a turn wrong on
 east/west.  Not wired in yet on purpose: the bridge is shared, so the integration comes with the offline contract tests,
 a Mission-B regression flight, and only then a Mission-C flight with ALT_MODE=lio checking ATT.Yaw.
+
+============================================================================
+ROUND 17 -- THE YAW CONVERSION WIRED IN; MISSION B REGRESSION (2026-10-17)
+============================================================================
+WIRED: TourSequencer(l_yaw_offset_rad=...); rewrite(): yaw = pi/2 - (yaw_L + offset), yaw_dot = -yaw_dot, applied
+       BEFORE the COMPLETED hold latches the yaw.  The offset is the calibration's own L-x-axis angle in W (+90.05 deg),
+       computed in main from the same file the tour is converted with.
+
+OFFLINE, ALL GREEN
+    python3 src/planner/ego_contract_shim.py --selftest     CONTRACT SHIM SELFTEST PASSED
+    python3 src/tools/test-cmd-stream.py --self-test        CMD-STREAM TEST PASSED
+    python3 src/tools/test-planner-swap.py                  PLANNER SWAP TEST PASSED (3 planners, one contract)
+    the conversion on the shim's own inputs:
+        northbound plan (yaw_L 0)      -> compass  -0.05 deg
+        westward-turn plan (yaw_L -90) -> compass +89.95 deg  (east)
+
+MISSION-B REGRESSION FLIGHT (bare, FLIGHTBARE-defaults)
+    TOUR COMPLETE 9 of 9; legs 7 of 8 under 6 s (max 6.36 s; pre-change 7 of 8, max 6.55)
+    A1 12.37 mm (pre-change 13-14 mm); B1 E 6.916 / N 8.368; C1 0.337 m
+    C2 minimum **-0.239 m**   against the pre-change range **-0.039 .. -0.209 m** over seven bare sorties
+
+VERDICT: test-clean, flight-neutral on the time clause, collision clause NOT yet known -- -0.239 is outside the
+pre-change range on one flight, which is not enough either way.  Next: two more Mission-B flights; if it stays outside,
+gate the conversion behind a flag so Mission B keeps the old behaviour and Mission C uses the fixed one.

@@ -67,6 +67,7 @@ class TourSequencer:
     """
 
     def __init__(self, targets_l, arrive_m=0.30, hold_s=5.0, settle_mps=0.08, goal_resend_s=1.0,
+             l_yaw_offset_rad=None,
                  log=None, ego_driven=False, ref_clamp_m=0.0, leg_timeout_s=0.0, leg_abort_s=0.0,
                  arrive_z_m=1.00, start_alt_m=0.0, ref_z_clamp_m=0.0, ref_slew_mps=0.0,
                  corner_m=0.0, corner_mps=1.0, ref_z_floor_m=0.0, ref_acc_max=0.0,
@@ -163,6 +164,14 @@ class TourSequencer:
         self.t_last_no_odom = None
         #: THE CORNER GOVERNOR (see `rewrite`): within `corner_m` of the corner the reference may not move
         #: faster than `corner_mps`, and the velocity it carries is capped with it.
+        #: THE PLAN'S YAW IS AN L-FRAME ANGLE; THE CONTRACT'S IS THE FCU'S COMPASS HEADING (0 = North,
+        #: +90 deg = East, `cmd_stream.py:83-89`).  `l_yaw_offset_rad` is the angle of L's x axis in W
+        #: (the calibration's own yaw, +90.05 deg here), and when it is given the forwarded yaw becomes
+        #: `pi/2 - (yaw_L + offset)`.  None = pass the yaw through untouched, which is the behaviour every
+        #: Mission-B sortie has flown (and which `src/tools/test-yaw-heading.py` measures as 180 deg wrong
+        #: on east/west headings and coincidentally right on north/south).
+        self.l_yaw_offset_rad = None if l_yaw_offset_rad is None else float(l_yaw_offset_rad)
+        self.n_yaw_converted = 0
         self.corner_m = float(corner_m)
         self.corner_mps = float(corner_mps)
         self.n_corner_capped = 0
@@ -381,6 +390,12 @@ class TourSequencer:
         while removing the steps that the flight controller then has to chase.  `n_clamped` counts them, and
         every clamp is logged, so the fix is measurable rather than assumed.
         """
+        if self.l_yaw_offset_rad is not None:
+            # L-frame yaw -> the FCU's compass heading.  The derivative flips sign with it: an
+            # increasing L angle is a DECREASING compass heading.
+            msg.yaw = float(np.pi / 2.0 - (float(msg.yaw) + self.l_yaw_offset_rad) + np.pi) % (2 * np.pi) - np.pi
+            msg.yaw_dot = -float(msg.yaw_dot)
+            self.n_yaw_converted += 1
         msg.trajectory_id = int(self.i_goal) + 1
         self.last_ref = (float(msg.position.x), float(msg.position.y), float(msg.position.z))
         if float(np.hypot(msg.velocity.x, msg.velocity.y)) > 0.20 or abs(float(msg.velocity.z)) > 0.20:
@@ -1193,15 +1208,19 @@ def main() -> int:
     except Exception:                                                            # noqa: BLE001
         pass
     ego_driven = (args.tour_source == "ego")
+    l_yaw_offset = float(np.arctan2(calib.R_WL[1, 0], calib.R_WL[0, 0]))
     seq = TourSequencer(targets_l, arrive_m=args.arrive_m, hold_s=args.hold_s,
                         settle_mps=args.settle_mps, log=lambda s: print(s, flush=True),
                         ego_driven=ego_driven, ref_clamp_m=args.ref_clamp_m,
                         leg_timeout_s=args.leg_timeout_s, leg_abort_s=args.leg_abort_s,
+                        l_yaw_offset_rad=l_yaw_offset,
                         arrive_z_m=args.arrive_z_m, start_alt_m=args.start_alt_m,
                         ref_z_clamp_m=args.ref_z_clamp_m, ref_slew_mps=args.ref_slew_mps,
                         corner_m=args.corner_m, corner_mps=args.corner_mps,
                         ref_z_floor_m=args.ref_z_floor_m, ref_acc_max=args.ref_acc_max,
                         corridor_m=args.corridor_m)
+    print("shim: yaw: the plan's L angle -> the contract's compass heading (L x axis at %+.2f deg in W)"
+          % np.degrees(l_yaw_offset))
     print("shim: %d waypoint(s) in L from %s" % (len(targets_l), args.world))
     for i, t in enumerate(targets_l):
         print("shim: waypoint %d -> %s (L)" % (i + 1, np.round(t, 3)))
