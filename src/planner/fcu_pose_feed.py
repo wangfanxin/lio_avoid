@@ -101,7 +101,6 @@ def main() -> int:
                     help="the FCU's OWN estimate (bridge --fcu-odom-topic).  `/sim/truth/odom` is the SITL "
                          "simulator's model state, a TEST channel that does not exist on hardware")
     ap.add_argument("--out", dest="out_topic", default="/ego/odom_fcu")
-    ap.add_argument("--quiet-hz", type=float, default=10.0)
     args = ap.parse_args()
     if args.selftest:
         return _selftest()

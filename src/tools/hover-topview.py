@@ -20,6 +20,11 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import yaml  # noqa: E402
 
+if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+    print("usage: src/tools/hover-topview.py <sortie tag> [out.png]\n\n"
+          "Draws the top view of a Mission-C/B sortie from its own recording: the field, the tour, the truth,\n"
+          "every hover marked with its measured length, and the speed trace that shows the hovers as plateaus.")
+    raise SystemExit(0)
 TAG = sys.argv[1] if len(sys.argv) > 1 else "FLIGHTHOLD5-maxjitter"
 OUT = sys.argv[2] if len(sys.argv) > 2 else "/mnt/d/distill_self/_stage/figures/hover-%s.png" % TAG
 D = os.path.expanduser("~/lio_avoid/logs/missionA-") + TAG

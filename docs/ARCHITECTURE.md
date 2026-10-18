@@ -641,3 +641,33 @@ Three of the six files are instrumentation with no behaviour; the functional cha
 sequencer (which is what the contract shell and the acceptance rows read) and two patches in the planner
 manager.  Nothing outside ego is modified except new knobs whose DEFAULTS preserve the old behaviour, which is
 what `tools/frozen-check.py` verifies for the 53 frozen mission-A artifacts.
+
+## 6. The architecture audit (2026-10-17)
+
+Run because the pipeline has been edited for two missions and the owner asked whether it is still the same architecture.
+Every line below is a check that was executed, not a claim.
+
+| claim | check | result |
+|---|---|---|
+| **ego is still ego** | `src/planner/ego_on_lio.launch.py` declares 25 arguments and starts **one** `Node(...)`, `executable='ego_planner_node'`, `package='ego_planner'` | one process, from the external checkout, wired to our topics |
+| **the sampler is ego's own** | `ros2 run ego_planner traj_server` is present in the launcher and the shell never samples the spline itself on that route | ego's binary produces `/plan/cmd`; the shell only rewrites `trajectory_id`/`flag` |
+| **no new layer in the pipeline** | every `python3 $REPO/...` process the launcher starts: `sim/lidar_imu.py`, `sim/truth_rx.py`, `bridge/bridge_node.py`, `supervisor/supervisor.py`, `planner/cloud_relay.py`, `planner/fcu_pose_feed.py`, plus the planner file itself | the documented seven; nothing else |
+| **lio is still lio** | `super_lio_node` is run from `~/lio_avoid/lio_ws` with `src/lio/config/livox_360.yaml`; this repo ships only that config and the frozen manifest's records | the estimator is the external checkout, unmodified |
+| **rviz is still rviz** | two saved configs, `rviz/mission_a.rviz` (frozen) and `rviz/mission_b.rviz`; the Mission-B one needs one viewer-side static transform that the README prints and `_stage/verify-rviz-tf.py` verifies against recordings (p50 16-17 mm) | no stack-side TF was added |
+| **MAVLink unchanged** | `src/bridge/mavlink_impl.py`: `SET_POSITION_TARGET_LOCAL_NED` in `MAV_FRAME_LOCAL_NED`, masks `POS_YAW_MASK = IGNORE_VX`, `POS_VEL_YAW_MASK = IGNORE_AFX`, `POS_VEL_ACC_YAW_MASK = IGNORE_YAW_RATE`; `ODOMETRY` (#331) for the estimator feed; commands used: `COMPONENT_ARM_DISARM`, `NAV_TAKEOFF`, `PREFLIGHT_CALIBRATION`, `SET_MESSAGE_INTERVAL` | the same message set the frozen Mission A flew |
+| **transforms** | `python3 src/common/frames.py` (the L/W/F/B/S selftest) and `src/tools/test-s4-l-to-wire.py` | both PASS |
+| **the contract is planner-independent** | `src/tools/test-planner-swap.py` drives the same consumer with three planners | PASS |
+
+**What was deleted in this audit** (each provably never read): `rectangle_source.py --spacing` (the value is a literal
+in `densify(corners, spacing=0.05)` and `args.spacing` does not appear anywhere) and `fcu_pose_feed.py --quiet-hz`
+(declared with a default, never referenced).  `hover-topview.py` was given a `--help` so the layout gate (which runs
+every tool's `--help`) passes again.
+
+**What is stale and is NOT silently "fixed"**: `src/tools/test-bridge-contract.py`'s negative control still looks for
+`def send_position_velocity` in `bridge/base.py` and for `fsm/mission_fsm.py`, neither of which exists any more (the
+bridge is entered through `send_cmd` and the FSM became the contract shell).  Its positive half runs and reports the
+tree's call sites; the negative control needs a deliberate rewrite, not an anchor swap.
+
+**Outside the repository**: `_stage/` holds the instruments (temporary scripts and one-off measurement programs).  It is
+2 385 files and is deliberately not part of the repository; nothing in `src/` imports it, and every number in
+`docs/metrics/` names the script that produced it.

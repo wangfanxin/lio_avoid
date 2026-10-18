@@ -142,9 +142,6 @@ def main() -> int:
                          "wall with both extremes at ~0 m/s (docs/metrics/b1-mechanism-20261016.txt) -- and "
                          "the one leg this mission already flies from rest (the 0.64 m entry from the pad) "
                          "overshoots 2-6 mm.  Default 0.0 = OFF: the mission as every earlier sortie flew it")
-    ap.add_argument("--spacing", type=float, default=0.05,
-                    help="kept for the tour's own geometry print and the tests; nothing publishes a "
-                         "polyline any more")
     ap.add_argument("--hold-s", type=float, default=-1.0,
                     help="THE DWELL: hold this long at every corner of the tour, after the vehicle has "
                          "ARRIVED AND SETTLED at it.  -1 (default) = use the world file's mission.hold_s; "
