@@ -2452,3 +2452,24 @@ NEXT SESSION, IN ORDER
   2. the global gate on the REFERENCE (the shell's corridor/clamp are per leg and end with the leg: round 12 sent a
      100 m target to the aircraft)
   3. only then the (0,8) and (0,20) runs
+
+============================================================================
+OWNER'S RETRY -- 3 m PILLARS, 2 m FLIGHT: THE SAME VERTICAL FAILURE (2026-10-17)
+============================================================================
+world change: all 791 pillars z1 10.0 -> 3.0 m, arena ceiling 10.5 -> 5.0; the tour's z was already 2.0.
+sortie FLIGHTC-r19, ALT_MODE=lio, EGO_YAW_HEADING=1, everything else as Mission C has flown it:
+
+    preflight  sim  0.0   cmd_z 0.00   lio_z  0.00   truth 0.00
+    takeoff    sim 32.5   cmd_z 1.29   lio_z -0.00   truth 0.10
+    hold       sim 35.2   cmd_z 0.97   lio_z -0.00   truth 0.21
+    abort      sim 36.8   cmd_z 1.78   lio_z -0.00   truth 4.18     (climb guard, 16.82 s)
+    done       sim 81.9   cmd_z 2.60   lio_z 144.65  truth 359.53   (the runaway again)
+
+    ATT.Yaw: 516 rows, median 0.26 deg      C2 +1.102 m, 0.00 % inside a body, C2-ego MET, 5500 plans
+
+READ: the vertical failure is INVARIANT to the scene -- 10 m pillars, 3 m pillars, no pillars at the pad, the wall on or
+off the pad -- and to every map/decimation/KF setting.  It happens in the first 15-20 s of every flight.  It is therefore
+a property of the estimator's vertical state DURING INITIALISATION, not of what it looks at.
+
+The world keeps the owner's 3 m pillars.  The next change must be inside the estimator: a barometric observation fused
+there (not fed to the controller, which the owner's ruling covers).
