@@ -2176,3 +2176,23 @@ WHERE MISSION C ENDS, STATED ONCE:
   BEST         arrival 0.071 m horizontal / 0.189 m vertical (r14, waypoint 1)
   THE TOUR     (c) is closed -- the world declares exactly the tour the shell publishes:
                waypoint 1 -> [2.004 -0.003 1.884] (L) for the world's (0,2), and 2/3 likewise
+
+============================================================================
+MISSION C -- OWNER'S RULING: LIO IS MANDATORY; AND THE INITIAL-YAW CHECK (2026-10-17)
+============================================================================
+"必须用lio"  -> ALT_MODE=baro is WITHDRAWN.  Mission C flies ALT_MODE=lio, NAV_SOURCE=lio; the vertical defect must be
+              solved inside the estimator/navigation chain, not bypassed at the controller.
+
+"检查起始的yaw是否向着y正方向"  -> MEASURED (r14, r3; yaw 0 = +y North per docs/FRAMES.md):
+    world spawn.yaw_deg      0.0
+    truth yaw at t = 0        +0.0 deg      and +0.0 deg for the whole flight (the vehicle never turned)
+    the WIRE's yaw_cmd        first **-2.24 rad = -128 deg**, range -2.24 .. +0.62 rad
+    the plan's own yaw (L)    first 0.00 rad, range -pi .. +pi
+
+  So: the AIRCRAFT points +y, as required; the HEADING COMMAND does not.  The L-yaw -> wire conversion is neither the
+  calibration's +90.05 deg nor an identity, and the vehicle ignores it (its truth yaw never moves).  The heading
+  command is therefore the inconsistency to fix at its source, and the LiDAR's scan geometry has been fixed to the body
+  heading for every Mission-C flight.
+
+  Note for the estimator work: the pattern never saw the forest from a second heading, which is exactly the kind of
+  constraint a yaw-rotating scan would add over a degenerate (large-floor, thin-pillar) scene.
