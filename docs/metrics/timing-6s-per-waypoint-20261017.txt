@@ -2650,3 +2650,23 @@ FLIGHTC-r26, tour (0,1.5,1.5) -> (0,3.0,1.5) -> (0,5.0,1.5), ALT_MODE=lio, EGO_Y
 
 REMAINING, INSIDE THE ALLOWED SCOPE: `mission.takeoff_alt` 2.0 -> 1.0 (guard 3.0 m), i.e. make the guard agree with the
 tour that this is a 1.5 m mission; or accept the climb and grade C2 alone.
+
+============================================================================
+ROUND 30/40 -- GUARD CLEARED; THE HORIZONTAL RUNAWAY NOW ENDS IT AT THE FENCE (2026-10-17)
+============================================================================
+Change: worlds/forest_north.yaml  mission.takeoff_alt 2.0 -> 1.0  (guard = 1.0 + 2.0 = 3.0 m)
+FLIGHTC-r27 (tour 1.5 m, ALT_MODE=lio, EGO_YAW_HEADING=1, DISARM fix):
+
+    [17.60] airborne: truth altitude 0.207 m
+    [17.60] the climb guard is 2.00 m above 1.00 m
+    [23.18] ABORT: geofence: truth at [-0.05 +24.10]        <- 24 m NORTH along the leg
+    phase table: takeoff cmd 0.97 lio -0.00 truth 0.10 | hold cmd 0.74 lio -0.01 truth 0.21 |
+                 leg1 cmd 0.90 lio -0.01 truth 2.68 | abort cmd 1.42 lio -0.01 truth **3.01**
+    C2 -0.059 m, 0.22 % inside a body
+
+READ: the climb guard is CLEARED (truth peaked 3.01 m, just inside the 3.0 m it was given).  What kills it now is the
+along-leg runaway: the shell's corridor and reference clamp are per leg, so they bound the reference SIDEWAYS from the leg
+but nothing bounds it ALONG the leg -- and this field's plan keeps commanding motion in the leg's own direction.
+
+IN-SCOPE NEXT: EGO_MAX_VEL / EGO_MAX_ACC 2.5 -> 1.0 m/s, so every runaway is shorter in metres before the fence and the
+arrival gate has a chance at each waypoint.
