@@ -1076,6 +1076,12 @@ def _parser() -> "argparse.ArgumentParser":
     ap.add_argument("--z", type=float, default=2.0)
     ap.add_argument("--hold-s", type=float, default=5.0)
     ap.add_argument("--arrive-m", type=float, default=0.30)
+    ap.add_argument("--yaw-heading", action="store_true",
+                    help="forward the yaw as the FCU's COMPASS HEADING (pi/2 - (yaw_L + the L x axis angle in W)) "
+                         "instead of passing the plan's L angle through.  DEFAULT OFF because it was measured to cost "
+                         "Mission-B clearance: three post-change bare sorties gave C2 -0.239 / -0.150 / -0.165 m "
+                         "against seven pre-change ones at -0.039 .. -0.209 (median -0.039).  Mission C opts in with "
+                         "EGO_YAW_HEADING=1.")
     ap.add_argument("--settle-mps", type=float, default=0.08,
                     help="the speed under which the vehicle counts as ARRIVED; 0 disables the speed test, which "
                          "is what 'fly THROUGH the waypoint' needs -- a 3 m/s aircraft spends ~0.2 s inside a "
@@ -1208,7 +1214,7 @@ def main() -> int:
     except Exception:                                                            # noqa: BLE001
         pass
     ego_driven = (args.tour_source == "ego")
-    l_yaw_offset = float(np.arctan2(calib.R_WL[1, 0], calib.R_WL[0, 0]))
+    l_yaw_offset = float(np.arctan2(calib.R_WL[1, 0], calib.R_WL[0, 0])) if args.yaw_heading else None
     seq = TourSequencer(targets_l, arrive_m=args.arrive_m, hold_s=args.hold_s,
                         settle_mps=args.settle_mps, log=lambda s: print(s, flush=True),
                         ego_driven=ego_driven, ref_clamp_m=args.ref_clamp_m,
@@ -1219,8 +1225,9 @@ def main() -> int:
                         corner_m=args.corner_m, corner_mps=args.corner_mps,
                         ref_z_floor_m=args.ref_z_floor_m, ref_acc_max=args.ref_acc_max,
                         corridor_m=args.corridor_m)
-    print("shim: yaw: the plan's L angle -> the contract's compass heading (L x axis at %+.2f deg in W)"
-          % np.degrees(l_yaw_offset))
+    print("shim: yaw: %s"
+          % ("L angle -> the FCU's compass heading (L x axis at %+.2f deg in W)" % np.degrees(l_yaw_offset)
+             if l_yaw_offset is not None else "the plan's L angle PASSED THROUGH (--yaw-heading not given)"))
     print("shim: %d waypoint(s) in L from %s" % (len(targets_l), args.world))
     for i, t in enumerate(targets_l):
         print("shim: waypoint %d -> %s (L)" % (i + 1, np.round(t, 3)))

@@ -302,6 +302,10 @@ EGO_EMERGENCY_S="${EGO_EMERGENCY_S:-0.0}"
 #: the end taper that used to open it near the corners was flown in Flight AL and made things worse (the reference used
 #: 0.454 m of the opening 0.9 m past a corner and the aircraft followed it in), so the knob is ONE half-width.
 EGO_CORRIDOR_M="${EGO_CORRIDOR_M:-0.01}"
+#: OWNER'S CALL (2026-10-17): Mission C wants the heading command to be the FCU's compass heading, Mission B does
+#: not (it was measured to cost Mission-B clearance).  EGO_YAW_HEADING=1 opts a sortie in.
+EGO_YAW_HEADING_ARG=""
+[ "${EGO_YAW_HEADING:-0}" = "1" ] && EGO_YAW_HEADING_ARG="--yaw-heading"
 #: NO GOAL IS PUBLISHED UNTIL THE VEHICLE IS THIS HIGH (metres; 0 = off).  Route B's twin of PATCH 0008's
 #: `fsm/waypoint_start_alt`; without it ego plans a climb for the whole take-off that nothing is following
 #: (Flight F: goals from t=1.9 s, 87 "First 3 control points in obstacles" before the trigger at t=20.4 s).
@@ -393,7 +397,7 @@ case "$PLANNER" in
 --settle-mps $EGO_SETTLE_MPS --leg-timeout-s $EGO_LEG_TIMEOUT_S --leg-abort-s $EGO_LEG_ABORT_S \
 --arrive-z-m $EGO_ARRIVE_Z_M --start-alt-m $EGO_START_ALT_M --ref-z-clamp-m $EGO_REF_Z_CLAMP_M --ref-z-floor-m $EGO_REF_Z_FLOOR_M \
 --ref-slew-mps $EGO_REF_SLEW_MPS --ref-acc-max $EGO_REF_ACC_MAX --corner-m $EGO_CORNER_M --corner-mps $EGO_CORNER_MPS \
---corridor-m $EGO_CORRIDOR_M \
+--corridor-m $EGO_CORRIDOR_M $EGO_YAW_HEADING_ARG \
 --odom-topic /ego/odom_fcu --ref-clamp-m $EGO_REF_CLAMP_M --trace-csv $OUT/shim_trace.csv ${CMD_ARGS:-}"
             PLANNER_WHAT="ego's OWN traj_server samples the plan (p+v+a) + the contract shell (tour, ids, COMPLETED)"
             PLANNER_TOPIC="/plan/cmd"

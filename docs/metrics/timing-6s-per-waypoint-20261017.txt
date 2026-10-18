@@ -2306,3 +2306,25 @@ MISSION-B REGRESSION FLIGHT (bare, FLIGHTBARE-defaults)
 VERDICT: test-clean, flight-neutral on the time clause, collision clause NOT yet known -- -0.239 is outside the
 pre-change range on one flight, which is not enough either way.  Next: two more Mission-B flights; if it stays outside,
 gate the conversion behind a flag so Mission B keeps the old behaviour and Mission C uses the fixed one.
+
+============================================================================
+ROUND 18 -- THE YAW CONVERSION GATED OFF FOR MISSION B (2026-10-17)
+============================================================================
+Three bare Mission-B flights with the conversion wired in, against seven without it:
+
+    pre-change (rounds 25-31)   C2  +0.038 / +0.016 / +0.033 / -0.039 / -0.074 / -0.209 / -0.090     median -0.039
+    FLIGHTBARE-defaults        C2  -0.239 m     legs 7 of 8 (max 6.36)   A1 12.37 mm
+    FLIGHTB-YAW2               C2  -0.150 m     legs 7 of 8 (max 6.16)   A1 12.31 mm
+    FLIGHTB-YAW3               C2  -0.165 m     legs 6 of 8 (max 6.36)   A1 13.29 mm
+
+All three post-change sorties sit below the pre-change range.  Three flights are not a proof of causation, but they are
+enough not to ship it as the default in the mission that works.
+
+THE GATE
+    src/planner/ego_contract_shim.py   --yaw-heading   default OFF; --help carries the measurement above
+    src/tools/run-mission.sh           EGO_YAW_HEADING=1   passes --yaw-heading
+    the shim's start-up banner prints which branch flew ("L angle -> compass heading" vs "PASSED THROUGH")
+
+    offline: --selftest PASSED, py_compile clean, bash -n run-mission.sh clean, the flag appears in --help.
+
+Mission B is back on the arm of record; Mission C has the corrected heading available (EGO_YAW_HEADING=1) next round.
